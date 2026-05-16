@@ -21,3 +21,6 @@ results.xml
 .vscode/
 .idea/
 *.swp
+
+# --- Claude Code personal overrides ---
+.claude/settings.local.json

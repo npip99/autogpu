@@ -92,4 +92,109 @@ TEST CASES (pymodel/tests/test_e2e.py)
          is an RTL-vs-pymodel disagreement, never an architectural question.
 """
 
-# Implementation goes here.
+"""
+Implementation NOTES:
+
+Tick order each cycle (matters for cross-module signal visibility):
+    1. cmdproc.tick()   — reads engines.busy/done and barrier.phase from
+                          previous cycle's commit; sets drive signals.
+    2. mma.tick(...)    — reads cmdproc's drives this cycle.
+    3. load.tick(...)   — same.
+    4. store.tick(...)  — same.
+    5. barrier.tick(...) — reads cmdproc.init_* + engine arrive/tx signals
+                          from this cycle; flip check runs last.
+
+This produces a 1-cycle observation latency on barrier flips and engine
+completion as seen by cmdproc — architecturally correct (matches RTL's
+registered output semantics).
+"""
+
+from pymodel.barrier import Barrier
+from pymodel.cmdproc import CmdProc
+from pymodel.gmem import GMEM
+from pymodel.load import Load
+from pymodel.mma import MMA
+from pymodel.smem import SMEM
+from pymodel.store import Store
+from pymodel.tmem import TMEM
+
+
+class Sim:
+    def __init__(self):
+        self.gmem = GMEM()
+        self.smem = SMEM()
+        self.tmem = TMEM()
+        self.barrier = Barrier()
+        self.mma = MMA(self.smem, self.tmem)
+        self.load = Load(self.gmem, self.smem)
+        self.store = Store(self.tmem, self.gmem)
+        self.cmdproc = CmdProc(self.mma, self.load, self.store, self.barrier)
+        self.cycle: int = 0
+
+    # ---- Public API ----
+
+    def load_program(self, program: list[dict]) -> None:
+        self.cmdproc.push_program(program)
+
+    def load_gmem(self, addr: int, data: bytes) -> None:
+        self.gmem.load(addr, data)
+
+    def read_gmem(self, addr: int, n: int) -> bytes:
+        return self.gmem.dump(addr, n)
+
+    def tick(self) -> None:
+        self.cycle += 1
+        cp = self.cmdproc
+
+        # 1. cmdproc decides
+        cp.tick()
+
+        # 2. engines (gated on cmdproc's current-cycle drives)
+        if cp.mma_start:
+            self.mma.tick(start=1, **cp.mma_args)
+        else:
+            self.mma.tick()
+
+        if cp.load_issue_en:
+            self.load.tick(issue_en=1, **cp.load_args)
+        else:
+            self.load.tick()
+
+        if cp.store_issue_en:
+            self.store.tick(issue_en=1, **cp.store_args)
+        else:
+            self.store.tick()
+
+        # 3. barrier — gathers init + arrive + tx from this cycle's signals
+        self.barrier.tick(
+            init_en=cp.init_en,
+            init_bar_id=cp.init_bar_id,
+            init_count=cp.init_count,
+            arrive_en_a=self.load.arrive_en,
+            arrive_bar_id_a=self.load.arrive_bar_id,
+            arrive_en_b=self.mma.arrive_en,
+            arrive_bar_id_b=self.mma.arrive_bar_id,
+            add_tx_en=self.load.add_tx_en,
+            add_tx_bar_id=self.load.add_tx_bar_id,
+            add_tx_bytes=self.load.add_tx_bytes,
+            sub_tx_en=self.load.sub_tx_en,
+            sub_tx_bar_id=self.load.sub_tx_bar_id,
+            sub_tx_bytes=self.load.sub_tx_bytes,
+        )
+
+    def is_idle(self) -> bool:
+        return (
+            bool(self.cmdproc.idle)
+            and not self.mma.busy
+            and not self.load.busy
+            and not self.store.busy
+        )
+
+    def run_until_idle(self, max_cycles: int = 100_000) -> int:
+        for _ in range(max_cycles):
+            self.tick()
+            if self.is_idle():
+                return self.cycle
+        raise AssertionError(
+            f"Sim did not become idle within {max_cycles} cycles (cycle={self.cycle})"
+        )

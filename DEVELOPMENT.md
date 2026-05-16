@@ -43,12 +43,25 @@ The `Sim` harness in `pymodel/sim.py` enforces tick order so every module sees r
 | Pymodel unit | `pymodel/tests/test_<sub>.py` | Python class matches spec | pytest |
 | RTL vs pymodel | `<sub>/tb/test_<sub>.py` | Verilog matches Python pymodel cycle-by-cycle | cocotb + Verilator |
 
-Both run from the project root after `source .venv/bin/activate`:
+Both require the venv to be activated. Cocotb's `Makefile.sim` invokes `cocotb-config` and `python3` via subshells, and Make's `export PATH := ...` quirk means we can't auto-fix this from inside the Makefile — venv must be on PATH **before** `make` is invoked.
 
 ```bash
-pytest                                   # all pymodel tests
-cd <sub> && make                         # one RTL module's cocotb tests
+source .venv/bin/activate          # activate ONCE per shell session
+pytest                             # all pymodel tests
+cd <sub> && make                   # one RTL module's cocotb tests
 ```
+
+If you skip activation, you'll get `cocotb-config: command not found` or `ModuleNotFoundError: No module named 'cocotb_tools'` (system Python 3.14 picked up instead of the venv's 3.12).
+
+### RTL conventions discovered during Phase 4 agent runs
+
+These started as ad-hoc agent decisions and are now project conventions:
+
+- **Reset port on every SV module.** Pymodels don't model `reset` (they construct fresh classes), but the cocotb `tb_utils.reset()` helper drives a `reset` port. Every SV module exposes one: dominant (clears registered outputs + pending state, preserves memory contents). The TB adapter pops `reset` from the kwargs before calling `pymodel.tick()`.
+- **Byte-packing for SV↔Python bytes.** SV byte vectors and Python `bytes` round-trip as little-endian: byte 0 in the low 8 bits of the int. SV side: `wr_data[7:0]` is byte 0. Python side: `int.from_bytes(blob, "little")`.
+- **TMEM tile packing.** Documented in `pymodel/tmem.py` §"RTL TILE PACKING CONVENTION". Row-major, fp32 LSB-first per word, element `[i][j]` at bit `(i*MMA_N+j)*32`.
+- **Write-then-drain forwarding.** Memory modules (gmem/smem/tmem) commit writes BEFORE draining the prior-cycle pending read. So a same-cycle wr + drain-of-pending-rd at the same addr returns the NEW data. Requires byte/element-level write-forwarding muxes on drain paths.
+- **Overlap granularity** is byte-range intersection: `[wr_addr, wr_addr+BEAT_BYTES) ∩ [rd_addr, rd_addr+READ_WIDTH) ≠ ∅`. Pymodel asserts on this; the cocotb random test must filter same-cycle wr+rd that would overlap.
 
 ### Canonical cocotb compare-loop
 

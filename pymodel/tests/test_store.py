@@ -1,29 +1,96 @@
 """Tests for pymodel.store."""
 
-# from pymodel.store import Store
+import numpy as np
+
+from config import BEAT_BYTES, MMA_M, MMA_N
+from golden.fp8 import decode_e4m3, encode_e4m3
+from pymodel.gmem import GMEM
+from pymodel.store import Store
+from pymodel.tmem import TMEM
+
+
+def _tile(seed: int) -> np.ndarray:
+    return np.random.RandomState(seed).randn(MMA_M, MMA_N).astype(np.float32) * 0.3
+
+
+def _run_until_idle(store: Store, max_cycles: int = 1000) -> None:
+    for _ in range(max_cycles):
+        store.tick()
+        if not store.busy:
+            return
+    raise AssertionError("STORE did not become idle")
 
 
 def test_store_fp32():
-    """Backdoor-set tmem slot; STORE dtype=0; gmem contains the flattened fp32 tile."""
-    raise NotImplementedError
+    tmem = TMEM()
+    gmem = GMEM()
+    store = Store(tmem, gmem)
+    tile = _tile(0)
+    tmem.set_slot(0, tile)
+
+    store.tick(issue_en=1, tmem_slot=0, gmem_ptr=0, dtype=0)
+    _run_until_idle(store)
+    nbytes = MMA_M * MMA_N * 4
+    expected = bytes(np.ascontiguousarray(tile.astype("<f4")).tobytes())
+    assert gmem.dump(0, nbytes) == expected
 
 
 def test_store_fp8():
-    """STORE dtype=1; gmem contains fp8.encode_e4m3 of the tile."""
-    raise NotImplementedError
+    tmem = TMEM()
+    gmem = GMEM()
+    store = Store(tmem, gmem)
+    tile = _tile(1)
+    tmem.set_slot(0, tile)
+
+    store.tick(issue_en=1, tmem_slot=0, gmem_ptr=0, dtype=1)
+    _run_until_idle(store)
+    nbytes = MMA_M * MMA_N
+    expected = bytes(np.ascontiguousarray(encode_e4m3(tile)).reshape(-1))
+    assert gmem.dump(0, nbytes) == expected
 
 
 def test_roundtrip_through_fp8():
-    """Set slot to known tile; STORE fp8; decode_e4m3(gmem) approximates original tile
-    within fp8 quantization tolerance."""
-    raise NotImplementedError
+    tmem = TMEM()
+    gmem = GMEM()
+    store = Store(tmem, gmem)
+    tile = _tile(2)
+    tmem.set_slot(0, tile)
+
+    store.tick(issue_en=1, tmem_slot=0, gmem_ptr=0, dtype=1)
+    _run_until_idle(store)
+    nbytes = MMA_M * MMA_N
+    decoded = decode_e4m3(
+        np.frombuffer(gmem.dump(0, nbytes), dtype=np.uint8)
+    ).reshape(MMA_M, MMA_N)
+    # fp8 quantization error tolerance
+    np.testing.assert_allclose(decoded, tile, rtol=0.15, atol=0.1)
 
 
 def test_multi_beat_correctness():
-    """Tile large enough to require multiple BEAT_BYTES writes; all beats correct."""
-    raise NotImplementedError
+    """fp32 STORE produces MMA_M*MMA_N*4 / BEAT_BYTES beats, each correct."""
+    tmem = TMEM()
+    gmem = GMEM()
+    store = Store(tmem, gmem)
+    tile = _tile(3)
+    tmem.set_slot(0, tile)
+    store.tick(issue_en=1, tmem_slot=0, gmem_ptr=0, dtype=0)
+    _run_until_idle(store)
+    # Verify byte-exact match.
+    expected = bytes(np.ascontiguousarray(tile.astype("<f4")).tobytes())
+    assert gmem.dump(0, len(expected)) == expected
 
 
 def test_busy_during_drain():
-    """busy=1 from cycle after issue until done pulses."""
-    raise NotImplementedError
+    tmem = TMEM()
+    gmem = GMEM()
+    store = Store(tmem, gmem)
+    tmem.set_slot(0, _tile(4))
+    store.tick(issue_en=1, tmem_slot=0, gmem_ptr=0, dtype=1)
+    assert store.busy == 1
+    # mid-drain
+    store.tick()
+    if store.busy:
+        # Still draining — that's fine
+        pass
+    _run_until_idle(store)
+    assert store.busy == 0

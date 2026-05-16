@@ -105,4 +105,110 @@ TEST CASES (pymodel/tests/test_load.py)
     5. assert_unaligned_bytes_or_addrs.
 """
 
-# Implementation goes here.
+"""
+Implementation NOTES (back-door simplification for pymodel):
+
+LOAD accesses GMEM and SMEM via back-door methods (gmem.dump, smem.load).
+This avoids modeling the multi-cycle port handshake; transfer cycles are
+still counted explicitly (bytes / BEAT_BYTES).
+
+Barrier interaction (signals to SIM harness, routed to barrier.tick):
+    On COMMAND ACCEPT (issue_en seen, FIFO push):  add_tx_en pulses with
+        the FULL byte count of the new command. This is required for WAIT
+        correctness — pending LOADs in the FIFO must already raise
+        tx_pending so a WAIT can't flip the barrier early.
+    On COMMAND COMPLETION (last beat of current cmd written):
+        sub_tx_en pulses with that command's total byte count, and
+        arrive_en pulses concurrently.
+"""
+
+from collections import deque
+
+import numpy as np
+
+from config import BEAT_BYTES
+
+
+class Load:
+    def __init__(self, gmem, smem):
+        self.gmem = gmem
+        self.smem = smem
+        # Registered outputs (signals to SIM/barrier)
+        self.busy: int = 0
+        self.done: int = 0
+        self.accept: int = 0
+        # Barrier drive pulses
+        self.add_tx_en: int = 0
+        self.add_tx_bar_id: int = 0
+        self.add_tx_bytes: int = 0
+        self.sub_tx_en: int = 0
+        self.sub_tx_bar_id: int = 0
+        self.sub_tx_bytes: int = 0
+        self.arrive_en: int = 0
+        self.arrive_bar_id: int = 0
+        # Internal state
+        self._in_fifo: deque[dict] = deque()
+        self._cur: dict | None = None
+        self._bytes_transferred: int = 0
+
+    def tick(
+        self,
+        *,
+        issue_en: int = 0,
+        gmem_ptr: int = 0,
+        smem_ptr: int = 0,
+        bytes_n: int = 0,
+        bar_id: int = 0,
+    ) -> None:
+        # Clear pulse outputs.
+        self.done = 0
+        self.accept = 0
+        self.add_tx_en = 0
+        self.sub_tx_en = 0
+        self.arrive_en = 0
+
+        # 1. Accept new command into input FIFO (atomic with add_tx).
+        if issue_en:
+            assert bytes_n > 0, "LOAD bytes must be > 0"
+            assert bytes_n % BEAT_BYTES == 0, f"LOAD bytes {bytes_n} not BEAT_BYTES-aligned"
+            assert gmem_ptr % BEAT_BYTES == 0, f"gmem_ptr {gmem_ptr} not BEAT_BYTES-aligned"
+            assert smem_ptr % BEAT_BYTES == 0, f"smem_ptr {smem_ptr} not BEAT_BYTES-aligned"
+            cmd = {
+                "gmem": gmem_ptr,
+                "smem": smem_ptr,
+                "bytes": bytes_n,
+                "bar_id": bar_id,
+            }
+            self._in_fifo.append(cmd)
+            self.accept = 1
+            # add_tx fires THIS cycle for the new command's byte total.
+            self.add_tx_en = 1
+            self.add_tx_bar_id = bar_id
+            self.add_tx_bytes = bytes_n
+
+        # 2. If idle and FIFO non-empty, start the next command.
+        if self._cur is None and self._in_fifo:
+            self._cur = self._in_fifo.popleft()
+            self._bytes_transferred = 0
+
+        # 3. If executing, transfer one beat per cycle (back-door).
+        if self._cur is not None:
+            n = BEAT_BYTES
+            off = self._bytes_transferred
+            chunk = self.gmem.dump(self._cur["gmem"] + off, n)
+            self.smem.load(self._cur["smem"] + off, chunk)
+            self._bytes_transferred += n
+
+            if self._bytes_transferred >= self._cur["bytes"]:
+                # Completion: sub_tx + arrive concurrently.
+                self.sub_tx_en = 1
+                self.sub_tx_bar_id = self._cur["bar_id"]
+                self.sub_tx_bytes = self._cur["bytes"]
+                self.arrive_en = 1
+                self.arrive_bar_id = self._cur["bar_id"]
+                self.done = 1
+                self._cur = None
+                self._bytes_transferred = 0
+
+        # 4. busy reflects "any work pending or in flight"
+        self.busy = 1 if (self._cur is not None or self._in_fifo) else 0

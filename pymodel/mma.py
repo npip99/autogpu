@@ -66,6 +66,9 @@ INVARIANTS
     - acc is fp32 throughout; fp8 decoding happens at the SMEM read boundary.
     - smem layouts: A is column-major (a_off + k*MMA_M is column k);
                     B is row-major     (b_off + k*MMA_N is row    k).
+    - TMEM tile packing (in RTL): use the convention in pymodel/tmem.py
+      §"RTL TILE PACKING CONVENTION". Element [i][j] at bit (i*MMA_N+j)*32,
+      IEEE 754 fp32 LSB-first.
 
 HANDSHAKE
     Issue: start=1 at cycle T (when busy=0) → busy=1 from cycle T+1.
@@ -81,4 +84,89 @@ TEST CASES (pymodel/tests/test_mma.py)
     5. busy_blocks_start: assert start while busy=1 asserts.
 """
 
-# Implementation goes here.
+"""
+Implementation NOTES (deviation from spec wire-level for pymodel simplicity):
+
+The pymodel MMA accesses SMEM and TMEM directly via back-door (smem.dump,
+tmem.get_slot, tmem.set_slot) instead of through registered ports. Cycle
+latency (MMA_K + 2 from start to done) is still modeled accurately. The
+Phase 4 RTL cocotb TBs will exercise the actual port-level interface;
+this back-door simplification keeps pymodel wiring tractable.
+
+Outputs to the SIM harness (not registered SMEM/TMEM port drives):
+    arrive_en, arrive_bar_id  — barrier arrival on completion
+    done, busy                — handshake signals
+"""
+
+import numpy as np
+
+from config import MMA_K, MMA_M, MMA_N
+from golden.fp8 import decode_e4m3
+
+
+class MMA:
+    def __init__(self, smem, tmem):
+        self.smem = smem
+        self.tmem = tmem
+        # Registered outputs
+        self.busy: int = 0
+        self.done: int = 0
+        self.arrive_en: int = 0
+        self.arrive_bar_id: int = 0
+        # Internal state
+        self._cyc: int = 0
+        self._saved: dict | None = None
+        self._acc = np.zeros((MMA_M, MMA_N), dtype=np.float32)
+
+    def tick(
+        self,
+        *,
+        start: int = 0,
+        a_smem_offset: int = 0,
+        b_smem_offset: int = 0,
+        d_tmem_slot: int = 0,
+        accum: int = 0,
+        bar_id: int = 0,
+    ) -> None:
+        # Default pulse outputs to 0 each cycle.
+        self.done = 0
+        self.arrive_en = 0
+
+        if not self.busy:
+            if start:
+                self._saved = {
+                    "a_off": a_smem_offset,
+                    "b_off": b_smem_offset,
+                    "d_slot": d_tmem_slot,
+                    "accum": accum,
+                    "bar_id": bar_id,
+                }
+                if accum:
+                    self._acc = self.tmem.get_slot(d_tmem_slot).astype(np.float32)
+                else:
+                    self._acc = np.zeros((MMA_M, MMA_N), dtype=np.float32)
+                self.busy = 1
+                self._cyc = 1  # next tick will be cyc=1
+            return
+
+        # busy
+        if start:
+            assert False, "MMA start asserted while busy"
+
+        cyc = self._cyc
+        if 1 <= cyc <= MMA_K:
+            k = cyc - 1
+            a_addr = self._saved["a_off"] + k * MMA_M
+            b_addr = self._saved["b_off"] + k * MMA_N
+            A_col = decode_e4m3(np.frombuffer(self.smem.dump(a_addr, MMA_M), dtype=np.uint8))
+            B_row = decode_e4m3(np.frombuffer(self.smem.dump(b_addr, MMA_N), dtype=np.uint8))
+            self._acc += np.outer(A_col, B_row)
+            self._cyc = cyc + 1
+        elif cyc == MMA_K + 1:
+            # Writeback + arrive + done
+            self.tmem.set_slot(self._saved["d_slot"], self._acc)
+            self.arrive_en = 1
+            self.arrive_bar_id = self._saved["bar_id"]
+            self.done = 1
+            self.busy = 0
+            self._cyc = 0

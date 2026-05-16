@@ -1,37 +1,47 @@
 """
-Phase 3 milestone test: random A, B → C, end-to-end through the full pymodel.
+Phase 3 milestone — pymodel end-to-end matmul.
 
-When this passes, the architecture is proven. Every subsequent failure in
-Phase 4/5 is an RTL-vs-pymodel disagreement, never an architecture question.
+When this passes, the architecture is proven: every subsequent failure
+in Phase 4/5 is an RTL-vs-pymodel disagreement, not an architectural question.
 """
 
-# from pymodel.sim import Sim
-# from pymodel.cmdproc import Instr  # or whatever the instr type is named
-# from golden.matmul_reference import generate
-# from config import MMA_M, MMA_N, MMA_K, SMEM_TILE_BASE
-# import numpy as np
+import numpy as np
+
+from config import MMA_K, MMA_M, MMA_N, SMEM_TILE_BASE
+from golden.matmul_reference import generate
+from pymodel.cmdproc import BAR_INIT, LOAD, MMA, STORE, WAIT
+from pymodel.sim import Sim
 
 
 def test_single_tile_matmul_random():
-    """The headline test.
+    """Random A,B fp8 → C fp32, end-to-end through the full pymodel."""
+    A_bytes, B_bytes, C_expected = generate(MMA_M, MMA_N, MMA_K, seed=0)
 
-    1. golden.matmul_reference.generate(MMA_M, MMA_N, MMA_K, seed=0)
-       → (A_bytes, B_bytes, C_expected fp32)
-    2. Place A_bytes at gmem offset 0; B_bytes at gmem offset len(A_bytes);
-       reserve C output region after that.
-    3. Assemble the 7-instruction kernel:
-         BAR_INIT(b=0, count=2)
-         BAR_INIT(b=1, count=1)
-         LOAD(bar=0, gmem=A_addr, smem=A_smem, bytes=len(A_bytes))
-         LOAD(bar=0, gmem=B_addr, smem=B_smem, bytes=len(B_bytes))
-         WAIT(bar=0, phase=0)
-         MMA(bar=1, A_smem, B_smem, D_tmem=0, accum=0)
-         WAIT(bar=1, phase=0)
-         STORE(tmem=0, gmem=C_addr, dtype=0)  # fp32 output
-    4. sim.load_program(program); sim.run_until_idle()
-    5. C_bytes = sim.read_gmem(C_addr, MMA_M*MMA_N*4)
-    6. C_actual = np.frombuffer(C_bytes, dtype=np.float32).reshape(MMA_M, MMA_N)
-    7. np.testing.assert_allclose(C_actual, C_expected, rtol=0, atol=0)
-       (Tolerance 0 because both sides go through the same decode→fp32 path.)
-    """
-    raise NotImplementedError
+    A_gmem = 0
+    B_gmem = len(A_bytes)
+    C_gmem = 16 * 1024  # well past A/B
+    A_smem = SMEM_TILE_BASE
+    B_smem = SMEM_TILE_BASE + len(A_bytes)
+
+    sim = Sim()
+    sim.load_gmem(A_gmem, A_bytes)
+    sim.load_gmem(B_gmem, B_bytes)
+
+    program = [
+        BAR_INIT(bar=0, count=2),  # 2 LOAD arrivals
+        BAR_INIT(bar=1, count=1),  # 1 MMA arrival
+        LOAD(bar=0, gmem_ptr=A_gmem, smem_ptr=A_smem, bytes_n=len(A_bytes)),
+        LOAD(bar=0, gmem_ptr=B_gmem, smem_ptr=B_smem, bytes_n=len(B_bytes)),
+        WAIT(bar=0, expected_phase=0),
+        MMA(bar=1, a_smem_offset=A_smem, b_smem_offset=B_smem,
+            d_tmem_slot=0, accum=0),
+        WAIT(bar=1, expected_phase=0),
+        STORE(tmem_slot=0, gmem_ptr=C_gmem, dtype=0),  # fp32 output
+    ]
+    sim.load_program(program)
+    cycles = sim.run_until_idle()
+
+    C_bytes = sim.read_gmem(C_gmem, MMA_M * MMA_N * 4)
+    C_actual = np.frombuffer(C_bytes, dtype="<f4").reshape(MMA_M, MMA_N)
+    np.testing.assert_allclose(C_actual, C_expected, rtol=0, atol=1e-5)
+    print(f"\ne2e matmul completed in {cycles} cycles")
