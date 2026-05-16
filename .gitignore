@@ -1,0 +1,23 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+*.egg-info/
+
+# --- Virtual envs (managed by uv) ---
+.venv/
+venv/
+
+# --- cocotb / Verilator build artifacts ---
+sim_build/
+results.xml
+*.vcd
+*.fst
+*.log
+
+# --- Editor / OS junk ---
+.DS_Store
+.vscode/
+.idea/
+*.swp

@@ -1,0 +1,13 @@
+[project]
+name = "gpu"
+version = "0.0.1"
+description = "Minimal fp8 matmul GPU — pymodel + Verilog RTL"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "cocotb>=2.0",
+    "numpy>=2.0",
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["pymodel/tests", "experiments"]
