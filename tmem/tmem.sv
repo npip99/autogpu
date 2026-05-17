@@ -3,6 +3,14 @@
 // SV implementation of pymodel.tmem.TMEM. See pymodel/tmem.py for the
 // canonical spec; this module must match it cycle-by-cycle.
 //
+// BANKING MODEL
+//   TMEM is spatially banked per-MAC-cell. Each (i, j) cell in the
+//   MMA_M x MMA_N grid owns its own micro-storage of TMEM_SLOTS fp32 words.
+//   An MMA whole-tile read/write touches all MMA_M x MMA_N cells in parallel;
+//   same for STORE_RD. No bank conflicts are possible because access is
+//   always by slot index (not arbitrary address), and concurrent MMA WRITE +
+//   STORE READ on the same slot is asserted illegal.
+//
 // Ports match the pymodel kwarg / attribute names exactly so the cocotb
 // testbench can use common.tb_utils.step_and_compare with string-keyed access.
 //
@@ -30,18 +38,21 @@
 //   at cycle T+1.
 //
 // ORDERING (matches pymodel commit phase)
-//   1. MMA WRITE commits to slots this cycle.
+//   1. MMA WRITE commits to cells this cycle.
 //   2. Drain previous-cycle pending MMA read into mma_rd_tile / mma_rd_valid.
 //   3. Drain previous-cycle pending STORE read into store_rd_tile / store_rd_valid.
 //   4. Capture new pending reads for next cycle.
-//   Since MMA op is exclusive (READ xor WRITE) and same-cycle MMA WRITE +
-//   STORE_RD on the *same* slot is undefined (spec assertion), no write-
-//   forwarding is needed on the drain path: any read of a freshly-written
-//   slot necessarily occurs on a later cycle.
+//   The pymodel commits a WRITE before draining the previous cycle's pending
+//   read, so a drain targeting the slot being written this cycle must observe
+//   the NEW value. Non-blocking assignments alone would return the old value,
+//   so pack_slot() below implements tile-level write-forwarding on the drain
+//   path. (Same-cycle MMA WRITE + STORE_RD *capture* on the same slot is
+//   asserted illegal, but capture-then-write-next-cycle on the same slot is
+//   legal and exercises this forwarding.)
 //
 // RESET
-//   Dominant. Clears pending state and registered outputs; slot contents are
-//   preserved (matches gmem reset semantics, and pymodel never clears slots).
+//   Dominant. Clears pending state and registered outputs; cell contents are
+//   preserved (matches gmem reset semantics, and pymodel never clears cells).
 
 module tmem #(
     parameter int TMEM_SLOTS = 4,
@@ -72,14 +83,15 @@ module tmem #(
     localparam logic [1:0] OP_READ  = 2'd1;
     localparam logic [1:0] OP_WRITE = 2'd2;
 
-    // Slot storage: TMEM_SLOTS x MMA_M x MMA_N words of fp32 (32-bit each).
+    // Per-cell spatially-banked storage: each (i, j) MAC cell owns its own
+    // TMEM_SLOTS-word micro register file. Indexed as cells[i][j][slot].
     // Zero-initialized to match pymodel.TMEM.__init__ (np.zeros).
-    logic [31:0] slots [TMEM_SLOTS][MMA_M][MMA_N];
+    logic [31:0] cells [MMA_M][MMA_N][TMEM_SLOTS];
     initial begin
-        for (int s = 0; s < TMEM_SLOTS; s++) begin
-            for (int i = 0; i < MMA_M; i++) begin
-                for (int j = 0; j < MMA_N; j++) begin
-                    slots[s][i][j] = 32'd0;
+        for (int i = 0; i < MMA_M; i++) begin
+            for (int j = 0; j < MMA_N; j++) begin
+                for (int s = 0; s < TMEM_SLOTS; s++) begin
+                    cells[i][j][s] = 32'd0;
                 end
             end
         end
@@ -99,15 +111,16 @@ module tmem #(
     localparam logic [MMA_M*MMA_N*32-1:0] TILE_ZERO = {(MMA_M*MMA_N*32){1'b0}};
     /* verilator lint_on WIDTHCONCAT */
 
-    // Combinational read of slots[slot] -> packed tile (row-major, [0][0] in
-    // low bits), with same-cycle MMA WRITE forwarding. The pymodel commits
-    // the WRITE before draining reads, so when a drained read targets the
-    // slot being written this cycle, it must observe the new value. (NBAs
-    // alone would return the old value.) This forwarding is necessary even
-    // though same-cycle MMA WRITE + STORE_RD *capture* on the same slot is
-    // illegal — a drain happens one cycle after capture, and a freshly
-    // captured store_rd_pending on slot X followed by an MMA WRITE to X on
-    // the very next cycle is legal and must read the new value.
+    // Combinational gather of cells[i][j][slot] across all (i, j) into a
+    // packed tile (row-major, [0][0] in low bits), with same-cycle MMA WRITE
+    // forwarding. The pymodel commits the WRITE before draining reads, so when
+    // a drained read targets the slot being written this cycle, it must
+    // observe the new value. (NBAs alone would return the old value.) This
+    // forwarding is necessary even though same-cycle MMA WRITE + STORE_RD
+    // *capture* on the same slot is illegal — a drain happens one cycle after
+    // capture, and a freshly captured store_rd_pending on slot X followed by
+    // an MMA WRITE to X on the very next cycle is legal and must read the new
+    // value.
     function automatic logic [MMA_M*MMA_N*32-1:0] pack_slot(input logic [31:0] s);
         logic [MMA_M*MMA_N*32-1:0] out;
         logic                       fwd;
@@ -119,7 +132,7 @@ module tmem #(
                     out[((i*MMA_N) + j)*32 +: 32]
                         = mma_write_tile[((i*MMA_N) + j)*32 +: 32];
                 end else begin
-                    out[((i*MMA_N) + j)*32 +: 32] = slots[s][i][j];
+                    out[((i*MMA_N) + j)*32 +: 32] = cells[i][j][s];
                 end
             end
         end
@@ -137,11 +150,12 @@ module tmem #(
             store_rd_tile          <= TILE_ZERO;
             store_rd_valid         <= 1'b0;
         end else begin
-            // 1. Commit MMA WRITE this cycle.
+            // 1. Commit MMA WRITE this cycle: scatter the packed tile across
+            //    cells[i][j][mma_slot] for all (i, j).
             if (mma_op == OP_WRITE) begin
                 for (int i = 0; i < MMA_M; i++) begin
                     for (int j = 0; j < MMA_N; j++) begin
-                        slots[mma_slot][i][j]
+                        cells[i][j][mma_slot]
                             <= mma_write_tile[((i*MMA_N) + j)*32 +: 32];
                     end
                 end

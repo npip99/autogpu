@@ -6,8 +6,17 @@ PURPOSE
     Written by MMA (final accumulator after K cycles). Read by MMA (initial
     value if accum=1) and by STORE (drain to gmem).
 
+BANKING MODEL
+    TMEM is spatially banked per-MAC-cell. Each (i, j) cell in the MMA_M × MMA_N
+    grid owns its own micro-storage of TMEM_SLOTS fp32 words. An MMA whole-tile
+    read/write touches all MMA_M × MMA_N cells in parallel (1024-way for 32×32);
+    same for STORE_RD. No bank conflicts are possible because access is always
+    by slot index (not arbitrary address), and concurrent MMA WRITE + STORE READ
+    on the same slot is asserted illegal.
+
 LAYOUT
-    Array of TMEM_SLOTS slots, each shape (MMA_M, MMA_N), dtype float32.
+    cells: np.float32[MMA_M, MMA_N, TMEM_SLOTS], zero-init. A whole-tile slot
+    read or write is a slice along the last axis.
 
 PORTS
 
@@ -15,7 +24,7 @@ PORTS
         INPUTS:  op (NONE | READ | WRITE), slot, write_tile (MMA_M×MMA_N fp32)
         OUTPUTS: rd_tile (MMA_M×MMA_N fp32, registered), rd_valid (1-bit)
         cycle T:
-            if op == WRITE: slots[slot] = write_tile (commits this cycle)
+            if op == WRITE: cells[:,:,slot] = write_tile (commits this cycle)
             if op == READ:  capture (slot) → rd_valid at T+1 with rd_tile
 
     STORE_RD (read-only)
@@ -24,16 +33,16 @@ PORTS
         cycle T: if rd_en, capture slot → rd_valid at T+1 with rd_tile
 
 INTERNAL STATE
-    slots          : np.float32[TMEM_SLOTS, MMA_M, MMA_N], zero-init
+    cells          : np.float32[MMA_M, MMA_N, TMEM_SLOTS], zero-init
     mma_rd_pending : slot | None
     store_rd_pending: slot | None
 
 BEHAVIOR (per tick, two-phase)
     sample : capture op + slot + write_tile per port
     commit :
-        1. If MMA_PORT.op == WRITE: slots[slot] = write_tile.
-        2. Drain MMA_PORT pending read: rd_tile <= slots[mma_rd_pending], rd_valid <= 1.
-        3. Drain STORE_RD pending: rd_tile <= slots[store_rd_pending], rd_valid <= 1.
+        1. If MMA_PORT.op == WRITE: cells[:,:,slot] = write_tile.
+        2. Drain MMA_PORT pending read: rd_tile <= cells[:,:,mma_rd_pending], rd_valid <= 1.
+        3. Drain STORE_RD pending: rd_tile <= cells[:,:,store_rd_pending], rd_valid <= 1.
         4. Capture new pending reads.
 
 INVARIANTS
@@ -76,6 +85,8 @@ TEST CASES (pymodel/tests/test_tmem.py)
     4. backdoor_roundtrip: set_slot / get_slot equivalent to port writes/reads.
     5. assert_slot_out_of_range.
     6. assert_wrong_dtype_or_shape on write_tile.
+    7. per_cell_isolation: distinct patterns in slot 0 and slot 1 round-trip through
+       the banked storage without cross-talk; an MMA WRITE to slot 0 leaves slot 1 intact.
 """
 
 from enum import IntEnum
@@ -93,7 +104,10 @@ class MMAOp(IntEnum):
 
 class TMEM:
     def __init__(self):
-        self.slots = np.zeros((TMEM_SLOTS, MMA_M, MMA_N), dtype=np.float32)
+        # Spatially banked: each (i, j) MAC cell owns TMEM_SLOTS fp32 words.
+        self.cells: np.ndarray = np.zeros(
+            (MMA_M, MMA_N, TMEM_SLOTS), dtype=np.float32
+        )
         self._mma_rd_pending = None  # slot index or None
         self._store_rd_pending = None
         self.mma_rd_tile = np.zeros((MMA_M, MMA_N), dtype=np.float32)
@@ -131,11 +145,11 @@ class TMEM:
 
         # Commit phase.
         if mma_op == MMAOp.WRITE:
-            self.slots[mma_slot] = mma_write_tile
+            self.cells[:, :, mma_slot] = mma_write_tile
 
         # Drain MMA read.
         if self._mma_rd_pending is not None:
-            self.mma_rd_tile = self.slots[self._mma_rd_pending].copy()
+            self.mma_rd_tile = self.cells[:, :, self._mma_rd_pending].copy()
             self.mma_rd_valid = 1
             self._mma_rd_pending = None
         else:
@@ -144,7 +158,7 @@ class TMEM:
 
         # Drain STORE read.
         if self._store_rd_pending is not None:
-            self.store_rd_tile = self.slots[self._store_rd_pending].copy()
+            self.store_rd_tile = self.cells[:, :, self._store_rd_pending].copy()
             self.store_rd_valid = 1
             self._store_rd_pending = None
         else:
@@ -162,8 +176,8 @@ class TMEM:
         assert 0 <= slot < TMEM_SLOTS
         assert tile.shape == (MMA_M, MMA_N)
         assert tile.dtype == np.float32
-        self.slots[slot] = tile
+        self.cells[:, :, slot] = tile
 
     def get_slot(self, slot: int) -> np.ndarray:
         assert 0 <= slot < TMEM_SLOTS
-        return self.slots[slot].copy()
+        return self.cells[:, :, slot].copy()

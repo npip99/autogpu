@@ -22,7 +22,7 @@
 // Backdoor handles the TB uses:
 //   u_gmem.mem[..]  — preload A/B, dump C
 //   u_smem.mem[..]  — direct inspection if needed
-//   u_tmem.slots[..][..][..] — direct inspection if needed
+//   u_tmem.cells[..][..][..] — direct inspection if needed (per-cell banking: [i][j][slot])
 
 module cmdproc_tb_top #(
     parameter int MMA_M            = 32,
