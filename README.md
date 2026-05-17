@@ -44,6 +44,7 @@ for d in gmem smem tmem barrier mma load store cmdproc; do (cd $d && make); done
 | `ISA.md`           | Instruction set reference |
 | `ARCHITECTURE.md`  | System block diagram, module map, spec format |
 | `DEVELOPMENT.md`   | **Read before writing code.** Workflow, TB conventions, debugging, tribal knowledge. |
+| `tech/README.md`   | Tape-out flow. Start with `tech/sky130/smoke/` to validate your synthesis toolchain. |
 
 ## Layout
 

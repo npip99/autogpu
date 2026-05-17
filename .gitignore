@@ -16,6 +16,11 @@ results.xml
 *.fst
 *.log
 
+# --- OpenLane synthesis outputs ---
+tech/*/runs/
+tech/*/*/runs/
+slpp_all/
+
 # --- Editor / OS junk ---
 .DS_Store
 .vscode/

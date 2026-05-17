@@ -1,0 +1,18 @@
+# OpenLane 2 config for smoke_top.sv — toolchain validation.
+# Drives the whole sky130A flow (Yosys synth → OpenROAD floorplan/place/route
+# → Magic GDS extract) on a trivially small design.
+
+meta:
+  version: 2
+
+DESIGN_NAME: smoke_top
+
+VERILOG_FILES:
+  - dir::smoke_top.sv
+
+CLOCK_PORT: clk
+CLOCK_PERIOD: 40   # 25 MHz — easy timing target
+
+# Tiny floorplan; lets all the area-driven steps converge fast.
+FP_SIZING: absolute
+DIE_AREA: [0, 0, 100, 100]

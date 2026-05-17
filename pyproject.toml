@@ -2,12 +2,19 @@
 name = "gpu"
 version = "0.0.1"
 description = "Minimal fp8 matmul GPU — pymodel + Verilog RTL"
-requires-python = ">=3.12,<3.14"
+# 3.12-only: libparse (openlane dep) ships cp312 wheels and its sdist is broken.
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "cocotb>=2.0",
     "numpy>=2.0",
     "pytest>=8.0",
     "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+# Synthesis toolchain. Opt-in via `uv sync --extra synth`.
+synth = [
+    "openlane>=2.3,<3",
 ]
 
 [tool.pytest.ini_options]

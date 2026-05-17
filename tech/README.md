@@ -6,8 +6,18 @@ SHADOW their generic counterparts at synth time — e.g.,
 include path is configured for sky130. Nothing under `tech/` is consumed
 by the cocotb simulation flow today.
 
-This directory was created in Phase 7f as a placeholder for what Phase
-7g (and beyond) will populate.
+## First step: validate your toolchain
+
+Before iterating on full-chip synthesis, run the smoke test to confirm
+your OpenLane + sky130 install works end-to-end. It takes ~40 seconds
+and produces a real GDS:
+
+```bash
+./tech/sky130/smoke/run.sh   # see tech/sky130/smoke/README.md for setup
+```
+
+If that prints `Flow complete` and writes a `.gds` file, the toolchain
+is good. Any subsequent failure on `chip_top` is RTL/config — not setup.
 
 ## Layout (Phase 7g and beyond)
 

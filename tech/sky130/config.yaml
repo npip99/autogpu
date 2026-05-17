@@ -1,0 +1,51 @@
+# OpenLane 2 config for chip_top.sv targeting sky130A.
+# First-pass run: keep defaults from chip_top.sv (MMA_M=MMA_N=MMA_K=32, full 1024
+# fp32_fma grid). Expect synthesis to surface area and timing issues; iterate.
+#
+# Run from this directory:
+#   uv run openlane --pdk sky130A tech/sky130/config.yaml
+
+meta:
+  version: 2
+
+DESIGN_NAME: chip_top
+
+# Source files. Packages first, then deps, then top.
+# Excludes gmem.sv and chip_tb_top.sv (testbench-only).
+VERILOG_FILES:
+  - dir::../../common/fpnew/cf_math_pkg.sv
+  - dir::../../common/fpnew/fpnew_pkg.sv
+  - dir::../../common/fpnew/fpnew_classifier.sv
+  - dir::../../common/fpnew/fpnew_rounding.sv
+  - dir::../../common/fpnew/lzc.sv
+  - dir::../../common/fpnew/fpnew_fma.sv
+  - dir::../../common/fp32_fma.sv
+  - dir::../../common/fp8_decode.sv
+  - dir::../../common/fp8_encode.sv
+  - dir::../../mem/sram_1rw.sv
+  - dir::../../cmdproc/cmdproc.sv
+  - dir::../../smem/smem.sv
+  - dir::../../tmem/tmem.sv
+  - dir::../../barrier/barrier.sv
+  - dir::../../mma/mma.sv
+  - dir::../../load/load.sv
+  - dir::../../store/store.sv
+  - dir::../../reset_seq/reset_seq.sv
+  - dir::../../top/chip_top.sv
+
+VERILOG_INCLUDE_DIRS:
+  - dir::../../common/fpnew
+
+# Clock target: 25 MHz (40 ns) for first pass. Push higher after timing closure.
+CLOCK_PORT: clk
+CLOCK_PERIOD: 40
+
+# Skip OpenLane's Verilator lint step. Its bundled Verilator config rejects
+# SV2012 `func()[range:0]` part-select-on-call syntax our cmdproc.sv uses.
+# We already gate synthesizability with `make lint` in top/Makefile (Verilator
+# 5.048 with -Wall, no waivers on project code).
+RUN_LINTER: false
+
+# Yosys's default Verilog-2005 frontend can't parse our SV (packages, automatic
+# functions, structs). Enable Synlig for SystemVerilog support.
+USE_SYNLIG: true
