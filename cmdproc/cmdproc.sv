@@ -246,6 +246,15 @@ module cmdproc #(
     function automatic logic [31:0] dec_field2        (input logic [255:0] w); return w[143:112]; endfunction
     function automatic logic [31:0] dec_field3        (input logic [255:0] w); return w[175:144]; endfunction
     function automatic logic [31:0] dec_field4        (input logic [255:0] w); return w[207:176]; endfunction
+
+    // Pre-sliced subfields. Avoid `dec_byteN(w)[2:0]` etc. at call sites:
+    // Yosys's Verilog-2005 frontend rejects part-select on function-call return
+    // (legal SV-2012, but breaks the sky130 synth flow). Pre-slice here instead.
+    function automatic logic [2:0]  dec_reg_d         (input logic [255:0] w); return w[ 10:  8]; endfunction
+    function automatic logic [2:0]  dec_reg_a         (input logic [255:0] w); return w[ 18: 16]; endfunction
+    function automatic logic [2:0]  dec_reg_b         (input logic [255:0] w); return w[ 26: 24]; endfunction
+    function automatic logic [15:0] dec_imm16         (input logic [255:0] w); return w[ 63: 48]; endfunction
+    function automatic logic        dec_phase         (input logic [255:0] w); return w[48];      endfunction
     /* verilator lint_on UNUSEDSIGNAL */
 
     // ------------------------------------------------------------------
@@ -461,7 +470,7 @@ module cmdproc #(
                     OP_BAR_INIT: begin
                         o_init_en     = 1'b1;
                         o_init_bar_id = {24'd0, dec_byte1(instr)};
-                        o_init_count  = dec_field0(instr)[15:0];
+                        o_init_count  = dec_imm16(instr);
                         n_pc          = n_pc + 1'b1;
                     end
                     OP_LOAD: begin
@@ -469,14 +478,14 @@ module cmdproc #(
                         o_load_g   = resolve_addr(
                             dec_a_mode(instr),
                             dec_field0(instr), dec_field1(instr),
-                            dec_byte2(instr)[2:0],
+                            dec_reg_a(instr),
                             n_iter_reg,
                             regs[0], regs[1], regs[2], regs[3],
                             regs[4], regs[5], regs[6], regs[7]);
                         o_load_s   = resolve_addr(
                             dec_b_mode(instr),
                             dec_field2(instr), dec_field3(instr),
-                            dec_byte3(instr)[2:0],
+                            dec_reg_b(instr),
                             n_iter_reg,
                             regs[0], regs[1], regs[2], regs[3],
                             regs[4], regs[5], regs[6], regs[7]);
@@ -489,14 +498,14 @@ module cmdproc #(
                         o_mma_a     = resolve_addr(
                             dec_a_mode(instr),
                             dec_field0(instr), dec_field1(instr),
-                            dec_byte2(instr)[2:0],
+                            dec_reg_a(instr),
                             n_iter_reg,
                             regs[0], regs[1], regs[2], regs[3],
                             regs[4], regs[5], regs[6], regs[7]);
                         o_mma_b     = resolve_addr(
                             dec_b_mode(instr),
                             dec_field2(instr), dec_field3(instr),
-                            dec_byte3(instr)[2:0],
+                            dec_reg_b(instr),
                             n_iter_reg,
                             regs[0], regs[1], regs[2], regs[3],
                             regs[4], regs[5], regs[6], regs[7]);
@@ -516,7 +525,7 @@ module cmdproc #(
                         o_store_gptr = resolve_addr(
                             dec_a_mode(instr),
                             dec_field0(instr), dec_field1(instr),
-                            dec_byte2(instr)[2:0],
+                            dec_reg_a(instr),
                             n_iter_reg,
                             regs[0], regs[1], regs[2], regs[3],
                             regs[4], regs[5], regs[6], regs[7]);
@@ -526,7 +535,7 @@ module cmdproc #(
                     end
                     OP_WAIT: begin
                         n_wbar   = {24'd0, dec_byte1(instr)};
-                        n_wphase = dec_field0(instr)[0];
+                        n_wphase = dec_phase(instr);
                         n_state  = S_WAITING_FOR_WAIT_DONE;
                         n_pc     = n_pc + 1'b1;
                     end
@@ -588,7 +597,7 @@ module cmdproc #(
                         /* verilator lint_off UNUSEDSIGNAL */
                         automatic logic [31:0] br_target;
                         /* verilator lint_on UNUSEDSIGNAL */
-                        ra_idx = dec_byte2(instr)[2:0];
+                        ra_idx = dec_reg_a(instr);
                         case (ra_idx)
                             3'd0: ra_val = regs[0]; 3'd1: ra_val = regs[1];
                             3'd2: ra_val = regs[2]; 3'd3: ra_val = regs[3];
@@ -608,7 +617,7 @@ module cmdproc #(
                         /* verilator lint_off UNUSEDSIGNAL */
                         automatic logic [31:0] br_target;
                         /* verilator lint_on UNUSEDSIGNAL */
-                        ra_idx = dec_byte2(instr)[2:0];
+                        ra_idx = dec_reg_a(instr);
                         case (ra_idx)
                             3'd0: ra_val = regs[0]; 3'd1: ra_val = regs[1];
                             3'd2: ra_val = regs[2]; 3'd3: ra_val = regs[3];
@@ -633,15 +642,15 @@ module cmdproc #(
                     // -------------------- ALU --------------------
                     OP_SET_REG: begin
                         reg_wr_en  = 1'b1;
-                        reg_wr_idx = dec_byte1(instr)[2:0];
+                        reg_wr_idx = dec_reg_d(instr);
                         reg_wr_val = dec_field0(instr);
                         n_pc       = n_pc + 1'b1;
                     end
                     OP_ADD: begin
                         automatic logic [2:0] ra_idx, rb_idx;
                         automatic logic [31:0] ra_val, rb_val;
-                        ra_idx = dec_byte2(instr)[2:0];
-                        rb_idx = dec_byte3(instr)[2:0];
+                        ra_idx = dec_reg_a(instr);
+                        rb_idx = dec_reg_b(instr);
                         case (ra_idx)
                             3'd0: ra_val = regs[0]; 3'd1: ra_val = regs[1];
                             3'd2: ra_val = regs[2]; 3'd3: ra_val = regs[3];
@@ -655,14 +664,14 @@ module cmdproc #(
                             3'd6: rb_val = regs[6]; 3'd7: rb_val = regs[7];
                         endcase
                         reg_wr_en  = 1'b1;
-                        reg_wr_idx = dec_byte1(instr)[2:0];
+                        reg_wr_idx = dec_reg_d(instr);
                         reg_wr_val = ra_val + rb_val;
                         n_pc       = n_pc + 1'b1;
                     end
                     OP_ADDI: begin
                         automatic logic [2:0] ra_idx;
                         automatic logic [31:0] ra_val;
-                        ra_idx = dec_byte2(instr)[2:0];
+                        ra_idx = dec_reg_a(instr);
                         case (ra_idx)
                             3'd0: ra_val = regs[0]; 3'd1: ra_val = regs[1];
                             3'd2: ra_val = regs[2]; 3'd3: ra_val = regs[3];
@@ -670,15 +679,15 @@ module cmdproc #(
                             3'd6: ra_val = regs[6]; 3'd7: ra_val = regs[7];
                         endcase
                         reg_wr_en  = 1'b1;
-                        reg_wr_idx = dec_byte1(instr)[2:0];
+                        reg_wr_idx = dec_reg_d(instr);
                         reg_wr_val = ra_val + dec_field0(instr);
                         n_pc       = n_pc + 1'b1;
                     end
                     OP_SUB: begin
                         automatic logic [2:0] ra_idx, rb_idx;
                         automatic logic [31:0] ra_val, rb_val;
-                        ra_idx = dec_byte2(instr)[2:0];
-                        rb_idx = dec_byte3(instr)[2:0];
+                        ra_idx = dec_reg_a(instr);
+                        rb_idx = dec_reg_b(instr);
                         case (ra_idx)
                             3'd0: ra_val = regs[0]; 3'd1: ra_val = regs[1];
                             3'd2: ra_val = regs[2]; 3'd3: ra_val = regs[3];
@@ -692,15 +701,15 @@ module cmdproc #(
                             3'd6: rb_val = regs[6]; 3'd7: rb_val = regs[7];
                         endcase
                         reg_wr_en  = 1'b1;
-                        reg_wr_idx = dec_byte1(instr)[2:0];
+                        reg_wr_idx = dec_reg_d(instr);
                         reg_wr_val = ra_val - rb_val;
                         n_pc       = n_pc + 1'b1;
                     end
                     OP_AND: begin
                         automatic logic [2:0] ra_idx, rb_idx;
                         automatic logic [31:0] ra_val, rb_val;
-                        ra_idx = dec_byte2(instr)[2:0];
-                        rb_idx = dec_byte3(instr)[2:0];
+                        ra_idx = dec_reg_a(instr);
+                        rb_idx = dec_reg_b(instr);
                         case (ra_idx)
                             3'd0: ra_val = regs[0]; 3'd1: ra_val = regs[1];
                             3'd2: ra_val = regs[2]; 3'd3: ra_val = regs[3];
@@ -714,7 +723,7 @@ module cmdproc #(
                             3'd6: rb_val = regs[6]; 3'd7: rb_val = regs[7];
                         endcase
                         reg_wr_en  = 1'b1;
-                        reg_wr_idx = dec_byte1(instr)[2:0];
+                        reg_wr_idx = dec_reg_d(instr);
                         reg_wr_val = ra_val & rb_val;
                         n_pc       = n_pc + 1'b1;
                     end

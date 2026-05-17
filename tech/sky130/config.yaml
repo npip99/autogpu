@@ -1,51 +1,61 @@
 # OpenLane 2 config for chip_top.sv targeting sky130A.
-# First-pass run: keep defaults from chip_top.sv (MMA_M=MMA_N=MMA_K=32, full 1024
-# fp32_fma grid). Expect synthesis to surface area and timing issues; iterate.
+#
+# First-pass synthesis attempt: small MAC grid (4×4×4) to validate the flow
+# without paying full 32×32 area/timing costs. Scale up once the flow is clean.
+#
+# Source files are pre-converted from SystemVerilog to plain Verilog by sv2v
+# (see ../../Makefile or run `make -C ../.. sv2v` before invoking openlane).
+# OpenLane's bundled Yosys+Synlig rejects our SV-2012 constructs (packages,
+# automatic functions, part-select-on-function-call); sv2v handles them.
 #
 # Run from this directory:
-#   uv run openlane --pdk sky130A tech/sky130/config.yaml
+#   make sv2v  # if you haven't already
+#   ./run.sh
 
 meta:
   version: 2
 
 DESIGN_NAME: chip_top
 
-# Source files. Packages first, then deps, then top.
-# Excludes gmem.sv and chip_tb_top.sv (testbench-only).
 VERILOG_FILES:
-  - dir::../../common/fpnew/cf_math_pkg.sv
-  - dir::../../common/fpnew/fpnew_pkg.sv
-  - dir::../../common/fpnew/fpnew_classifier.sv
-  - dir::../../common/fpnew/fpnew_rounding.sv
-  - dir::../../common/fpnew/lzc.sv
-  - dir::../../common/fpnew/fpnew_fma.sv
-  - dir::../../common/fp32_fma.sv
-  - dir::../../common/fp8_decode.sv
-  - dir::../../common/fp8_encode.sv
-  - dir::../../mem/sram_1rw.sv
-  - dir::../../cmdproc/cmdproc.sv
-  - dir::../../smem/smem.sv
-  - dir::../../tmem/tmem.sv
-  - dir::../../barrier/barrier.sv
-  - dir::../../mma/mma.sv
-  - dir::../../load/load.sv
-  - dir::../../store/store.sv
-  - dir::../../reset_seq/reset_seq.sv
-  - dir::../../top/chip_top.sv
+  - dir::../../build/sv2v/chip_top.v
 
-VERILOG_INCLUDE_DIRS:
-  - dir::../../common/fpnew
+# Override the chip_top defaults at synth time: tiny 4×4 MAC grid (16 fp32_fma
+# instances vs 1024 for full). Lowers area + compile time by ~60×.
+SYNTH_PARAMETERS:
+  - MMA_M=4
+  - MMA_N=4
+  - MMA_K=4
 
-# Clock target: 25 MHz (40 ns) for first pass. Push higher after timing closure.
+# Clock target: 25 MHz (40 ns) for first pass.
 CLOCK_PORT: clk
 CLOCK_PERIOD: 40
 
-# Skip OpenLane's Verilator lint step. Its bundled Verilator config rejects
-# SV2012 `func()[range:0]` part-select-on-call syntax our cmdproc.sv uses.
-# We already gate synthesizability with `make lint` in top/Makefile (Verilator
-# 5.048 with -Wall, no waivers on project code).
+# Disable timing-driven global placement. The in-loop resizer call on our
+# large netlist costs more time than the timing improvement is worth at
+# this stage. The resizer still runs at later post-placement / pre-route
+# stages, so timing isn't ignored — just not used to weight placement.
+PL_TIME_DRIVEN: false
+
+# Skip OpenLane's Verilator lint step. sv2v leaves `func()[range]` intact
+# (legal SV-2012, Yosys accepts). Our own `make lint` in top/ already
+# validates synthesizability with full Verilator 5.048.
 RUN_LINTER: false
 
-# Yosys's default Verilog-2005 frontend can't parse our SV (packages, automatic
-# functions, structs). Enable Synlig for SystemVerilog support.
-USE_SYNLIG: true
+# Fastest synthesis: trade QoR (area + timing) for compile time. Suitable
+# for "does it work" iteration; switch to a heavier strategy when chasing
+# timing closure or final area.
+#
+# Why "AREA 3" not "AREA 0": AREA 0 runs `choice2` (FRAIG + 3× resyn2 =
+# ~30 AIG passes) which is the dominant ABC cost. AREA 3 is the ORFS
+# script — strash, dch, map — ~8 commands total, no choice/FRAIG.
+SYNTH_STRATEGY: "AREA 3"
+SYNTH_SHARE_RESOURCES: false
+SYNTH_ABC_BUFFERING: false
+
+# Keep hierarchy throughout synthesis. ABC then optimizes each submodule
+# once; repeated instantiations (e.g., 16 fp32_fma) inherit the same
+# gate-mapped result. The key scaling property for chips with many
+# replicated MACs. ("deferred_flatten" still flattens at the end, which
+# defeats the purpose for our pathological modules — use "keep" instead.)
+SYNTH_HIERARCHY_MODE: keep

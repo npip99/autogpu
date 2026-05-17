@@ -207,44 +207,60 @@ module smem #(
     // above guarantees only one port "covers" any given bank on a cycle
     // (other than during a stall cycle, which we resolve here by simply
     // honoring the higher-priority requester).
-    always_comb begin
-        automatic logic [31:0]          dword_addr;
-        automatic logic [BANK_BITS-1:0] b_idx;
-        automatic logic [WORD_BITS-1:0] w_idx;
+    //
+    // Style note: all locals declared and pre-initialized at the top of the
+    // always_comb. No `for (int x = ...)` (use module-level `int`). No
+    // declarations inside conditional branches. This avoids spurious latch
+    // inference under Yosys; see DEVELOPMENT.md §"Synthesis-friendly SV".
+    int b_iter;
+    int d_iter;
+    logic [31:0]          dword_addr;
+    logic [BANK_BITS-1:0] b_idx;
+    logic [WORD_BITS-1:0] w_idx;
 
-        for (int b = 0; b < NUM_BANKS; b++) begin
-            bank_en[b]    = 1'b0;
-            bank_we[b]    = 1'b0;
-            bank_addr[b]  = '0;
-            bank_wdata[b] = '0;
+    always_comb begin
+        // Every local must be assigned BEFORE any conditional branch so Yosys
+        // does not infer a latch (it can't statically prove the for-loop
+        // counter and helpers are all covered otherwise).
+        b_iter     = 0;
+        d_iter     = 0;
+        dword_addr = '0;
+        b_idx      = '0;
+        w_idx      = '0;
+
+        for (b_iter = 0; b_iter < NUM_BANKS; b_iter++) begin
+            bank_en[b_iter]    = 1'b0;
+            bank_we[b_iter]    = 1'b0;
+            bank_addr[b_iter]  = '0;
+            bank_wdata[b_iter] = '0;
         end
 
         if (scrub_en) begin
-            for (int b = 0; b < NUM_BANKS; b++) begin
-                bank_en[b]    = 1'b1;
-                bank_we[b]    = 1'b1;
-                bank_addr[b]  = scrub_addr[WORD_BITS-1:0];
-                bank_wdata[b] = 32'd0;
+            for (b_iter = 0; b_iter < NUM_BANKS; b_iter++) begin
+                bank_en[b_iter]    = 1'b1;
+                bank_we[b_iter]    = 1'b1;
+                bank_addr[b_iter]  = scrub_addr[WORD_BITS-1:0];
+                bank_wdata[b_iter] = 32'd0;
             end
         end else begin
             // LOAD_WR: 4 dwords, one per consecutive bank.
             if (wr_en) begin
-                for (int d = 0; d < WR_DWORDS; d++) begin
-                    dword_addr   = wr_addr + 32'(d * 4);
+                for (d_iter = 0; d_iter < WR_DWORDS; d_iter++) begin
+                    dword_addr   = wr_addr + 32'(d_iter * 4);
                     b_idx        = bank_of(dword_addr);
                     w_idx        = dword_addr[2 + BANK_BITS +: WORD_BITS];
                     bank_en[b_idx]    = 1'b1;
                     bank_we[b_idx]    = 1'b1;
                     bank_addr[b_idx]  = w_idx;
-                    bank_wdata[b_idx] = wr_data[d*32 +: 32];
+                    bank_wdata[b_idx] = wr_data[d_iter*32 +: 32];
                 end
             end
 
             // RD_A (only on banks not claimed by LOAD_WR above; the stall
             // logic ensures no overlap when rd_a_accept is true).
             if (rd_a_accept) begin
-                for (int d = 0; d < RDA_DWORDS; d++) begin
-                    dword_addr = rd_a_addr + 32'(d * 4);
+                for (d_iter = 0; d_iter < RDA_DWORDS; d_iter++) begin
+                    dword_addr = rd_a_addr + 32'(d_iter * 4);
                     b_idx      = bank_of(dword_addr);
                     w_idx      = dword_addr[2 + BANK_BITS +: WORD_BITS];
                     if (!bank_en[b_idx]) begin
@@ -257,8 +273,8 @@ module smem #(
 
             // RD_B (lowest priority).
             if (rd_b_accept) begin
-                for (int d = 0; d < RDB_DWORDS; d++) begin
-                    dword_addr = rd_b_addr + 32'(d * 4);
+                for (d_iter = 0; d_iter < RDB_DWORDS; d_iter++) begin
+                    dword_addr = rd_b_addr + 32'(d_iter * 4);
                     b_idx      = bank_of(dword_addr);
                     w_idx      = dword_addr[2 + BANK_BITS +: WORD_BITS];
                     if (!bank_en[b_idx]) begin
@@ -352,38 +368,52 @@ module smem #(
     // ------------------------------------------------------------------
     function automatic logic [7:0] read_byte_from_banks(input logic [31:0] addr);
         logic [BANK_BITS-1:0] b_idx;
+        logic [31:0]          word;
         b_idx = bank_of(addr);
-        return bank_rdata[b_idx][(addr & 32'd3) * 8 +: 8];
+        word  = bank_rdata[b_idx];
+        return word[(addr & 32'd3) * 8 +: 8];
     endfunction
 
+    // Beat assembly. Same style as the bank arbitrator: all locals declared
+    // and pre-initialized at module scope; loop iterators are module-level
+    // ints. Each always_comb block has its own set of locals so neither
+    // sees the other as a multi-driver. See DEVELOPMENT.md §"Synthesis-
+    // friendly SV".
     logic [MMA_M*8-1:0] rd_a_beat;
+    logic [MMA_N*8-1:0] rd_b_beat;
+    int          beat_a_i;
+    logic [31:0] beat_a_rb;
+    logic        beat_a_fwd;
+    int          beat_b_i;
+    logic [31:0] beat_b_rb;
+    logic        beat_b_fwd;
+
     always_comb begin
-        logic [31:0] rb;
-        logic        fwd;
+        beat_a_rb  = '0;
+        beat_a_fwd = 1'b0;
         rd_a_beat = '0;
-        for (int i = 0; i < MMA_M; i++) begin
-            rb  = rd_a_pending_addr + 32'(i);
-            fwd = wr_en && (rb >= wr_addr) && (rb < wr_addr + 32'(BEAT_BYTES));
-            if (fwd) begin
-                rd_a_beat[i*8 +: 8] = wr_data[(rb - wr_addr)*8 +: 8];
+        for (beat_a_i = 0; beat_a_i < MMA_M; beat_a_i++) begin
+            beat_a_rb  = rd_a_pending_addr + 32'(beat_a_i);
+            beat_a_fwd = wr_en && (beat_a_rb >= wr_addr) && (beat_a_rb < wr_addr + 32'(BEAT_BYTES));
+            if (beat_a_fwd) begin
+                rd_a_beat[beat_a_i*8 +: 8] = wr_data[(beat_a_rb - wr_addr)*8 +: 8];
             end else begin
-                rd_a_beat[i*8 +: 8] = read_byte_from_banks(rb);
+                rd_a_beat[beat_a_i*8 +: 8] = read_byte_from_banks(beat_a_rb);
             end
         end
     end
 
-    logic [MMA_N*8-1:0] rd_b_beat;
     always_comb begin
-        logic [31:0] rb;
-        logic        fwd;
+        beat_b_rb  = '0;
+        beat_b_fwd = 1'b0;
         rd_b_beat = '0;
-        for (int i = 0; i < MMA_N; i++) begin
-            rb  = rd_b_pending_addr + 32'(i);
-            fwd = wr_en && (rb >= wr_addr) && (rb < wr_addr + 32'(BEAT_BYTES));
-            if (fwd) begin
-                rd_b_beat[i*8 +: 8] = wr_data[(rb - wr_addr)*8 +: 8];
+        for (beat_b_i = 0; beat_b_i < MMA_N; beat_b_i++) begin
+            beat_b_rb  = rd_b_pending_addr + 32'(beat_b_i);
+            beat_b_fwd = wr_en && (beat_b_rb >= wr_addr) && (beat_b_rb < wr_addr + 32'(BEAT_BYTES));
+            if (beat_b_fwd) begin
+                rd_b_beat[beat_b_i*8 +: 8] = wr_data[(beat_b_rb - wr_addr)*8 +: 8];
             end else begin
-                rd_b_beat[i*8 +: 8] = read_byte_from_banks(rb);
+                rd_b_beat[beat_b_i*8 +: 8] = read_byte_from_banks(beat_b_rb);
             end
         end
     end

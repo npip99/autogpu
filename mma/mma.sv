@@ -229,9 +229,19 @@ module mma #(
     integer i, j;
 
     // Default values for combinational helpers when not accumulating.
+    // Combinational drives. Locals declared at module scope so Yosys does
+    // not infer latches; see DEVELOPMENT.md §"Synthesis-friendly SV".
+    logic a_arrives;
+    logic b_arrives;
+    logic next_pa;
+    logic next_pb;
     always_comb begin
-        // Override below in the FSM block (a_data_now / b_data_now /
-        // accumulate_now / seed_tile_now). Default to safe zeros.
+        // Pre-init all locals before any conditional branch.
+        a_arrives = 1'b0;
+        b_arrives = 1'b0;
+        next_pa   = 1'b0;
+        next_pb   = 1'b0;
+        // Default outputs (overridden in S_COMPUTE).
         a_data_now     = '0;
         b_data_now     = '0;
         accumulate_now = 1'b0;
@@ -239,10 +249,10 @@ module mma #(
 
         if (state == S_COMPUTE) begin
             // Capture rd_*_valid (data arriving THIS cycle).
-            automatic logic a_arrives = rd_a_valid;
-            automatic logic b_arrives = rd_b_valid;
-            automatic logic next_pa = pa_valid || a_arrives;
-            automatic logic next_pb = pb_valid || b_arrives;
+            a_arrives = rd_a_valid;
+            b_arrives = rd_b_valid;
+            next_pa   = pa_valid || a_arrives;
+            next_pb   = pb_valid || b_arrives;
             accumulate_now = next_pa && next_pb;
             a_data_now = pa_valid ? pa_data : rd_a_data;
             b_data_now = pb_valid ? pb_data : rd_b_data;

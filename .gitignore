@@ -16,10 +16,11 @@ results.xml
 *.fst
 *.log
 
-# --- OpenLane synthesis outputs ---
+# --- OpenLane synthesis outputs + intermediate build artifacts ---
 tech/*/runs/
 tech/*/*/runs/
 slpp_all/
+build/
 
 # --- Editor / OS junk ---
 .DS_Store
