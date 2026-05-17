@@ -109,7 +109,6 @@ module load_tb_top #(
     // -----------------------------------------------------------------
     load #(
         .BEAT_BYTES      (BEAT_BYTES),
-        .NUM_BARRIERS    (NUM_BARRIERS),
         .INSTR_FIFO_DEPTH(INSTR_FIFO_DEPTH)
     ) u_load (
         .clk           (clk),

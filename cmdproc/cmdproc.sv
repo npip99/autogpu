@@ -93,7 +93,6 @@
 
 module cmdproc #(
     parameter int INSTR_FIFO_DEPTH = 256,    // also used as imem capacity
-    parameter int NUM_BARRIERS     = 8,
     parameter int NUM_LOOP_STACK   = 4
 ) (
     input  logic                       clk,
@@ -104,12 +103,18 @@ module cmdproc #(
     input  logic [255:0]               push_instr,    // packed; see header
 
     // Engine completion signals (registered, observed 1 cycle late).
+    // Currently advisory only: cmdproc uses barrier_wait_done and the
+    // S_WAITING_FOR_STORE_DONE FSM hop on store_done; the other status
+    // pins exist for future refinement (e.g., ALU-driven busy-polling)
+    // and are wired through but not consumed today.
+    /* verilator lint_off UNUSEDSIGNAL */
     input  logic                       load_busy,
     input  logic                       load_done,
     input  logic                       load_accept,
     input  logic                       mma_busy,
     input  logic                       mma_done,
     input  logic                       store_busy,
+    /* verilator lint_on UNUSEDSIGNAL */
     input  logic                       store_done,
 
     // Barrier wait-query response (combinational).
@@ -223,7 +228,10 @@ module cmdproc #(
 
     // ------------------------------------------------------------------
     // Decode helpers (combinational, on a 256-bit instruction word).
+    // Each helper extracts one field; the unused upper bits are intentional
+    // (the encoding leaves room for future fields and 48 bits of pad).
     // ------------------------------------------------------------------
+    /* verilator lint_off UNUSEDSIGNAL */
     function automatic logic [7:0]  dec_op            (input logic [255:0] w); return w[  7:  0]; endfunction
     function automatic logic [7:0]  dec_byte1         (input logic [255:0] w); return w[ 15:  8]; endfunction
     function automatic logic [7:0]  dec_byte2         (input logic [255:0] w); return w[ 23: 16]; endfunction
@@ -238,6 +246,7 @@ module cmdproc #(
     function automatic logic [31:0] dec_field2        (input logic [255:0] w); return w[143:112]; endfunction
     function automatic logic [31:0] dec_field3        (input logic [255:0] w); return w[175:144]; endfunction
     function automatic logic [31:0] dec_field4        (input logic [255:0] w); return w[207:176]; endfunction
+    /* verilator lint_on UNUSEDSIGNAL */
 
     // ------------------------------------------------------------------
     // Operand resolution helpers (combinational).
@@ -380,7 +389,12 @@ module cmdproc #(
             automatic logic [LEN_W-1:0]                    ls_push_body = '0;
             automatic logic [31:0]                         ls_push_imax = 32'd0;
             automatic logic [31:0]                         ls_push_pit  = 32'd0;
+            // ls_pop_en is a marker flag — set on END but unread; the pop
+            // is implemented via the n_loop_depth decrement and the
+            // n_iter_reg restore. Kept for readability of the case branch.
+            /* verilator lint_off UNUSEDSIGNAL */
             automatic logic                                ls_pop_en    = 1'b0;
+            /* verilator lint_on UNUSEDSIGNAL */
 
             // 1. Push from TB. Append at imem[imem_len].
             if (push_en) begin
@@ -542,7 +556,12 @@ module cmdproc #(
                             // Increment innermost iter; jump back or pop.
                             automatic logic [$clog2(NUM_LOOP_STACK)-1:0] top;
                             automatic logic [31:0] new_iter;
+                            // top_wide is one bit wider than `top` so the
+                            // `n_loop_depth - 1` subtraction can't underflow;
+                            // we truncate to log2(stack) for the array index.
+                            /* verilator lint_off UNUSEDSIGNAL */
                             automatic logic [$clog2(NUM_LOOP_STACK+1)-1:0] top_wide;
+                            /* verilator lint_on UNUSEDSIGNAL */
                             top_wide = n_loop_depth - 1'b1;
                             top = top_wide[$clog2(NUM_LOOP_STACK)-1:0];
                             new_iter = n_iter_reg + 32'd1;
@@ -564,7 +583,11 @@ module cmdproc #(
                     OP_BRZ: begin
                         automatic logic [2:0]  ra_idx;
                         automatic logic [31:0] ra_val;
+                        // br_target is a 32-bit signed sum; only the low
+                        // LEN_W bits (pc width) are consumed by n_pc.
+                        /* verilator lint_off UNUSEDSIGNAL */
                         automatic logic [31:0] br_target;
+                        /* verilator lint_on UNUSEDSIGNAL */
                         ra_idx = dec_byte2(instr)[2:0];
                         case (ra_idx)
                             3'd0: ra_val = regs[0]; 3'd1: ra_val = regs[1];
@@ -582,7 +605,9 @@ module cmdproc #(
                     OP_BRNZ: begin
                         automatic logic [2:0]  ra_idx;
                         automatic logic [31:0] ra_val;
+                        /* verilator lint_off UNUSEDSIGNAL */
                         automatic logic [31:0] br_target;
+                        /* verilator lint_on UNUSEDSIGNAL */
                         ra_idx = dec_byte2(instr)[2:0];
                         case (ra_idx)
                             3'd0: ra_val = regs[0]; 3'd1: ra_val = regs[1];
@@ -598,7 +623,9 @@ module cmdproc #(
                         end
                     end
                     OP_JMP: begin
+                        /* verilator lint_off UNUSEDSIGNAL */
                         automatic logic [31:0] jmp_target;
+                        /* verilator lint_on UNUSEDSIGNAL */
                         jmp_target = $signed({{(32-LEN_W){1'b0}}, n_pc}) + $signed(dec_field0(instr));
                         n_pc = jmp_target[LEN_W-1:0];
                     end

@@ -1,14 +1,26 @@
 """
-cocotb testbench for cmdproc.sv.
+cocotb testbench for chip_top (chip_tb_top wrapper instantiating
+chip_top + behavioral off-chip gmem).
+
+This is the chip-level end-to-end harness. Relocated from
+cmdproc/tb/test_cmdproc.py as part of Phase 7f when the chip boundary
+was drawn (chip_top synthesizable, gmem outside the die). Hierarchy:
+
+    dut (chip_tb_top)
+    ├── u_chip   — chip_top (cmdproc + smem + tmem + mma + load + store
+    │              + barrier + reset_seq)
+    └── u_gmem   — behavioral off-chip DRAM model
 
 Tests:
-  1. test_directed_dispatch  — push one of each old-style opcode, sample the
-     engine-issue drives, check FSM transitions (idle, WAIT stall, STORE stall)
-     align with the spec.
-  2. test_e2e_matmul         — push the headline 8-instruction matmul program;
-     wait for sys_idle; compare gmem[C_gmem:] against golden.matmul_reference.
-  3. test_repeat_basic       — REPEAT N + LOAD inside body + END runs N times.
-  4. test_alu_addi_loop      — manual SET_REG/ADDI/BRNZ loop with no engine ops.
+  1. test_directed_dispatch  — push one of each old-style opcode, sample
+     the engine-issue drives, check FSM transitions align with the spec.
+  2. test_e2e_matmul         — push the headline 8-instruction matmul
+     program; wait for sys_idle; compare gmem[C_gmem:] against
+     golden.matmul_reference.
+  3. test_repeat_basic       — REPEAT N + LOAD inside body + END runs N
+     times.
+  4. test_alu_addi_loop      — manual SET_REG/ADDI/BRNZ loop with no
+     engine ops.
   5. test_load_reg_off       — LOAD with reg-offset operand.
   6. test_k_loop_matmul      — REPEAT-driven K-loop matmul (parity-headline);
                                mirrors pymodel test_k_loop_matmul_via_repeat.
@@ -555,7 +567,7 @@ async def test_alu_addi_loop(dut):
 
     # If the loop and reg-ref operand worked, the data at gmem[64:64+32] will
     # have been loaded into smem[SMEM_TILE_BASE..]. Verify via the smem.
-    actual = bytes(int(dut.u_smem.mem[SMEM_TILE_BASE + i].value) for i in range(32))
+    actual = bytes(int(dut.u_chip.u_smem.mem[SMEM_TILE_BASE + i].value) for i in range(32))
     assert actual == pat, (
         f"alu_addi_loop: smem mismatch; final r0 likely wrong "
         f"(expected 64 → gmem[64:64+32]=={pat!r}, got {actual!r})"
@@ -598,7 +610,7 @@ async def test_load_reg_off(dut):
     for _ in range(10):
         await RisingEdge(dut.clk)
 
-    actual = bytes(int(dut.u_smem.mem[SMEM_TILE_BASE + i].value) for i in range(32))
+    actual = bytes(int(dut.u_chip.u_smem.mem[SMEM_TILE_BASE + i].value) for i in range(32))
     assert actual == pat
 
 

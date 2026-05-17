@@ -40,6 +40,16 @@ module fp32_fma (
     logic               busy_unused;
     logic               early_out_valid_unused;
 
+    // Vendored CVFPU (common/fpnew/*) trips several Verilator width / unnamed-
+    // generate-block lints. Phase 7f's lint sweep removed every project-side
+    // suppression; the remaining narrow window below confines that exemption
+    // to the fpnew_fma instance itself.
+    /* verilator lint_off WIDTHTRUNC */
+    /* verilator lint_off WIDTHEXPAND */
+    /* verilator lint_off UNOPTFLAT */
+    /* verilator lint_off ASCRANGE */
+    /* verilator lint_off SPLITVAR */
+    /* verilator lint_off GENUNNAMED */
     fpnew_fma #(
         .FpFormat    ( fpnew_pkg::FP32 ),
         .NumPipeRegs ( 0               ),
@@ -72,5 +82,11 @@ module fp32_fma (
         .reg_ena_i         ( 1'b0 ),
         .early_out_valid_o ( early_out_valid_unused )
     );
+    /* verilator lint_on GENUNNAMED */
+    /* verilator lint_on SPLITVAR */
+    /* verilator lint_on ASCRANGE */
+    /* verilator lint_on UNOPTFLAT */
+    /* verilator lint_on WIDTHEXPAND */
+    /* verilator lint_on WIDTHTRUNC */
 
 endmodule

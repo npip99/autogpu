@@ -107,8 +107,13 @@ module mma #(
     logic        saved_accum;
     logic [31:0] saved_bar_id;
 
-    // Issue/accumulate counters.
+    // Issue/accumulate counters. issue_k is a debug aid — tracks how
+    // many reads have been issued for the current tile; it isn't on any
+    // functional path (the FSM advances via accum_k and the rd_a/rd_b
+    // address counters).
+    /* verilator lint_off UNUSEDSIGNAL */
     logic [31:0] issue_k;
+    /* verilator lint_on UNUSEDSIGNAL */
     logic [31:0] accum_k;
 
     logic        accum_initialized;

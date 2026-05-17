@@ -24,6 +24,7 @@ VERILOG_SOURCES = $(PWD)/load.sv \
                   $(PWD)/load_tb_top.sv \
                   $(PWD)/../gmem/gmem.sv \
                   $(PWD)/../smem/smem.sv \
+                  $(PWD)/../mem/sram_1rw.sv \
                   $(PWD)/../barrier/barrier.sv
 TOPLEVEL        = load_tb_top
 

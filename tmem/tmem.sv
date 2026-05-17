@@ -92,8 +92,9 @@ module tmem #(
     output logic                                 store_rd_valid
 );
 
-    // Op encoding (must match pymodel.tmem.MMAOp).
-    localparam logic [1:0] OP_NONE  = 2'd0;
+    // Op encoding (must match pymodel.tmem.MMAOp). OP_NONE=2'd0 is the
+    // default mma_op value (any non-READ/WRITE encoding is treated as
+    // "no op" by the always_ff branches below).
     localparam logic [1:0] OP_READ  = 2'd1;
     localparam logic [1:0] OP_WRITE = 2'd2;
 

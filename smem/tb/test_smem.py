@@ -113,16 +113,20 @@ def _overlap(a0: int, a1: int, b0: int, b1: int) -> bool:
     return not (a1 <= b0 or b1 <= a0)
 
 
-def _backdoor_load_dut(dut, addr: int, data: bytes) -> None:
-    """Write `data` bytes into the banked storage by addressing
-    `bank_mem[bank][word]`. The new banked smem exposes `mem[]` as a
-    read-only combinational alias of the banks, so we have to write
-    directly into the banks.
+def _backdoor_write_word(smem, bank: int, word: int, value: int) -> None:
+    """As of Phase 7f, SMEM banks live inside `sram_1rw` generate instances.
+    A backdoor word write must update BOTH the operational sram_1rw storage
+    AND the parallel `bank_mem` shadow (used by backdoor reads). The shadow
+    is also what subsequent backdoor reads in this test will return.
+    """
+    smem.gen_banks[bank].u_sram.mem[word].value = value & 0xFFFFFFFF
+    smem.bank_mem[bank][word].value = value & 0xFFFFFFFF
 
-    cocotb hierarchical writes are scheduled NBA — successive
-    read-modify-write of the same word would race. We instead gather all
-    bytes per (bank, word) into a dict in Python, then issue one write
-    per word.
+
+def _backdoor_load_dut(dut, addr: int, data: bytes) -> None:
+    """Write `data` bytes into the banked storage. Gathers byte updates
+    per (bank, word) before issuing writes — cocotb hierarchical writes
+    are NBA, so successive read-modify-write of the same word would race.
     """
     NUM_BANKS = 32
 
@@ -147,9 +151,9 @@ def _backdoor_load_dut(dut, addr: int, data: bytes) -> None:
         v |= (int(byte) & 0xFF) << (byte_in_dw * 8)
         word_cache[(bank, word)] = v
 
-    # Write one word at a time.
+    # Write one word at a time (to both shadow and sram).
     for (bank, word), v in word_cache.items():
-        dut.bank_mem[bank][word].value = v & 0xFFFFFFFF
+        _backdoor_write_word(dut, bank, word, v)
 
 
 @cocotb.test()
@@ -171,12 +175,13 @@ async def test_scrub_clears_all_banks(dut):
     await reset(dut)
 
     # Poison every bank-word with a non-zero pattern via back-door so we can
-    # detect the scrub actually doing work.
+    # detect the scrub actually doing work. Writes go to both the sram_1rw
+    # storage and the shadow.
     NUM_BANKS = 32
     NUM_WORDS_PER_BANK = SMEM_BYTES // NUM_BANKS // 4
     for b in range(NUM_BANKS):
         for w in range(NUM_WORDS_PER_BANK):
-            dut.bank_mem[b][w].value = 0xDEADBEEF
+            _backdoor_write_word(dut, b, w, 0xDEADBEEF)
 
     # Wait one cycle for the back-door NBAs to commit.
     await RisingEdge(dut.clk)
@@ -214,13 +219,13 @@ async def test_directed_load_then_read_a(dut):
     dut.scrub_addr.value = 0
     await reset(dut)
 
-    # Zero bank_mem (`initial` blocks only run at sim startup; if this test
-    # ran a second time on the same sim, bank_mem could be stale).
+    # Zero bank storage (`initial` blocks only run at sim startup; if this
+    # test ran a second time on the same sim, contents could be stale).
     NUM_BANKS = 32
     NUM_WORDS_PER_BANK = SMEM_BYTES // NUM_BANKS // 4
     for b in range(NUM_BANKS):
         for w in range(NUM_WORDS_PER_BANK):
-            dut.bank_mem[b][w].value = 0
+            _backdoor_write_word(dut, b, w, 0)
 
     # Build a deterministic tile of A_TILE_BYTES bytes at SMEM_TILE_BASE.
     # We'll read the first MMA_M bytes (one "column" worth in the spec's terms).
@@ -264,12 +269,13 @@ async def test_random_vs_pymodel(dut):
     dut.scrub_addr.value = 0
     await reset(dut)
 
-    # Zero bank_mem to match pymodel's fresh state (reset preserves memory).
+    # Zero bank storage to match pymodel's fresh state (reset preserves
+    # memory).
     NUM_BANKS = 32
     NUM_WORDS_PER_BANK = SMEM_BYTES // NUM_BANKS // 4
     for b in range(NUM_BANKS):
         for w in range(NUM_WORDS_PER_BANK):
-            dut.bank_mem[b][w].value = 0
+            _backdoor_write_word(dut, b, w, 0)
 
     py = SMEMAdapter()
     rng = random.Random(0xBEEF)
@@ -366,15 +372,15 @@ async def test_bank_conflict_random(dut):
     await reset(dut)
 
     # Reset clears the registered outputs and pending state but does NOT
-    # clear bank_mem contents (preserves memory across resets — matches the
-    # gmem/tmem convention). Since the previous test left random data in
-    # bank_mem, we zero it explicitly so both pymodel and DUT start with
-    # the same all-zero memory.
+    # clear bank contents (preserves memory across resets — matches the
+    # gmem/tmem convention). Since the previous test left random data
+    # behind, we zero contents explicitly so both pymodel and DUT start
+    # with the same all-zero memory.
     NUM_BANKS = 32
     NUM_WORDS_PER_BANK = SMEM_BYTES // NUM_BANKS // 4
     for b in range(NUM_BANKS):
         for w in range(NUM_WORDS_PER_BANK):
-            dut.bank_mem[b][w].value = 0
+            _backdoor_write_word(dut, b, w, 0)
 
     py = SMEMAdapter()
     rng = random.Random(0xC0FFEE)

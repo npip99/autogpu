@@ -19,7 +19,8 @@ BUILD_ARGS     += OPT_FAST=-O0 OPT_SLOW=-O0 OPT_GLOBAL=-O0
 # Route compiles through ccache (no-op if ccache not on PATH).
 BUILD_ARGS     += OBJCACHE=$(shell command -v ccache 2>/dev/null)
 TOPLEVEL_LANG  ?= verilog
-VERILOG_SOURCES = $(PWD)/smem.sv
+VERILOG_SOURCES = $(PWD)/smem.sv \
+                  $(PWD)/../mem/sram_1rw.sv
 TOPLEVEL        = smem
 
 # cocotb 2.0: use COCOTB_TEST_MODULES; the tb lives in ./tb/test_smem.py

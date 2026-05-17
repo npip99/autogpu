@@ -109,7 +109,9 @@ module fp8_encode (
     // e_unb in normal-path range is [-6, 8]. Add 7 (or 8 on mant overflow)
     // to get the e4m3 exp_field. We compute in a wide signed register and
     // narrow afterwards; saturation logic intercepts the overflow case.
+    /* verilator lint_off UNUSEDSIGNAL */
     logic signed [9:0] norm_exp_signed;
+    /* verilator lint_on UNUSEDSIGNAL */
     assign norm_exp_signed = e_unb + (m3_overflow_n ? 10'sd8 : 10'sd7);
     assign norm_exp_field = norm_exp_signed[3:0];
     assign norm_m3        = m3_overflow_n ? 3'd0 : m3_rnd[2:0];
@@ -151,12 +153,16 @@ module fp8_encode (
     // sticky-bits = sig24 & ((1 << (sh_sub - 1)) - 1)
     logic [4:0] sh_sub;
     // sh_sub = 14 - e_unb, valid in [21, 23] when e_unb in [-9, -7].
+    /* verilator lint_off UNUSEDSIGNAL */
     logic signed [9:0] sh_sub_signed;
+    /* verilator lint_on UNUSEDSIGNAL */
     assign sh_sub_signed = 10'sd14 - e_unb;
     assign sh_sub = sh_sub_signed[4:0];
     // sh_sub here is 21, 22, or 23.
 
+    /* verilator lint_off UNUSEDSIGNAL */
     logic [23:0] sig_shifted_sub;
+    /* verilator lint_on UNUSEDSIGNAL */
     logic        half_bit_s;
     logic        sticky_s;
     logic [23:0] half_mask_sub;

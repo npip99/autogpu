@@ -31,8 +31,9 @@ module fp8_decode (
     logic [2:0]  sub_mant;
     logic [4:0]  sub_lz;          // leading zeroes in sub_mant (0..3)
     logic [4:0]  sub_shift;       // amount to shift left to normalize
-    logic signed [9:0] sub_exp;   // unbiased exponent of the subnormal value
-    logic [2:0]  sub_mant_norm;   // mantissa after normalization
+    /* verilator lint_off UNUSEDSIGNAL */
+    logic [2:0]  sub_mant_norm;   // mantissa after normalization (low bits)
+    /* verilator lint_on UNUSEDSIGNAL */
 
     assign sign      = fp8[7];
     assign exp_field = fp8[6:3];
@@ -78,7 +79,11 @@ module fp8_decode (
     // shift, bits [1:0] are the fp32 mantissa fractional part (placed at
     // fp32_mant[22:21]); bit 2 is the implicit leading 1 (dropped).
     assign sub_shift = sub_lz;
+    // sub_shifted is sized 6 bits to absorb the dynamic shift cleanly;
+    // only the low 3 bits feed the fp32 mantissa.
+    /* verilator lint_off UNUSEDSIGNAL */
     logic [5:0] sub_shifted;
+    /* verilator lint_on UNUSEDSIGNAL */
     assign sub_shifted = {3'd0, sub_mant} << sub_shift;
     assign sub_mant_norm = sub_shifted[2:0];
 

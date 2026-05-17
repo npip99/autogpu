@@ -1,48 +1,54 @@
-// cmdproc_tb_top.sv — TB wrapper instantiating cmdproc + the full Phase 4
-// pipeline: mma + load + store + barrier + smem + tmem + gmem.
+// chip_top.sv — synthesizable top of the toy fp8-matmul GPU.
 //
-// The cocotb testbench pushes instructions via (push_en, push_instr), watches
-// the registered drives from cmdproc to each engine for the directed test,
-// and verifies the final gmem contents for the end-to-end matmul.
+// What's INSIDE the die (this file):
+//   cmdproc, smem (32 sram_1rw banks), tmem (flop array), mma (1024 fp32
+//   FMA cells), load, store, barrier, reset_seq.
 //
-// Wiring summary (mirrors pymodel/sim.py):
-//   cmdproc.init_*            -> barrier
-//   cmdproc.query_*           -> barrier (combinational), barrier.wait_done -> cmdproc
-//   cmdproc.mma_*             -> mma.start, operands
-//   cmdproc.load_*            -> load.issue port
-//   cmdproc.store_*           -> store.issue port
-//   load.{busy,done,accept}   -> cmdproc
-//   mma.{busy,done}           -> cmdproc
-//   store.{busy,done}         -> cmdproc
-//   load -> gmem (rd), smem (LOAD_WR), barrier (add_tx/sub_tx/arrive_a)
-//   mma  -> smem (MMA_RD_A/B), tmem (MMA_PORT), barrier (arrive_b)
-//   store -> tmem (STORE_RD), gmem (write)
-//   barrier observable state exposed as packed arrays.
+// What's OUTSIDE the die:
+//   gmem (off-chip DRAM model). chip_top exposes a simple memory-
+//   controller bus (mc_*) so an external DRAM behavioral model (or, in
+//   the future, an AXI4-Lite shim into a real DDR controller) can drive
+//   it. The mc_* port shape is identical to what LOAD and STORE drive
+//   today (1-beat read/write, 1-cycle round trip on the read path);
+//   making this synthesizable to pads is a port-rename in the FPGA / pad
+//   wrapper, not a protocol translation.
 //
-// Backdoor handles the TB uses:
-//   u_gmem.mem[..]  — preload A/B, dump C
-//   u_smem.mem[..]  — direct inspection if needed
-//   u_tmem.cells[..][..][..] — direct inspection if needed (per-cell banking: [i][j][slot])
+// SEE ALSO: top/tb/chip_tb_top.sv (instantiates chip_top + gmem for the
+// cocotb end-to-end tests) and top/README.md for the future AXI4-Lite
+// plan.
 
-module cmdproc_tb_top #(
+module chip_top #(
     parameter int MMA_M            = 32,
     parameter int MMA_N            = 32,
     parameter int MMA_K            = 32,
     parameter int TMEM_SLOTS       = 4,
     parameter int SMEM_BYTES       = 16384,
-    parameter int GMEM_BYTES       = 16777216,
     parameter int BEAT_BYTES       = 16,
     parameter int NUM_BARRIERS     = 8,
     parameter int INSTR_FIFO_DEPTH = 256
 ) (
     input  logic                          clk,
-    input  logic                          reset,
+    input  logic                          reset_in,            // external pin reset
 
-    // Instruction push (TB side).
-    input  logic                          push_en,
-    input  logic [255:0]                  push_instr,
+    // Instruction injection (FIFO push, matches cmdproc today).
+    input  logic                          instr_push_en,
+    input  logic [255:0]                  instr_push_data,
 
-    // Cmdproc-observable drives (so the directed test can sample them).
+    // Memory controller bus to off-chip DRAM.
+    output logic                          mc_wr_en,
+    output logic [31:0]                   mc_wr_addr,
+    output logic [BEAT_BYTES*8-1:0]       mc_wr_data,
+    output logic                          mc_rd_en,
+    output logic [31:0]                   mc_rd_addr,
+    input  logic [BEAT_BYTES*8-1:0]       mc_rd_data,
+    input  logic                          mc_rd_valid,
+
+    // Status / observability.
+    output logic                          chip_in_reset,
+    output logic                          sys_idle,
+    output logic                          scrub_done,
+
+    // Per-engine drive observability (used by cocotb directed tests).
     output logic                          init_en,
     output logic [31:0]                   init_bar_id,
     output logic [15:0]                   init_count,
@@ -67,7 +73,7 @@ module cmdproc_tb_top #(
     output logic [31:0]                   store_gmem_ptr,
     output logic                          store_dtype,
 
-    // Engine status (so the TB can wait on done pulses).
+    // Engine status pulses (for TB wait-on-done).
     output logic                          load_busy,
     output logic                          load_done,
     output logic                          load_accept,
@@ -75,35 +81,24 @@ module cmdproc_tb_top #(
     output logic                          mma_done,
     output logic                          store_busy,
     output logic                          store_done,
-
-    // Cmdproc-local idle (FIFO empty + state==IDLE).
     output logic                          idle,
 
-    // Aggregate idle: cmdproc idle AND all engines idle. Useful for the
-    // end-to-end test's wait condition.
-    output logic                          sys_idle,
-
-    // Barrier observable state.
+    // Barrier observable state (packed; per-barrier slices).
     output logic [NUM_BARRIERS*16-1:0]    bars_pending,
     output logic [NUM_BARRIERS*16-1:0]    bars_expected,
     output logic [NUM_BARRIERS*32-1:0]    bars_tx_pending,
-    output logic [NUM_BARRIERS-1:0]       bars_phase,
-
-    // reset_seq observable state (for TB wait_until_chip_ready).
-    output logic                          chip_in_reset,
-    output logic                          scrub_done
+    output logic [NUM_BARRIERS-1:0]       bars_phase
 );
 
     // ------------------------------------------------------------------
-    // Internal wires.
+    // Internal wires (cmdproc <-> engines <-> on-chip memories).
     // ------------------------------------------------------------------
-    // cmdproc -> barrier (INIT)
+    // cmdproc -> barrier
     logic                              cp_init_en;
     logic [31:0]                       cp_init_bar_id;
     logic [15:0]                       cp_init_count;
     logic [31:0]                       cp_query_bar_id;
     logic                              cp_query_phase;
-    // barrier -> cmdproc
     logic                              br_wait_done;
 
     // cmdproc -> MMA
@@ -127,15 +122,16 @@ module cmdproc_tb_top #(
     logic [31:0]                       cp_store_g;
     logic                              cp_store_dt;
 
-    // LOAD <-> gmem
+    // LOAD <-> off-chip MC (routed through chip pins).
     logic                              l_gmem_rd_en;
     logic [31:0]                       l_gmem_rd_addr;
-    logic [BEAT_BYTES*8-1:0]           g_rd_data;
-    logic                              g_rd_valid;
+    // gmem read response comes back via mc_rd_data / mc_rd_valid.
+
     // LOAD -> smem (LOAD_WR)
     logic                              l_smem_wr_en;
     logic [31:0]                       l_smem_wr_addr;
     logic [BEAT_BYTES*8-1:0]           l_smem_wr_data;
+
     // LOAD -> barrier
     logic                              l_add_tx_en;
     logic [31:0]                       l_add_tx_bar_id;
@@ -145,7 +141,7 @@ module cmdproc_tb_top #(
     logic [31:0]                       l_sub_tx_bytes;
     logic                              l_arrive_en;
     logic [31:0]                       l_arrive_bar_id;
-    // LOAD status
+
     logic                              l_busy, l_done, l_accept;
 
     // MMA <-> smem
@@ -157,21 +153,21 @@ module cmdproc_tb_top #(
     logic                              s_rd_a_valid;
     logic [MMA_N*8-1:0]                s_rd_b_data;
     logic                              s_rd_b_valid;
-
-    // smem combinational stall outputs (back-pressure for LOAD / MMA).
     logic                              s_load_wr_stall;
     logic                              s_rd_a_stall;
     logic                              s_rd_b_stall;
+
     // MMA <-> tmem
     logic [1:0]                        m_tmem_op;
     logic [31:0]                       m_tmem_slot;
     logic [MMA_M*MMA_N*32-1:0]         m_tmem_write;
     logic [MMA_M*MMA_N*32-1:0]         t_mma_rd_tile;
     logic                              t_mma_rd_valid;
+
     // MMA -> barrier
     logic                              m_arrive_en;
     logic [31:0]                       m_arrive_bar_id;
-    // MMA status
+
     logic                              m_busy, m_done;
 
     // STORE <-> tmem
@@ -179,56 +175,48 @@ module cmdproc_tb_top #(
     logic [31:0]                       st_rd_slot;
     logic [MMA_M*MMA_N*32-1:0]         t_store_rd_tile;
     logic                              t_store_rd_valid;
-    // STORE -> gmem
+
+    // STORE -> off-chip MC (write)
     logic                              st_wr_en;
     logic [31:0]                       st_wr_addr;
     logic [BEAT_BYTES*8-1:0]           st_wr_data;
-    // STORE status
     logic                              st_busy, st_done;
 
     // ------------------------------------------------------------------
     // reset_seq — power-on reset + on-chip memory scrubber.
-    //
-    // External `reset` is treated as a pin-level reset_in. The sequencer
-    // holds chip_in_reset high while it walks every SMEM bank-word index
-    // and parallel-clears TMEM, then releases the pipeline. Phase 7e
-    // replaces the old `initial` zero-init in smem.sv / tmem.sv with this
-    // mechanism for synthesis-readiness.
+    // External `reset_in` is the pin reset. The sequencer drives the
+    // SMEM/TMEM scrub ports and only deasserts `chip_in_reset` once
+    // every bank-word has been zeroed.
     // ------------------------------------------------------------------
-    localparam int SMEM_SCRUB_DEPTH = SMEM_BYTES / 32 / 4;  // per-bank word count
+    localparam int SMEM_SCRUB_DEPTH = SMEM_BYTES / 32 / 4;
     logic                                       smem_scrub_en;
     logic [$clog2(SMEM_SCRUB_DEPTH)-1:0]        smem_scrub_addr_narrow;
     logic [31:0]                                smem_scrub_addr;
     logic                                       tmem_scrub_en;
-    // chip_in_reset and scrub_done are top-level outputs (declared in the
-    // port list above) so testbenches can wait on them via
-    // common.tb_utils.wait_until_chip_ready.
 
     reset_seq #(
         .SCRUB_DEPTH(SMEM_SCRUB_DEPTH)
     ) u_reset_seq (
         .clk            (clk),
-        .reset_in       (reset),
+        .reset_in       (reset_in),
         .chip_in_reset  (chip_in_reset),
         .smem_scrub_en  (smem_scrub_en),
         .smem_scrub_addr(smem_scrub_addr_narrow),
         .tmem_scrub_en  (tmem_scrub_en),
         .scrub_done     (scrub_done)
     );
-    // Widen the per-bank word index to 32 bits for the smem port.
     assign smem_scrub_addr = {{(32 - $clog2(SMEM_SCRUB_DEPTH)){1'b0}}, smem_scrub_addr_narrow};
 
     // ------------------------------------------------------------------
     // cmdproc
     // ------------------------------------------------------------------
     cmdproc #(
-        .INSTR_FIFO_DEPTH(INSTR_FIFO_DEPTH),
-        .NUM_BARRIERS    (NUM_BARRIERS)
+        .INSTR_FIFO_DEPTH(INSTR_FIFO_DEPTH)
     ) u_cmdproc (
         .clk                 (clk),
         .reset               (chip_in_reset),
-        .push_en             (push_en),
-        .push_instr          (push_instr),
+        .push_en             (instr_push_en),
+        .push_instr          (instr_push_data),
 
         .load_busy           (l_busy),
         .load_done           (l_done),
@@ -305,11 +293,11 @@ module cmdproc_tb_top #(
     );
 
     // ------------------------------------------------------------------
-    // LOAD
+    // LOAD. Drives chip's mc_rd_* ports for off-chip reads; sinks the
+    // response on mc_rd_data / mc_rd_valid.
     // ------------------------------------------------------------------
     load #(
         .BEAT_BYTES      (BEAT_BYTES),
-        .NUM_BARRIERS    (NUM_BARRIERS),
         .INSTR_FIFO_DEPTH(INSTR_FIFO_DEPTH)
     ) u_load (
         .clk           (clk),
@@ -321,8 +309,8 @@ module cmdproc_tb_top #(
         .bar_id        (cp_load_bar),
         .gmem_rd_en    (l_gmem_rd_en),
         .gmem_rd_addr  (l_gmem_rd_addr),
-        .gmem_rd_data  (g_rd_data),
-        .gmem_rd_valid (g_rd_valid),
+        .gmem_rd_data  (mc_rd_data),
+        .gmem_rd_valid (mc_rd_valid),
         .smem_wr_en    (l_smem_wr_en),
         .smem_wr_addr  (l_smem_wr_addr),
         .smem_wr_data  (l_smem_wr_data),
@@ -340,8 +328,12 @@ module cmdproc_tb_top #(
         .accept        (l_accept)
     );
 
+    // Memory-controller read port: combinational pass-through from LOAD.
+    assign mc_rd_en   = l_gmem_rd_en;
+    assign mc_rd_addr = l_gmem_rd_addr;
+
     // ------------------------------------------------------------------
-    // STORE
+    // STORE. Drives chip's mc_wr_* ports for off-chip writes.
     // ------------------------------------------------------------------
     store #(
         .MMA_M(MMA_M),
@@ -365,27 +357,13 @@ module cmdproc_tb_top #(
         .done          (st_done)
     );
 
-    // ------------------------------------------------------------------
-    // GMEM. Two clients: LOAD (read), STORE (write). LOAD has the read port;
-    // STORE has the write port. (TB backdoors through u_gmem.mem.)
-    // ------------------------------------------------------------------
-    gmem #(
-        .GMEM_BYTES(GMEM_BYTES),
-        .BEAT_BYTES(BEAT_BYTES)
-    ) u_gmem (
-        .clk      (clk),
-        .reset    (reset),
-        .rd_en    (l_gmem_rd_en),
-        .rd_addr  (l_gmem_rd_addr),
-        .wr_en    (st_wr_en),
-        .wr_addr  (st_wr_addr),
-        .wr_data  (st_wr_data),
-        .rd_data  (g_rd_data),
-        .rd_valid (g_rd_valid)
-    );
+    // Memory-controller write port: combinational pass-through from STORE.
+    assign mc_wr_en   = st_wr_en;
+    assign mc_wr_addr = st_wr_addr;
+    assign mc_wr_data = st_wr_data;
 
     // ------------------------------------------------------------------
-    // SMEM. Three clients: LOAD (write), MMA (two read ports).
+    // SMEM (32 banks of sram_1rw).
     // ------------------------------------------------------------------
     smem #(
         .SMEM_BYTES(SMEM_BYTES),
@@ -414,7 +392,7 @@ module cmdproc_tb_top #(
     );
 
     // ------------------------------------------------------------------
-    // TMEM. MMA drives MMA_PORT; STORE drives STORE_RD.
+    // TMEM (per-cell flop array).
     // ------------------------------------------------------------------
     tmem #(
         .TMEM_SLOTS(TMEM_SLOTS),
@@ -436,8 +414,7 @@ module cmdproc_tb_top #(
     );
 
     // ------------------------------------------------------------------
-    // Barrier. INIT from cmdproc; arrive_a = LOAD, arrive_b = MMA;
-    // add_tx/sub_tx = LOAD; wait_query from cmdproc.
+    // Barrier.
     // ------------------------------------------------------------------
     barrier #(
         .NUM_BARRIERS(NUM_BARRIERS)
@@ -467,7 +444,7 @@ module cmdproc_tb_top #(
     );
 
     // ------------------------------------------------------------------
-    // Surface internal signals as outputs.
+    // Observability passthroughs.
     // ------------------------------------------------------------------
     assign init_en              = cp_init_en;
     assign init_bar_id          = cp_init_bar_id;

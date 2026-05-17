@@ -49,9 +49,19 @@ Both require the venv to be activated. Cocotb's `Makefile.sim` invokes `cocotb-c
 source .venv/bin/activate          # activate ONCE per shell session
 pytest                             # all pymodel tests
 cd <sub> && make                   # one RTL module's cocotb tests
+cd top  && make                    # chip-level end-to-end suite (6 tests)
+cd top  && make lint               # synthesizability gate (zero-warning lint)
 ```
 
 If you skip activation, you'll get `cocotb-config: command not found` or `ModuleNotFoundError: No module named 'cocotb_tools'` (system Python 3.14 picked up instead of the venv's 3.12).
+
+### Chip boundary (Phase 7f)
+
+Phase 7f drew the die boundary. The synthesizable top of the chip is `top/chip_top.sv`; the cocotb testbench wrapper that drops it onto a behavioral DRAM (`gmem`) is `top/tb/chip_tb_top.sv`. The 6 end-to-end tests previously in `cmdproc/tb/test_cmdproc.py` now live in `top/tb/test_chip_top.py`. The old `cmdproc/cmdproc_tb_top.sv` and `cmdproc/Makefile` are deleted.
+
+See `top/README.md` for the chip-boundary diagram, the `mc_*` memory-controller port contract, and the future AXI4-Lite shim plan. The synthesizability gate is `cd top && make lint` — zero `-Wno-*` flags on project RTL.
+
+SMEM banks are now `sram_1rw` instances (`mem/sram_1rw.sv`). In Phase 7g, `tech/<process>/sram_1rw.sv` will replace this with the vendor SRAM macro at synth time.
 
 ### RTL conventions discovered during Phase 4 agent runs
 

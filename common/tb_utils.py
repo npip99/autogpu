@@ -57,6 +57,27 @@ async def wait_until_chip_ready(dut, max_cycles: int = 1000) -> int:
     )
 
 
+def smem_backdoor_write_word(smem, bank: int, word: int, value: int) -> None:
+    """Backdoor-write a 32-bit word into SMEM bank `bank` at per-bank index
+    `word`. As of Phase 7f, SMEM banks live inside `sram_1rw` instances
+    instantiated via a generate-for loop. We update BOTH the operational
+    storage (gen_banks[b].u_sram.mem[word]) and the parallel `bank_mem`
+    shadow exposed for backdoor reads.
+
+    `smem` is the SMEM instance handle (e.g. dut.u_smem).
+    """
+    smem.gen_banks[bank].u_sram.mem[word].value = value & 0xFFFFFFFF
+    smem.bank_mem[bank][word].value = value & 0xFFFFFFFF
+
+
+def smem_backdoor_read_word(smem, bank: int, word: int) -> int:
+    """Backdoor-read the current value of bank[bank][word]. Reads the
+    shadow (which mirrors every committed write). The shadow is read-only
+    from a synth perspective; here we use it as the cocotb-friendly
+    observation point."""
+    return int(smem.bank_mem[bank][word].value)
+
+
 async def step_and_compare(dut, pymodel, inputs: dict, outputs: list) -> None:
     """One simulation cycle: drive inputs, advance clock, compare outputs to pymodel.
 

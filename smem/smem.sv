@@ -4,85 +4,87 @@
 // Each bank is one 4-byte (32-bit) dword wide. The dword-index decode is
 // plain round-robin: `bank_of(addr) = (addr / 4) % 32 = addr[6:2]`.
 //
+// As of Phase 7f, each bank is a `sram_1rw` instance (process-portable
+// behavioral 1RW SRAM). Real silicon will substitute a vendor SRAM macro
+// via `tech/<process>/sram_1rw.sv`. The wrapper here owns the per-port
+// arbitration, the same-cycle write-forwarding mux on the drain path, and
+// the address decode.
+//
 //   wr  addr     -> 4 consecutive banks  (BEAT_BYTES = 16, 4 dwords)
 //   rd_a addr    -> 8 consecutive banks  (MMA_M     = 32, 8 dwords)
 //   rd_b addr    -> 8 consecutive banks  (MMA_N     = 32, 8 dwords)
 //
-// Per-port "active bank mask" is the set of banks each port wants this cycle.
-// Because LOAD_WR is BEAT_BYTES-aligned, MMA_RD_A is MMA_M-aligned, and
-// MMA_RD_B is MMA_N-aligned, each port's bank mask is a contiguous run of
-// banks starting at a power-of-two-aligned base.
-//
 // CONFLICT and STALL PROTOCOL
 // ===========================
-//   For each of the 32 banks, count how many ports want it (1RW SRAMs:
-//   max 1 access/cycle/bank). If any bank has >1 requester this cycle, a
-//   conflict exists.
+//   Priority (fixed): LOAD_WR > MMA_RD_A > MMA_RD_B. Lower-priority losers
+//   STALL: their request is not honored this cycle and they must re-issue
+//   next. Bank overlap is detected via the aligned-address trick — two
+//   ports' bank ranges overlap iff their 8-bank-group indices `addr[6:5]`
+//   agree (LOAD_WR sits within one group; RD_A/RD_B each occupy a group).
 //
-//   PRIORITY (fixed): LOAD_WR > MMA_RD_A > MMA_RD_B. Lower-priority losers
-//   STALL (request not honored this cycle, consumer must re-issue next).
-//
-//     load_wr_stall_out   = 1'b0                           // top priority
-//     mma_rd_a_stall_out  = rd_a_en && wr_en
-//                           && (rd_a_addr[6:5] == wr_addr[6:5])
+//     load_wr_stall_out   = 1'b0
+//     mma_rd_a_stall_out  = rd_a_en && wr_en && (group(rd_a_addr) == group(wr_addr))
 //     mma_rd_b_stall_out  = rd_b_en && (
-//                              (wr_en   && rd_b_addr[6:5] == wr_addr[6:5])
-//                           || (rd_a_en && rd_b_addr[6:5] == rd_a_addr[6:5])
+//                              (wr_en   && group(rd_b_addr) == group(wr_addr))
+//                           || (rd_a_en && group(rd_b_addr) == group(rd_a_addr))
 //                         )
 //
-//   The "[6:5]" trick exploits alignment: with our aligned ports, two ports'
-//   bank ranges overlap iff their bank-group indices `addr[6:5]` agree.
-//   - LOAD_WR (16B aligned) occupies 4 banks within ONE 8-bank group
-//     (group = wr_addr[6:5]).
-//   - MMA_RD_A / MMA_RD_B (32B aligned) each occupy ONE entire 8-bank group.
-//   So conflict ⇔ matching group index.
-//
 //   Stall outputs are COMBINATIONAL on the cycle's inputs. Consumers
-//   sample stall the cycle the memory module sees the request, then choose
-//   not to advance internal counters on a stall. (See load.sv / mma.sv.)
+//   sample stall the cycle the memory module sees the request, then
+//   choose not to advance internal counters on a stall.
 //
-// COMMIT RULES under stall
-// ========================
-//   * LOAD_WR: never stalls; if wr_en=1, write commits.
-//   * MMA_RD_A: if stalled, the pending-read slot is NOT updated (consumer
-//     keeps the request asserted next cycle and we'll capture it then).
-//   * MMA_RD_B: same.
+// BANK PORT PROTOCOL (sram_1rw constraint: at most ONE access per cycle)
+// =====================================================================
+//   For each bank b, at most one of the three port classes may drive it
+//   on any given cycle. The stall logic above guarantees this. Per cycle:
+//     - if scrub_en  : en=1, we=1, wdata=0, addr=scrub_addr.
+//     - else if wr_en in bank's range : en=1, we=1, write the dword.
+//     - else if rd_a_en captured for bank : en=1, we=0, addr=rd_a word.
+//     - else if rd_b_en captured for bank : en=1, we=0, addr=rd_b word.
+//     - else: en=0.
+//   Bank rdata is registered (1-cycle latency, native sram_1rw behavior).
 //
-// PORT PARITY with pymodel
-// ========================
-//   Ports / names / packing match pymodel.smem.SMEM exactly (so
-//   common.tb_utils.step_and_compare with string-keyed inputs/outputs works).
-//   Byte packing: byte k lives in bits [k*8 +: 8] (little-endian within a
-//   beat / read window).
+// READ PATH — TWO-EDGE LATENCY (UNCHANGED FROM PRE-7f)
+// =====================================================
+//   Edge T  : rd_a_en sampled. Drive bank's en=1, we=0, addr=word.
+//             Capture rd_a_pending_addr (used by the drain forwarding mux).
+//             Bank flops rdata <= mem[word]; visible after edge T.
+//   Edge T+1: drain combinationally gathers all 8 banks' rdata into
+//             `rd_a_beat`, applies byte-level forwarding from current-cycle
+//             wr_data if overlap, then `rd_a_data <= rd_a_beat`. Visible
+//             after edge T+1.
+//   Total latency: 2 edges, matching the pre-refactor behavior. The
+//   pymodel `pymodel/smem.py` describes the same observable contract.
 //
-// STORAGE
-// =======
-//   32 separate `logic [31:0] bank_mem[NUM_WORDS_PER_BANK]` arrays.
-//   NUM_WORDS_PER_BANK = SMEM_BYTES / 32 / 4.
-//   Word index within a bank = `addr[CLOG2_SMEM-1:7]`.
-//   Per-bank: at most one read OR one write per cycle (1RW). Conflict
-//   detection ensures we never schedule more than one.
+// WRITE FORWARDING (drain path)
+// =============================
+//   Per spec: LOAD_WR commits BEFORE the drain of a previously-captured
+//   pending MMA_RD_*. Implemented as a byte-by-byte forwarding mux on the
+//   drain path. For each byte position, choose the wr_data byte if the
+//   address sits inside [wr_addr, wr_addr+BEAT_BYTES); else read from the
+//   bank's rdata. Real SRAM macros do not forward, so this mux is wrapper
+//   logic — sram_1rw itself does not implement forwarding.
 //
-//   A backdoor `mem[]` byte view (read-only, combinationally derived from
-//   `bank_mem[][]`) is exposed for hierarchical access from cocotb TBs.
-//   Backdoor TB WRITES must address `bank_mem[bank][word]` directly.
+// BACKDOOR (cocotb)
+// =================
+//   Per-bank storage lives inside `gen_banks[b].u_sram.mem[w]` (the
+//   sram_1rw instance). A read-only `mem[]` byte view is exposed at the
+//   smem.sv level for cocotb hierarchical reads
+//   (dut.u_smem.mem[byte_idx].value). The view samples bank rdata via
+//   $past-style mirroring is not synthesizable; instead the wrapper
+//   maintains a parallel `bank_mem[NUM_BANKS][NUM_WORDS_PER_BANK]`
+//   shadow that tracks every write into the SRAMs. This shadow is for
+//   sim-time observability only and is `verilator public`.
 //
-// RESET
-// =====
-//   Dominant. Clears pending state and registered outputs; bank contents
-//   preserved (matches gmem.sv / tmem.sv semantics). The post-power-on
-//   zeroing of bank contents is now performed by the SCRUB PORT below
-//   (driven by reset_seq), not by an `initial begin` block.
-//
-// SCRUB PORT
-// ==========
-//   Driven by reset_seq during the post-power-on scrub window. Replaces
-//   the simulation-only `initial begin` zero-init. When scrub_en=1, ALL
-//   32 banks are written to 0 at scrub_addr (the per-bank word index).
-//
-//   scrub_en is mutually exclusive with wr_en / rd_a_en / rd_b_en —
-//   chip_in_reset gates those off upstream, so the precondition holds
-//   without internal arbitration.
+// RESET / SCRUB
+// =============
+//   reset is dominant: clears pending state + registered outputs. Bank
+//   contents preserved (matches gmem.sv / tmem.sv semantics). The
+//   post-power-on zeroing of bank contents is performed by the SCRUB
+//   PORT (driven by reset_seq) — when scrub_en=1, ALL 32 banks are
+//   written to 0 at scrub_addr (the per-bank word index). scrub_en is
+//   mutually exclusive with wr_en / rd_a_en / rd_b_en (chip_in_reset
+//   gates those off upstream).
 
 module smem #(
     parameter int SMEM_BYTES = 16384,
@@ -106,9 +108,13 @@ module smem #(
     input  logic                          rd_b_en,
     input  logic [31:0]                   rd_b_addr,
 
-    // SCRUB (reset-only; driven by reset_seq)
+    // SCRUB (reset-only; driven by reset_seq). The wire is sized for
+    // parameter-uniformity at chip_top; internally we use only the low
+    // WORD_BITS bits to index into a bank.
     input  logic                          scrub_en,
-    input  logic [31:0]                   scrub_addr,  // per-bank word index
+    /* verilator lint_off UNUSEDSIGNAL */
+    input  logic [31:0]                   scrub_addr,
+    /* verilator lint_on UNUSEDSIGNAL */
 
     // Outputs (registered)
     output logic [MMA_M*8-1:0]            rd_a_data,
@@ -128,67 +134,29 @@ module smem #(
     localparam int NUM_BANKS          = 32;
     localparam int BYTES_PER_DWORD    = 4;
     localparam int NUM_WORDS_PER_BANK = SMEM_BYTES / NUM_BANKS / BYTES_PER_DWORD;
-    localparam int BANK_BITS          = 5;  // log2(NUM_BANKS) = 5
-    // Width of the word-in-bank index.
+    localparam int BANK_BITS          = 5;
     localparam int WORD_BITS          = $clog2(NUM_WORDS_PER_BANK);
 
-    // Number of dwords per port operation.
     localparam int WR_DWORDS          = BEAT_BYTES / 4;   // 4
     localparam int RDA_DWORDS         = MMA_M      / 4;   // 8
     localparam int RDB_DWORDS         = MMA_N      / 4;   // 8
 
     // ------------------------------------------------------------------
-    // 32 banks of NUM_WORDS_PER_BANK 32-bit words each.
+    // Bank decode helpers. Functions take a full 32-bit address but use
+    // only a slice; the unused bits are not a bug.
     // ------------------------------------------------------------------
-    logic [31:0] bank_mem [NUM_BANKS][NUM_WORDS_PER_BANK];
-
-    // NOTE: bank_mem is no longer zero-initialized at sim startup. The
-    // reset_seq module is responsible for scrubbing all banks via the
-    // SCRUB PORT (scrub_en + scrub_addr) before chip_in_reset deasserts.
-    // This mirrors real silicon: FFs / SRAMs power up to indeterminate
-    // values, and the reset sequencer must walk them to a known state.
-
-    // ------------------------------------------------------------------
-    // Backdoor byte view: read-only combinational alias of bank_mem.
-    // Provided for cocotb hierarchical reads (dut.u_smem.mem[byte_idx].value).
-    // Writes through this alias are NOT supported — TBs that need to
-    // back-door a tile into smem must write to dut.u_smem.bank_mem[b][w].
-    // ------------------------------------------------------------------
-    logic [7:0] mem [SMEM_BYTES];
-    always_comb begin
-        for (int i = 0; i < SMEM_BYTES; i++) begin
-            // byte i lives at:
-            //   bank        = (i / 4) % 32  = i[6:2]
-            //   word        = i / 128       = i[13:7]   (for SMEM_BYTES=16384)
-            //   byte_in_dw  = i % 4          = i[1:0]
-            mem[i] = bank_mem
-                [(i >> 2) & (NUM_BANKS-1)]
-                [(i >> (2 + BANK_BITS))]
-                [(i & 3) * 8 +: 8];
-        end
-    end
-
-    // ------------------------------------------------------------------
-    // Bank decode helpers.
-    //
-    // bank_of(addr) = addr[6:2]. With our alignment guarantees, a port's
-    // requested bank set is exactly the run of `N` banks starting at the
-    // port's base bank — which is also expressible as the 8-bank group
-    // `addr[6:5]` (when N==8) or sits entirely within one 8-bank group
-    // (when N==4 i.e. LOAD_WR).
-    // ------------------------------------------------------------------
+    /* verilator lint_off UNUSEDSIGNAL */
     function automatic logic [BANK_BITS-1:0] bank_of(input logic [31:0] addr);
         return addr[6:2];
     endfunction
 
-    // 8-bank-group index of an aligned address.
     function automatic logic [1:0] group_of(input logic [31:0] addr);
         return addr[6:5];
     endfunction
+    /* verilator lint_on UNUSEDSIGNAL */
 
     // ------------------------------------------------------------------
     // Combinational conflict / stall logic.
-    //
     // Priority: LOAD_WR (top) > MMA_RD_A > MMA_RD_B.
     // ------------------------------------------------------------------
     logic wr_rd_a_conflict;
@@ -205,9 +173,171 @@ module smem #(
         mma_rd_b_stall_out = wr_rd_b_conflict || rd_a_rd_b_conflict;
     end
 
+    // Effective per-port "accepted this cycle" gating.
+    logic rd_a_accept;
+    logic rd_b_accept;
+    assign rd_a_accept = rd_a_en && !mma_rd_a_stall_out;
+    assign rd_b_accept = rd_b_en && !mma_rd_b_stall_out;
+
     // ------------------------------------------------------------------
-    // Pending-read state for the registered 1-cycle read latency. We
-    // capture a new pending read iff (rd_*_en && !stall).
+    // Per-bank port drives. For each bank b, compute (en, we, addr, wdata)
+    // based on which port (if any) is targeting that bank this cycle.
+    //
+    // Bank coverage (precomputed combinationally):
+    //   - LOAD_WR covers 4 consecutive banks starting at bank_of(wr_addr).
+    //     Equivalently: bank b is covered iff bank_of(wr_addr) <= b <
+    //     bank_of(wr_addr) + 4. With BEAT_BYTES=16 alignment we know this
+    //     fits within a single 8-bank group.
+    //   - RD_A covers 8 consecutive banks starting at bank_of(rd_a_addr) =
+    //     {group_of(rd_a_addr), 3'b000}. Equivalently, the entire 8-bank
+    //     group whose index equals group_of(rd_a_addr).
+    //   - RD_B: same as RD_A.
+    //
+    // The per-bank word index within the bank is `addr[2+BANK_BITS +:
+    // WORD_BITS]` (the dword-index above the bank-id bits).
+    // ------------------------------------------------------------------
+    // Bank-driver signals.
+    logic                       bank_en   [NUM_BANKS];
+    logic                       bank_we   [NUM_BANKS];
+    logic [WORD_BITS-1:0]       bank_addr [NUM_BANKS];
+    logic [31:0]                bank_wdata[NUM_BANKS];
+    logic [31:0]                bank_rdata[NUM_BANKS];
+
+    // Per-bank arbitration. SCRUB > LOAD_WR > RD_A > RD_B. The stall logic
+    // above guarantees only one port "covers" any given bank on a cycle
+    // (other than during a stall cycle, which we resolve here by simply
+    // honoring the higher-priority requester).
+    always_comb begin
+        automatic logic [31:0]          dword_addr;
+        automatic logic [BANK_BITS-1:0] b_idx;
+        automatic logic [WORD_BITS-1:0] w_idx;
+
+        for (int b = 0; b < NUM_BANKS; b++) begin
+            bank_en[b]    = 1'b0;
+            bank_we[b]    = 1'b0;
+            bank_addr[b]  = '0;
+            bank_wdata[b] = '0;
+        end
+
+        if (scrub_en) begin
+            for (int b = 0; b < NUM_BANKS; b++) begin
+                bank_en[b]    = 1'b1;
+                bank_we[b]    = 1'b1;
+                bank_addr[b]  = scrub_addr[WORD_BITS-1:0];
+                bank_wdata[b] = 32'd0;
+            end
+        end else begin
+            // LOAD_WR: 4 dwords, one per consecutive bank.
+            if (wr_en) begin
+                for (int d = 0; d < WR_DWORDS; d++) begin
+                    dword_addr   = wr_addr + 32'(d * 4);
+                    b_idx        = bank_of(dword_addr);
+                    w_idx        = dword_addr[2 + BANK_BITS +: WORD_BITS];
+                    bank_en[b_idx]    = 1'b1;
+                    bank_we[b_idx]    = 1'b1;
+                    bank_addr[b_idx]  = w_idx;
+                    bank_wdata[b_idx] = wr_data[d*32 +: 32];
+                end
+            end
+
+            // RD_A (only on banks not claimed by LOAD_WR above; the stall
+            // logic ensures no overlap when rd_a_accept is true).
+            if (rd_a_accept) begin
+                for (int d = 0; d < RDA_DWORDS; d++) begin
+                    dword_addr = rd_a_addr + 32'(d * 4);
+                    b_idx      = bank_of(dword_addr);
+                    w_idx      = dword_addr[2 + BANK_BITS +: WORD_BITS];
+                    if (!bank_en[b_idx]) begin
+                        bank_en[b_idx]   = 1'b1;
+                        bank_we[b_idx]   = 1'b0;
+                        bank_addr[b_idx] = w_idx;
+                    end
+                end
+            end
+
+            // RD_B (lowest priority).
+            if (rd_b_accept) begin
+                for (int d = 0; d < RDB_DWORDS; d++) begin
+                    dword_addr = rd_b_addr + 32'(d * 4);
+                    b_idx      = bank_of(dword_addr);
+                    w_idx      = dword_addr[2 + BANK_BITS +: WORD_BITS];
+                    if (!bank_en[b_idx]) begin
+                        bank_en[b_idx]   = 1'b1;
+                        bank_we[b_idx]   = 1'b0;
+                        bank_addr[b_idx] = w_idx;
+                    end
+                end
+            end
+        end
+    end
+
+    // ------------------------------------------------------------------
+    // 32 sram_1rw instances. In Phase 7g, tech/<process>/sram_1rw.sv
+    // replaces this with the vendor SRAM macro.
+    // ------------------------------------------------------------------
+    genvar gb;
+    generate
+        for (gb = 0; gb < NUM_BANKS; gb++) begin : gen_banks
+            sram_1rw #(
+                .WORDS(NUM_WORDS_PER_BANK),
+                .W    (32)
+            ) u_sram (
+                .clk   (clk),
+                .en    (bank_en[gb]),
+                .we    (bank_we[gb]),
+                .addr  (bank_addr[gb]),
+                .wdata (bank_wdata[gb]),
+                .rdata (bank_rdata[gb])
+            );
+        end
+    endgenerate
+
+    // ------------------------------------------------------------------
+    // Sim-only shadow `bank_mem[NUM_BANKS][NUM_WORDS_PER_BANK]` used for
+    // cocotb backdoor reads/writes. Mirrors every cycle's commit:
+    //   - SCRUB cycles: zero scrub_addr word in every bank.
+    //   - LOAD_WR cycles: write the four affected (bank, word) cells.
+    // The drain path does NOT read from this shadow — it reads from the
+    // real sram_1rw rdata outputs.
+    //
+    // For cocotb backdoor writes from a TB, write to bank_mem[b][w]
+    // directly AND also to gen_banks[b].u_sram.mem[w] (a helper does
+    // both). The shadow is needed because Verilator + cocotb access
+    // through generate blocks is fiddly and the mma/smem testbenches
+    // already rely on the bank_mem[b][w] handle.
+    // ------------------------------------------------------------------
+    /* verilator public_module */
+    logic [31:0] bank_mem [NUM_BANKS][NUM_WORDS_PER_BANK] /* verilator public */;
+
+    always_ff @(posedge clk) begin
+        for (int b = 0; b < NUM_BANKS; b++) begin
+            if (bank_en[b] && bank_we[b]) begin
+                bank_mem[b][bank_addr[b]] <= bank_wdata[b];
+            end
+        end
+    end
+
+    // Backdoor byte view: read-only combinational alias of bank_mem.
+    // Used by cocotb hierarchical reads (dut.u_smem.mem[byte_idx].value);
+    // has no synthesizable readers, so the UNUSEDSIGNAL lint is suppressed.
+    /* verilator lint_off UNUSEDSIGNAL */
+    logic [7:0] mem [SMEM_BYTES];
+    /* verilator lint_on UNUSEDSIGNAL */
+    always_comb begin
+        for (int i = 0; i < SMEM_BYTES; i++) begin
+            mem[i] = bank_mem
+                [(i >> 2) & (NUM_BANKS-1)]
+                [(i >> (2 + BANK_BITS))]
+                [(i & 3) * 8 +: 8];
+        end
+    end
+
+    // ------------------------------------------------------------------
+    // Pending-read state. We need the captured ADDRESSES (not just the
+    // bank rdata) for two reasons:
+    //   1. Drain-time byte-level forwarding mux compares pending_addr+i
+    //      against the current cycle's [wr_addr, wr_addr+BEAT_BYTES).
+    //   2. Determining which 8 banks' rdata to assemble into the result.
     // ------------------------------------------------------------------
     logic        rd_a_pending_valid;
     logic [31:0] rd_a_pending_addr;
@@ -215,25 +345,15 @@ module smem #(
     logic [31:0] rd_b_pending_addr;
 
     // ------------------------------------------------------------------
-    // Per-port read drain with per-byte write-forwarding.
-    //
-    // Per spec (matches pymodel commit phase): LOAD_WR commits BEFORE the
-    // drain of a previously-captured pending MMA_RD_*. So a pending read
-    // whose bytes overlap a same-cycle LOAD_WR returns the NEW data. We
-    // implement this as a byte-by-byte forwarding mux on the drain path:
-    // for each byte position, choose the wr_data byte if the address sits
-    // inside [wr_addr, wr_addr+BEAT_BYTES); else read from bank_mem.
-    //
-    // (Bank conflicts can't simultaneously stall RD_A *and* deliver a
-    // drained read of the same byte being written — the pending read was
-    // captured a cycle ago when there was no conflict. This forwarding is
-    // for the legal write-then-drain case only.)
+    // Drain — combinational gather from bank rdata + byte forwarding from
+    // current-cycle wr_data. The pending read was captured one cycle ago
+    // (at edge T) and the bank rdata flopped at edge T; we are now between
+    // edge T and edge T+1, building the beat for the registered output.
     // ------------------------------------------------------------------
-    function automatic logic [7:0] read_byte_at(input logic [31:0] addr);
-        return bank_mem
-            [(addr >> 2) & (NUM_BANKS-1)]
-            [(addr >> (2 + BANK_BITS))]
-            [(addr & 3) * 8 +: 8];
+    function automatic logic [7:0] read_byte_from_banks(input logic [31:0] addr);
+        logic [BANK_BITS-1:0] b_idx;
+        b_idx = bank_of(addr);
+        return bank_rdata[b_idx][(addr & 32'd3) * 8 +: 8];
     endfunction
 
     logic [MMA_M*8-1:0] rd_a_beat;
@@ -242,12 +362,12 @@ module smem #(
         logic        fwd;
         rd_a_beat = '0;
         for (int i = 0; i < MMA_M; i++) begin
-            rb  = rd_a_pending_addr + i;
-            fwd = wr_en && (rb >= wr_addr) && (rb < wr_addr + BEAT_BYTES);
+            rb  = rd_a_pending_addr + 32'(i);
+            fwd = wr_en && (rb >= wr_addr) && (rb < wr_addr + 32'(BEAT_BYTES));
             if (fwd) begin
                 rd_a_beat[i*8 +: 8] = wr_data[(rb - wr_addr)*8 +: 8];
             end else begin
-                rd_a_beat[i*8 +: 8] = read_byte_at(rb);
+                rd_a_beat[i*8 +: 8] = read_byte_from_banks(rb);
             end
         end
     end
@@ -258,39 +378,25 @@ module smem #(
         logic        fwd;
         rd_b_beat = '0;
         for (int i = 0; i < MMA_N; i++) begin
-            rb  = rd_b_pending_addr + i;
-            fwd = wr_en && (rb >= wr_addr) && (rb < wr_addr + BEAT_BYTES);
+            rb  = rd_b_pending_addr + 32'(i);
+            fwd = wr_en && (rb >= wr_addr) && (rb < wr_addr + 32'(BEAT_BYTES));
             if (fwd) begin
                 rd_b_beat[i*8 +: 8] = wr_data[(rb - wr_addr)*8 +: 8];
             end else begin
-                rd_b_beat[i*8 +: 8] = read_byte_at(rb);
+                rd_b_beat[i*8 +: 8] = read_byte_from_banks(rb);
             end
         end
     end
 
     // ------------------------------------------------------------------
-    // Sequential commit.
-    //
-    // 1. LOAD_WR commits unconditionally (never stalls). Per-dword write
-    //    into the matching banks.
-    // 2. Drain previous-cycle pending MMA_RD_A: produce rd_a_data/valid.
-    // 3. Drain previous-cycle pending MMA_RD_B similarly.
-    // 4. Capture new pending reads, gated on !stall.
+    // Sequential commit:
+    //   - Capture new pending reads (gated by !stall).
+    //   - Drain previous-cycle pending reads into registered outputs.
+    // The bank's own rdata flop is the "drain capture"; this `always_ff`
+    // only handles the wrapper-level pending tracking and the output
+    // registers.
     // ------------------------------------------------------------------
     always_ff @(posedge clk) begin
-        // SCRUB PORT — independent of reset. reset_seq drives scrub_en
-        // during the post-power-on scrub window (while chip_in_reset is
-        // high). Writes ALL 32 banks at scrub_addr in parallel to 0.
-        // This is the synthesizable replacement for the old `initial`
-        // zero-init. scrub_en is mutually exclusive with wr_en (upstream
-        // is held in reset), so there's no conflict with the LOAD_WR
-        // commit below.
-        if (scrub_en) begin
-            for (int b = 0; b < NUM_BANKS; b++) begin
-                bank_mem[b][scrub_addr[WORD_BITS-1:0]] <= 32'd0;
-            end
-        end
-
         if (reset) begin
             rd_a_pending_valid <= 1'b0;
             rd_a_pending_addr  <= 32'd0;
@@ -301,17 +407,8 @@ module smem #(
             rd_b_data          <= '0;
             rd_b_valid         <= 1'b0;
         end else begin
-            // 1. Commit write (one dword per active bank).
-            if (wr_en) begin
-                for (int d = 0; d < WR_DWORDS; d++) begin
-                    automatic logic [31:0] dword_addr = wr_addr + d * 4;
-                    automatic logic [BANK_BITS-1:0] b   = bank_of(dword_addr);
-                    automatic logic [WORD_BITS-1:0] w   = dword_addr[2 + BANK_BITS +: WORD_BITS];
-                    bank_mem[b][w] <= wr_data[d*32 +: 32];
-                end
-            end
-
-            // 2. Drain MMA_RD_A.
+            // Drain (current cycle's bank rdata is ready since the bank
+            // was issued a read last cycle).
             if (rd_a_pending_valid) begin
                 rd_a_data  <= rd_a_beat;
                 rd_a_valid <= 1'b1;
@@ -320,7 +417,6 @@ module smem #(
                 rd_a_valid <= 1'b0;
             end
 
-            // 3. Drain MMA_RD_B.
             if (rd_b_pending_valid) begin
                 rd_b_data  <= rd_b_beat;
                 rd_b_valid <= 1'b1;
@@ -329,15 +425,15 @@ module smem #(
                 rd_b_valid <= 1'b0;
             end
 
-            // 4. Capture new pending reads (only if not stalled).
-            if (rd_a_en && !mma_rd_a_stall_out) begin
+            // Capture new pending reads (matches accepted-by-bank cycle).
+            if (rd_a_accept) begin
                 rd_a_pending_valid <= 1'b1;
                 rd_a_pending_addr  <= rd_a_addr;
             end else begin
                 rd_a_pending_valid <= 1'b0;
             end
 
-            if (rd_b_en && !mma_rd_b_stall_out) begin
+            if (rd_b_accept) begin
                 rd_b_pending_valid <= 1'b1;
                 rd_b_pending_addr  <= rd_b_addr;
             end else begin

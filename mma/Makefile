@@ -22,6 +22,7 @@ BUILD_ARGS     += OBJCACHE=$(shell command -v ccache 2>/dev/null)
 TOPLEVEL_LANG  ?= verilog
 VERILOG_SOURCES = $(PWD)/mma.sv $(PWD)/mma_tb_top.sv \
                   $(PWD)/../smem/smem.sv \
+                  $(PWD)/../mem/sram_1rw.sv \
                   $(PWD)/../tmem/tmem.sv \
                   $(PWD)/../barrier/barrier.sv \
                   $(PWD)/../common/fpnew/cf_math_pkg.sv \

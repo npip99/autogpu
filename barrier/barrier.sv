@@ -54,8 +54,11 @@ module barrier #(
     input  logic [31:0]                sub_tx_bar_id,
     input  logic [31:0]                sub_tx_bytes,
 
-    // Combinational WAIT_QUERY
+    // Combinational WAIT_QUERY. query_bar_id is 32-bit on the wire for
+    // uniformity; only the low log2(NUM_BARRIERS) bits index the array.
+    /* verilator lint_off UNUSEDSIGNAL */
     input  logic [31:0]                query_bar_id,
+    /* verilator lint_on UNUSEDSIGNAL */
     input  logic                       query_expected_phase,
     output logic                       wait_done,
 

@@ -72,19 +72,20 @@ async def _drive_defaults(dut) -> None:
     dut.tmem_store_rd_slot.value = 0
 
 
+def _backdoor_smem_word(dut, bank: int, word: int, value: int) -> None:
+    """Write a 32-bit word into both the sram_1rw operational storage and
+    the parallel `bank_mem` shadow (used by backdoor reads). As of Phase
+    7f the SMEM banks live inside generate-instantiated sram_1rw blocks.
+    """
+    dut.u_smem.gen_banks[bank].u_sram.mem[word].value = value & 0xFFFFFFFF
+    dut.u_smem.bank_mem[bank][word].value = value & 0xFFFFFFFF
+
+
 def _seed_smem(dut, offset: int, data: bytes) -> None:
     """Back-door write `data` into the SMEM banked storage starting at `offset`.
-
-    The banked smem (32 banks × NUM_WORDS_PER_BANK × 4 bytes) exposes its
-    byte array `mem[]` as a read-only combinational alias of the banks,
-    so we have to write directly into `bank_mem[bank][word]`. cocotb
-    hierarchical writes are scheduled (NBA-like) — successive
-    read-modify-write of the same word would race — so we gather all
-    bytes per (bank, word) into a dict first, then issue one write per
-    word.
+    Gathers byte updates per (bank, word) first to avoid races.
     """
     NUM_BANKS = 32
-    bank_mem = dut.u_smem.bank_mem
     # 1. Pre-read existing words for any (bank, word) we'll touch.
     word_cache: dict[tuple[int, int], int] = {}
     for i in range(len(data)):
@@ -93,7 +94,7 @@ def _seed_smem(dut, offset: int, data: bytes) -> None:
         word = byte_addr >> (2 + 5)
         key = (bank, word)
         if key not in word_cache:
-            word_cache[key] = int(bank_mem[bank][word].value)
+            word_cache[key] = int(dut.u_smem.bank_mem[bank][word].value)
     # 2. Apply byte updates.
     for i, b in enumerate(data):
         byte_addr = offset + i
@@ -104,24 +105,23 @@ def _seed_smem(dut, offset: int, data: bytes) -> None:
         v &= ~(0xFF << (byte_in_dw * 8))
         v |= (int(b) & 0xFF) << (byte_in_dw * 8)
         word_cache[(bank, word)] = v
-    # 3. Write one word at a time.
+    # 3. Write one word at a time (sram + shadow).
     for (bank, word), v in word_cache.items():
-        bank_mem[bank][word].value = v & 0xFFFFFFFF
+        _backdoor_smem_word(dut, bank, word, v)
 
 
 def _zero_on_chip_mem(dut) -> None:
-    """Back-door zero SMEM bank_mem and TMEM cells.
-
-    Replaces the old `initial begin` zero-init that smem.sv / tmem.sv
-    used to provide. In the top-level cmdproc_tb_top this is handled by
-    reset_seq; in the standalone mma_tb_top wrapper we tie the scrub
-    ports off and zero contents from Python instead.
+    """Back-door zero SMEM banks and TMEM cells. Replaces the old
+    `initial begin` zero-init that smem.sv / tmem.sv used to provide. In
+    the top-level chip_tb_top this is handled by reset_seq; in the
+    standalone mma_tb_top wrapper we tie the scrub ports off and zero
+    contents from Python instead.
     """
     NUM_BANKS = 32
     NUM_WORDS_PER_BANK = SMEM_BYTES // NUM_BANKS // 4
     for b in range(NUM_BANKS):
         for w in range(NUM_WORDS_PER_BANK):
-            dut.u_smem.bank_mem[b][w].value = 0
+            _backdoor_smem_word(dut, b, w, 0)
     for i in range(MMA_M):
         for j in range(MMA_N):
             for s in range(TMEM_SLOTS):
