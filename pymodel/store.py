@@ -6,10 +6,18 @@ PURPOSE
     optionally converts to fp8 e4m3, writes to gmem in row-major order.
 
 SYNC MODEL
-    STORE is synchronous in v1: cmdproc holds `issue_en` high and waits for
-    `done`. No input FIFO. cmdproc cannot issue another instruction until
-    STORE completes. (This is fine since real workloads do MMA+LOAD overlap;
+    STORE is synchronous in v1: cmdproc PULSES `issue_en` for ONE cycle on
+    dispatch, then waits (in WAITING_FOR_STORE_DONE state) for `done`. No
+    input FIFO. cmdproc cannot issue another instruction until STORE
+    completes. (This is fine since real workloads do MMA+LOAD overlap;
     STORE is a once-per-output-tile epilogue.)
+
+    PULSE, NOT HOLD: STORE only accepts `issue_en` when not busy (see
+    BEHAVIOR). Pymodel happens to work either way because Python tick order
+    masks the race. In RTL, holding causes a re-fire: store.done is registered,
+    cmdproc observes it 1 cycle late, and during that gap STORE has already
+    returned to IDLE — a held issue_en would trigger a second STORE op.
+    Confirmed by cmdproc.sv agent during Phase 4.
 
 INPUTS (sampled at tick start)
     issue_en      : 1-bit, held while waiting

@@ -116,6 +116,48 @@ async def test_directed_write_then_read(dut):
 
 
 @cocotb.test()
+async def test_reset_clears_pending_read(dut):
+    """rd_en at T → reset at T+1 → rd_valid at T+1 is 0 (no late return).
+
+    Mirrors pymodel/tests/test_gmem.py::test_reset_clears_pending_read.
+    Verifies reset is dominant over a captured-but-not-yet-drained pending read.
+    """
+    await start_clock(dut)
+    dut.rd_en.value = 0
+    dut.wr_en.value = 0
+    dut.rd_addr.value = 0
+    dut.wr_addr.value = 0
+    dut.wr_data.value = 0
+    await reset(dut)
+
+    # Back-door load a known pattern so the read would have something to return.
+    pattern = bytes((i + 1) & 0xFF for i in range(BEAT_BYTES))
+    for i, byte in enumerate(pattern):
+        dut.mem[i].value = byte
+
+    # Cycle T: drive rd_en=1; pending captures inside the SV at this edge.
+    dut.rd_en.value = 1
+    dut.rd_addr.value = 0
+    await RisingEdge(dut.clk)
+
+    # Cycle T+1: assert reset. Without reset, rd_valid would be 1 after this
+    # edge (the drain of the pending read). With reset, rd_valid must be 0.
+    dut.rd_en.value = 0
+    dut.rd_addr.value = 0
+    dut.reset.value = 1
+    await RisingEdge(dut.clk)
+
+    # Release reset, sample.
+    dut.reset.value = 0
+    await ReadOnly()
+
+    sv_valid = int(dut.rd_valid.value)
+    sv_data = int(dut.rd_data.value)
+    assert sv_valid == 0, f"expected rd_valid=0 after reset, got {sv_valid}"
+    assert sv_data == 0, f"expected rd_data=0 after reset, got 0x{sv_data:x}"
+
+
+@cocotb.test()
 async def test_random_vs_pymodel(dut):
     """Drive ~500 random cycles; compare rd_data/rd_valid to pymodel every cycle."""
     await start_clock(dut)

@@ -10,5 +10,10 @@ dependencies = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["pymodel/tests", "experiments"]
+# pythonpath="." lets pymodel.* modules `from config import ...` cleanly,
+# but it also shadows experiments/adder/pymodel.py (a local file that
+# happens to share a name with the GPU's pymodel package). So we don't
+# collect experiments/ here — the adder experiment has its own Makefile
+# and runs standalone via `cd experiments/adder && pytest test_pymodel.py`.
+testpaths = ["pymodel/tests"]
 pythonpath = ["."]

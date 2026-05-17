@@ -1,0 +1,4 @@
+- [Make invocation for cocotb tests](feedback_make_invocation.md) — use `uv run make -C <module>`; `source .venv/bin/activate` is blocked.
+- [Verilator and fp32 (real, not shortreal)](feedback_verilator_real.md) — Verilator rejects `shortreal`/`$bitstoshortreal`; decode fp32 bits into `real` manually.
+- [gmem read pipeline timing](feedback_gmem_read_pipeline.md) — TB needs TWO RisingEdges after driving rd_en before sampling rd_valid.
+- [RTL cross-module pipeline latency](feedback_rtl_cross_module_latency.md) — registered-to-registered read handoff costs 2 cycles, so SV engines run a few cycles longer than their pymodel; TBs validate result correctness, not exact cycle counts.

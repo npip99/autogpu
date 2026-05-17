@@ -117,19 +117,24 @@ If a module's behavior section needs more than ~10 rules, the module is doing to
 
 ## 7. Module map
 
-| Folder | Module | Role | Stage |
-|--------|--------|------|-------|
-| `golden/` | `fp8.py`, `matmul_reference.py` | Reference encode/decode + numpy matmul | Phase 1 |
-| `pymodel/` | `gmem`, `smem`, `tmem` | Memory models | Phase 2 |
-| `pymodel/` | `mma`, `load`, `store` | Execution engines | Phase 2 |
-| `pymodel/` | `barrier` | mbarrier state machine | Phase 2 |
-| `pymodel/` | `cmdproc` | Front-end FIFO + dispatcher | Phase 2 |
-| `pymodel/` | `sim` | Top-level harness (clock loop, wiring) | Phase 2 |
-| `pymodel/tests/` | `test_*.py` | Per-module unit tests + e2e | Phase 2-3 |
-| `common/` | `pkg.sv`, `interfaces.sv` | Shared SV types and interfaces | Phase 4 |
-| `<sub>/` | `<sub>.sv` + `tb/` | RTL + cocotb tests vs pymodel | Phase 4 |
-| `top/` | `gpu_top.sv` + `tb/` | Full RTL integration + e2e cocotb | Phase 5 |
+| Folder | Module | Role |
+|--------|--------|------|
+| `golden/` | `fp8.py`, `matmul_reference.py` | Reference encode/decode + numpy matmul |
+| `pymodel/` | `gmem`, `smem`, `tmem` | Memory models |
+| `pymodel/` | `mma`, `load`, `store` | Execution engines |
+| `pymodel/` | `barrier` | mbarrier state machine |
+| `pymodel/` | `cmdproc` | Front-end FIFO + dispatcher |
+| `pymodel/` | `sim` | Top-level harness (clock loop, wiring) |
+| `pymodel/tests/` | `test_*.py` | Per-module unit tests + e2e |
+| `common/` | `tb_utils.py` | Shared Python TB helpers (start_clock, reset, step_and_compare) |
+| `<sub>/` | `<sub>.sv` + `tb/test_<sub>.py` + `Makefile` | RTL + cocotb test vs pymodel |
+| `mma/`, `load/`, `store/`, `cmdproc/` | also have `<sub>_tb_top.sv` | Wrapper that instantiates the engine + its dependent memories/barrier so cocotb can drive the full sub-system |
+| `cmdproc/cmdproc_tb_top.sv` | — | **Top-level integration**: instantiates ALL 7 RTL modules + 3 memories, runs the end-to-end matmul kernel |
+
+The `common/pkg.sv` + `interfaces.sv` originally planned for shared SV types weren't needed in practice — modules use plain `parameter` port lists and a wrapper-SV-per-engine pattern instead. The `top/` folder is reserved for a future synthesizable wrapper (clean external pins, instruction-fetch interface, memory-controller interface) but isn't required for the current Verilator-driven simulation.
 
 ## 8. Parameters
 
 All sizes derive from `config.py`. The implementer should never hardcode 32/16/etc — read from the config module so M/N/K can change without touching module code.
+
+In SV, parameters flow via `-G` Verilator flags emitted from each module's Makefile (which runs `python3 -c "from config import ..."` to pull values out of `config.py`).

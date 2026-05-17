@@ -83,8 +83,9 @@ Operands:
 - `bar`: SMEM offset of the mbarrier.
 - `A_smem`, `B_smem`: SMEM offsets of operand tiles.
 - `D_tmem`: TMEM tile address (accumulator slot).
-- `M`, `N`, `K`: tile dimensions (constrained to the set the MMA unit natively supports, e.g. `{64,128,256} × {64,128,256} × {32,64}`; exact set TBD by datapath).
 - `accum`: 1-bit flag. `0` = zero D before accumulating (first K-iter), `1` = accumulate into existing D.
+
+**Note on tile dimensions (M, N, K):** The original ISA design listed M/N/K as per-instruction operands for flexibility. In v1 the MMA unit is hardwired to a single native shape via the `MMA_M`/`MMA_N`/`MMA_K` Verilog parameters (from `config.py`, currently 32×32×32). The instruction does NOT carry M/N/K fields. Future versions may re-introduce them when the datapath supports multiple shapes.
 
 ### `STORE gmem_ptr, D_tmem, M, N, dtype`
 Synchronous drain of a TMEM accumulator tile to GMEM.
@@ -168,8 +169,11 @@ STORE D_gmem, D_tmem, M, N, dtype=1
 
 ## Open Questions
 
-- **MMA tile sizes**: which `(M,N,K)` triples does the datapath natively support? Drives operand-layout requirements in SMEM.
-- **TMEM slot count**: how many accumulator tiles per SM? Determines max in-flight MMAs.
-- **STORE epilogue**: keep sync, or add a barrier-arrival form for overlap with the next kernel's LOADs?
-- **Scaling**: fp8 typically needs per-tensor or per-tile scale. Bake into MMA (extra operand), into STORE, or punt to host?
-- **SMEM↔TMEM moves**: needed if we ever want to spill/reload accumulators, or do epilogue fusion. Skipped for v1.
+Status as of Phase 5 (full RTL e2e working):
+
+- ~~**MMA tile sizes**~~ — v1: single native shape `(MMA_M, MMA_N, MMA_K) = (32, 32, 32)` from `config.py`. Single-shape was sufficient to prove the architecture; multi-shape support is a future expansion (would re-introduce M/N/K operand fields).
+- ~~**TMEM slot count**~~ — v1: `TMEM_SLOTS = 4` from `config.py`. Enough for single-tile matmul; multi-tile workloads cycle through slots.
+- **STORE epilogue** — still sync. Adding an async (barrier-arrival) form is a reasonable Phase 6+ extension to overlap with the next kernel's LOADs.
+- **fp8 scaling** — still punted to host. v1 assumes inputs are already in the e4m3 representable range (host applies per-tensor scale before LOAD). Hardware-level microscaling (B200-style block scaling) is out of scope.
+- **SMEM↔TMEM moves** — still skipped. Not needed for single-tile matmul; would matter for spilling accumulators or fused activations.
+- **Instruction FIFO refill** — for very large kernels (1024×1024 matmul produces ~100K instructions), the 256-deep instruction FIFO would overflow. v1 expects the TB/host to push the whole program at once. Phase 6+ would add either a REPEAT primitive or a host-driven FIFO refill mechanism.

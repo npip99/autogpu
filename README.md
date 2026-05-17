@@ -10,11 +10,13 @@ Bottom-up, pymodel-first build:
 |-------|------|--------|
 | 0 | Toolchain experiment (adder)        | done |
 | 1 | Architecture doc + scaffolding      | done |
-| 2 | Python behavioral models (pymodel)  | in progress |
-| 3 | pymodel end-to-end test passes      | pending |
-| 4 | RTL per submodule vs pymodel        | pending |
-| 5 | Full RTL integration                | pending |
+| 2 | Python behavioral models (pymodel)  | done |
+| 3 | pymodel end-to-end test passes      | done |
+| 4 | RTL per submodule vs pymodel        | done |
+| 5 | Full RTL integration + e2e matmul   | done |
 | 6 | Scale up (K-loop, multi-tile)       | pending |
+
+**64 pymodel tests + 18 cocotb tests, all green. A 32×32×32 fp8 matmul runs end-to-end through real Verilog hardware simulation in 424 simulated clock cycles, bit-exact against numpy.**
 
 ## Quickstart
 
@@ -23,13 +25,17 @@ brew install verilator               # 5.x
 uv sync                              # creates .venv, installs deps
 source .venv/bin/activate
 
-# Toolchain sanity check:
-cd experiments/adder
-pytest test_pymodel.py               # pymodel correctness
-make                                 # cocotb-vs-Verilog comparison
-```
+# Headline: real fp8 matmul through full RTL hardware simulation
+cd cmdproc && make
+# → test_e2e_matmul PASS — random fp8 A,B → fp32 C, exact vs numpy reference
 
-Both should pass. Workflow validated.
+# Python behavioral version (faster, no Verilog):
+uv run pytest pymodel/tests/test_e2e.py -v
+
+# Everything:
+uv run pytest pymodel/tests/                              # 64 pymodel tests
+for d in gmem smem tmem barrier mma load store cmdproc; do (cd $d && make); done   # all RTL
+```
 
 ## Docs
 
@@ -50,12 +56,11 @@ gpu/
 ├── pymodel/                   # cycle-stepped Python behavioral models
 │   ├── *.py                   # one file per submodule
 │   └── tests/                 # pytest, validates pymodel against spec
-├── common/                    # shared SV (Phase 4) + Python TB helpers
-├── smem/, tmem/, mma/,        # one folder per RTL submodule (Phase 4)
-│  load/, store/, barrier/,    #   each contains: <sub>.sv + tb/test_<sub>.py
-│  cmdproc/
-├── top/                       # full RTL integration (Phase 5)
-└── experiments/               # throwaway experiments (toolchain, etc)
+├── common/                    # Python TB helpers (tb_utils.py)
+├── gmem/, smem/, tmem/,       # one folder per RTL submodule
+│  mma/, load/, store/,        #   each contains: <sub>.sv [+ <sub>_tb_top.sv]
+│  barrier/, cmdproc/          #                  + tb/test_<sub>.py + Makefile
+└── experiments/               # adder experiment (one-time toolchain validator)
 ```
 
 ## Design at a glance

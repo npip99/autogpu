@@ -62,6 +62,10 @@ These started as ad-hoc agent decisions and are now project conventions:
 - **TMEM tile packing.** Documented in `pymodel/tmem.py` §"RTL TILE PACKING CONVENTION". Row-major, fp32 LSB-first per word, element `[i][j]` at bit `(i*MMA_N+j)*32`.
 - **Write-then-drain forwarding.** Memory modules (gmem/smem/tmem) commit writes BEFORE draining the prior-cycle pending read. So a same-cycle wr + drain-of-pending-rd at the same addr returns the NEW data. Requires byte/element-level write-forwarding muxes on drain paths.
 - **Overlap granularity** is byte-range intersection: `[wr_addr, wr_addr+BEAT_BYTES) ∩ [rd_addr, rd_addr+READ_WIDTH) ≠ ∅`. Pymodel asserts on this; the cocotb random test must filter same-cycle wr+rd that would overlap.
+- **Cross-module registered-handoff latency**: when an engine (MMA / LOAD / STORE) drives a registered port (e.g. `rd_en`) consumed by a registered memory (e.g. `gmem` / `smem` / `tmem`), the round-trip takes **3 cycles end-to-end**, not the producer's documented 1: posedge T (engine drives `rd_en<=1`), T+1 (memory captures pending), T+2 (memory commits `rd_data<=`, `rd_valid<=1`), T+3 (engine's `always_ff` observes new `rd_data`). The pymodel uses back-door access (zero latency), so any pymodel spec saying "N cycles" becomes "N + a few" in RTL.
+  - **TB consequence**: validate the RESULT (final TMEM tile, final GMEM bytes), not exact cycle counts. STORE/MMA/LOAD all match pymodel on contract signals (accept/busy/done/barrier pulses) but data movement lags by a few cycles.
+  - **CMDPROC consequence**: wait on `done` pulses to advance state — do not count cycles. The pymodel's exact-latency assertions don't transfer to RTL.
+  - Combinational port drives could shave a cycle, but registered drives are the project pattern (see `store/store.sv`).
 
 ### Canonical cocotb compare-loop
 
