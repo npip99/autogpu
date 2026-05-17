@@ -22,5 +22,6 @@ results.xml
 .idea/
 *.swp
 
-# --- Claude Code personal overrides ---
+# --- Claude Code personal overrides + runtime state ---
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
