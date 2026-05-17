@@ -70,7 +70,19 @@
 // RESET
 // =====
 //   Dominant. Clears pending state and registered outputs; bank contents
-//   preserved (matches gmem.sv / tmem.sv semantics).
+//   preserved (matches gmem.sv / tmem.sv semantics). The post-power-on
+//   zeroing of bank contents is now performed by the SCRUB PORT below
+//   (driven by reset_seq), not by an `initial begin` block.
+//
+// SCRUB PORT
+// ==========
+//   Driven by reset_seq during the post-power-on scrub window. Replaces
+//   the simulation-only `initial begin` zero-init. When scrub_en=1, ALL
+//   32 banks are written to 0 at scrub_addr (the per-bank word index).
+//
+//   scrub_en is mutually exclusive with wr_en / rd_a_en / rd_b_en —
+//   chip_in_reset gates those off upstream, so the precondition holds
+//   without internal arbitration.
 
 module smem #(
     parameter int SMEM_BYTES = 16384,
@@ -93,6 +105,10 @@ module smem #(
     // MMA_RD_B
     input  logic                          rd_b_en,
     input  logic [31:0]                   rd_b_addr,
+
+    // SCRUB (reset-only; driven by reset_seq)
+    input  logic                          scrub_en,
+    input  logic [31:0]                   scrub_addr,  // per-bank word index
 
     // Outputs (registered)
     output logic [MMA_M*8-1:0]            rd_a_data,
@@ -126,13 +142,11 @@ module smem #(
     // ------------------------------------------------------------------
     logic [31:0] bank_mem [NUM_BANKS][NUM_WORDS_PER_BANK];
 
-    initial begin
-        for (int b = 0; b < NUM_BANKS; b++) begin
-            for (int w = 0; w < NUM_WORDS_PER_BANK; w++) begin
-                bank_mem[b][w] = 32'd0;
-            end
-        end
-    end
+    // NOTE: bank_mem is no longer zero-initialized at sim startup. The
+    // reset_seq module is responsible for scrubbing all banks via the
+    // SCRUB PORT (scrub_en + scrub_addr) before chip_in_reset deasserts.
+    // This mirrors real silicon: FFs / SRAMs power up to indeterminate
+    // values, and the reset sequencer must walk them to a known state.
 
     // ------------------------------------------------------------------
     // Backdoor byte view: read-only combinational alias of bank_mem.
@@ -264,6 +278,19 @@ module smem #(
     // 4. Capture new pending reads, gated on !stall.
     // ------------------------------------------------------------------
     always_ff @(posedge clk) begin
+        // SCRUB PORT — independent of reset. reset_seq drives scrub_en
+        // during the post-power-on scrub window (while chip_in_reset is
+        // high). Writes ALL 32 banks at scrub_addr in parallel to 0.
+        // This is the synthesizable replacement for the old `initial`
+        // zero-init. scrub_en is mutually exclusive with wr_en (upstream
+        // is held in reset), so there's no conflict with the LOAD_WR
+        // commit below.
+        if (scrub_en) begin
+            for (int b = 0; b < NUM_BANKS; b++) begin
+                bank_mem[b][scrub_addr[WORD_BITS-1:0]] <= 32'd0;
+            end
+        end
+
         if (reset) begin
             rd_a_pending_valid <= 1'b0;
             rd_a_pending_addr  <= 32'd0;

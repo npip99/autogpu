@@ -152,6 +152,11 @@ module mma_tb_top #(
         .rd_a_addr(mma_rd_a_addr),
         .rd_b_en(mma_rd_b_en),
         .rd_b_addr(mma_rd_b_addr),
+        // Scrub port tied off in this standalone wrapper; the TB
+        // back-doors bank_mem to zero at start, matching the pymodel
+        // SMEM() default.
+        .scrub_en(1'b0),
+        .scrub_addr(32'd0),
         .rd_a_data(mma_rd_a_data),
         .rd_a_valid(mma_rd_a_valid),
         .rd_b_data(mma_rd_b_data),
@@ -176,6 +181,8 @@ module mma_tb_top #(
         .mma_write_tile(mma_tmem_write_tile),
         .store_rd_en(tmem_store_rd_en),
         .store_rd_slot(tmem_store_rd_slot),
+        // Scrub port tied off; TB back-doors cells to zero at start.
+        .tmem_scrub_en(1'b0),
         .mma_rd_tile(mma_tmem_rd_tile),
         .mma_rd_valid(mma_tmem_rd_valid),
         .store_rd_tile(tmem_store_rd_tile),

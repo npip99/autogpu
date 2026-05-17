@@ -32,6 +32,31 @@ async def reset(dut, signal_name: str = "reset", cycles: int = 2) -> None:
     await RisingEdge(dut.clk)
 
 
+async def wait_until_chip_ready(dut, max_cycles: int = 1000) -> int:
+    """Wait until reset_seq has finished scrubbing and chip_in_reset is low.
+
+    Used by testbenches that go through `cmdproc_tb_top` (or any top that
+    instantiates reset_seq). The external `reset` pin should already have
+    been deasserted via the standard `reset()` helper — this routine just
+    polls `chip_in_reset` until it drops.
+
+    Returns the number of clock cycles waited.
+
+    The signal is read combinationally each cycle; reset_seq drives it as
+    a registered output of the top-level wrapper.
+    """
+    for c in range(max_cycles):
+        await ReadOnly()
+        if int(dut.chip_in_reset.value) == 0:
+            await NextTimeStep()
+            return c
+        await NextTimeStep()
+        await RisingEdge(dut.clk)
+    raise AssertionError(
+        f"chip_in_reset never went low within {max_cycles} cycles"
+    )
+
+
 async def step_and_compare(dut, pymodel, inputs: dict, outputs: list) -> None:
     """One simulation cycle: drive inputs, advance clock, compare outputs to pymodel.
 

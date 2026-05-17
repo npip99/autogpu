@@ -4,3 +4,4 @@
 - [RTL cross-module pipeline latency](feedback_rtl_cross_module_latency.md) — registered-to-registered read handoff costs 2 cycles, so SV engines run a few cycles longer than their pymodel; TBs validate result correctness, not exact cycle counts.
 - [Vendored fpnew (CVFPU) for synthesizable fp32 FMA](project_fpnew_vendor.md) — common/fpnew/ + wrappers replace `real` arithmetic in mma/store.
 - [Verilator trace + 1024 FMAs hits macOS ar limit](feedback_verilator_trace_archive_limit.md) — cmdproc/Makefile must omit `--trace`; archive offset overflows.
+- [Reset sequencer + on-chip memory scrub (Phase 7e)](project_reset_seq_scrub.md) — reset_seq replaces `initial` zero-init in smem/tmem; only instantiated in cmdproc_tb_top.

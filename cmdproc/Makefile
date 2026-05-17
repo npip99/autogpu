@@ -28,6 +28,7 @@ VERILOG_SOURCES = $(PWD)/cmdproc.sv \
                   $(PWD)/../mma/mma.sv \
                   $(PWD)/../load/load.sv \
                   $(PWD)/../store/store.sv \
+                  $(PWD)/../reset_seq/reset_seq.sv \
                   $(PWD)/../common/fpnew/cf_math_pkg.sv \
                   $(PWD)/../common/fpnew/fpnew_pkg.sv \
                   $(PWD)/../common/fpnew/fpnew_classifier.sv \

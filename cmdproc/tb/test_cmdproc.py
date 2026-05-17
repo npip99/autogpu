@@ -23,7 +23,7 @@ import numpy as np
 import cocotb
 from cocotb.triggers import RisingEdge, ReadOnly, NextTimeStep
 
-from common.tb_utils import start_clock, reset
+from common.tb_utils import start_clock, reset, wait_until_chip_ready
 from config import (
     BEAT_BYTES,
     MMA_K,
@@ -317,6 +317,7 @@ async def test_directed_dispatch(dut):
     await start_clock(dut)
     _drive_defaults(dut)
     await reset(dut)
+    await wait_until_chip_ready(dut)
 
     # After reset, cmdproc should be idle, no drives asserted.
     await ReadOnly()
@@ -429,6 +430,7 @@ async def test_e2e_matmul(dut):
     await start_clock(dut)
     _drive_defaults(dut)
     await reset(dut)
+    await wait_until_chip_ready(dut)
 
     A_bytes, B_bytes, C_expected = generate(MMA_M, MMA_N, MMA_K, seed=0)
 
@@ -477,6 +479,7 @@ async def test_repeat_basic(dut):
     await start_clock(dut)
     _drive_defaults(dut)
     await reset(dut)
+    await wait_until_chip_ready(dut)
 
     pat = b"\xcd" * 64
     _backdoor_gmem_write(dut, 0, pat)
@@ -511,6 +514,7 @@ async def test_alu_addi_loop(dut):
     await start_clock(dut)
     _drive_defaults(dut)
     await reset(dut)
+    await wait_until_chip_ready(dut)
 
     # Place data so a LOAD at gmem=64 (r0 final value after loop: 64) copies it.
     pat = bytes([0x5A] * 32)
@@ -567,6 +571,7 @@ async def test_load_reg_off(dut):
     await start_clock(dut)
     _drive_defaults(dut)
     await reset(dut)
+    await wait_until_chip_ready(dut)
 
     pat = b"\xab" * 32
     _backdoor_gmem_write(dut, 64, pat)
@@ -607,6 +612,7 @@ async def test_k_loop_matmul(dut):
     await start_clock(dut)
     _drive_defaults(dut)
     await reset(dut)
+    await wait_until_chip_ready(dut)
 
     M, N, K_total = MMA_M, MMA_N, 4 * MMA_K  # 32x32x128
     n_chunks = K_total // MMA_K              # 4

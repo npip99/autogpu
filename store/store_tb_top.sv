@@ -104,6 +104,8 @@ module store_tb_top #(
         .mma_write_tile(mma_write_tile),
         .store_rd_en(store_rd_en),
         .store_rd_slot(store_rd_slot),
+        // Scrub port tied off; TB back-doors cells to zero at start.
+        .tmem_scrub_en(1'b0),
         .mma_rd_tile(mma_rd_tile_w),
         .mma_rd_valid(mma_rd_valid_w),
         .store_rd_tile(store_rd_tile),

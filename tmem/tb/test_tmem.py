@@ -106,6 +106,44 @@ def _rand_tile(rng: random.Random) -> np.ndarray:
 
 
 @cocotb.test()
+async def test_scrub_clears_all_cells(dut):
+    """Drive tmem_scrub_en for one cycle after poisoning every cell; verify
+    every (i, j, slot) is zero (replaces the old `initial` zero-init).
+    """
+    await start_clock(dut)
+    dut.mma_op.value = 0
+    dut.mma_slot.value = 0
+    dut.mma_write_tile.value = 0
+    dut.store_rd_en.value = 0
+    dut.store_rd_slot.value = 0
+    dut.tmem_scrub_en.value = 0
+    await reset(dut)
+
+    # Poison every cell via back-door.
+    POISON = 0xCAFEBABE
+    for i in range(MMA_M):
+        for j in range(MMA_N):
+            for s in range(TMEM_SLOTS):
+                dut.cells[i][j][s].value = POISON
+
+    # Let the back-door NBAs commit.
+    await RisingEdge(dut.clk)
+
+    # Single-cycle parallel scrub.
+    dut.tmem_scrub_en.value = 1
+    await RisingEdge(dut.clk)
+    dut.tmem_scrub_en.value = 0
+    await RisingEdge(dut.clk)
+    await ReadOnly()
+
+    for i in range(MMA_M):
+        for j in range(MMA_N):
+            for s in range(TMEM_SLOTS):
+                v = int(dut.cells[i][j][s].value)
+                assert v == 0, f"cell[{i}][{j}][{s}] != 0 after scrub: 0x{v:08x}"
+
+
+@cocotb.test()
 async def test_directed_write_then_read(dut):
     """Write a known tile to slot 0, read it back via STORE_RD next cycle."""
     await start_clock(dut)
@@ -115,6 +153,7 @@ async def test_directed_write_then_read(dut):
     dut.mma_write_tile.value = 0
     dut.store_rd_en.value = 0
     dut.store_rd_slot.value = 0
+    dut.tmem_scrub_en.value = 0
     await reset(dut)
 
     # Build a deterministic tile: tile[i][j] = (i * MMA_N + j) cast to fp32.
@@ -162,6 +201,7 @@ async def test_random_vs_pymodel(dut):
     dut.mma_write_tile.value = 0
     dut.store_rd_en.value = 0
     dut.store_rd_slot.value = 0
+    dut.tmem_scrub_en.value = 0
     await reset(dut)
 
     py = TMEMAdapter()

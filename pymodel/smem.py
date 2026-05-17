@@ -31,6 +31,24 @@ PORTS
     MMA_RD_B (read port, MMA_N bytes wide)
         Same as MMA_RD_A but width MMA_N and addr aligned to MMA_N.
 
+SCRUB PORT (reset-only)
+    Driven by reset_seq during the post-power-on scrub window. Replaces the
+    simulation-only `initial begin` zero-init in smem.sv with a real reset
+    sequence usable on silicon. Drives ALL 32 banks in parallel at the
+    addressed per-bank word index.
+
+    INPUTS: scrub_en, scrub_addr (per-bank word index, 0..NUM_WORDS_PER_BANK-1)
+    When scrub_en=1, bank_mem[*][scrub_addr] = 0 for every bank b.
+    scrub_en is mutually exclusive with LOAD_WR / MMA_RD_A / MMA_RD_B —
+    chip_in_reset gates those off, so the asserts here will fire if a
+    caller tries to drive them concurrently.
+
+    In this pymodel, since the numpy `mem` array is zero-initialized at
+    SMEM() construction time, the scrub port is a no-op against memory
+    contents — it exists to mirror the SV port semantics for testbench
+    parity. The asserts on mutual-exclusion ARE enforced, because they
+    catch real driver bugs.
+
 BANK CONFLICTS and STALLS
     Each of the 32 banks is a 1RW SRAM (1 read OR 1 write per cycle). When
     two or more ports want overlapping banks in the same cycle, only the
@@ -164,8 +182,21 @@ class SMEM:
         rd_a_addr: int = 0,
         rd_b_en: int = 0,
         rd_b_addr: int = 0,
+        scrub_en: int = 0,
+        scrub_addr: int = 0,
     ) -> None:
         # Sample-phase asserts.
+        if scrub_en:
+            # The scrub port is driven only while chip_in_reset gates all
+            # other consumers off, so concurrent use is a caller bug.
+            assert not wr_en, "scrub_en + LOAD_WR concurrent (chip_in_reset should gate)"
+            assert not rd_a_en, "scrub_en + MMA_RD_A concurrent (chip_in_reset should gate)"
+            assert not rd_b_en, "scrub_en + MMA_RD_B concurrent (chip_in_reset should gate)"
+            # scrub_addr is a per-bank word index (0..NUM_WORDS_PER_BANK-1).
+            num_words_per_bank = SMEM_BYTES // 32 // 4
+            assert 0 <= scrub_addr < num_words_per_bank, (
+                f"scrub_addr {scrub_addr} OOR (max {num_words_per_bank - 1})"
+            )
         if wr_en:
             assert isinstance(wr_data, (bytes, bytearray)), "wr_data must be bytes-like"
             assert len(wr_data) == BEAT_BYTES, (

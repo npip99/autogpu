@@ -153,6 +153,52 @@ def _backdoor_load_dut(dut, addr: int, data: bytes) -> None:
 
 
 @cocotb.test()
+async def test_scrub_clears_all_banks(dut):
+    """Drive the scrub port for NUM_WORDS_PER_BANK cycles; verify every dword
+    in every bank is zero (replaces the old `initial` zero-init).
+    """
+    await start_clock(dut)
+    # Safe defaults; we'll drive scrub_en below.
+    dut.wr_en.value = 0
+    dut.wr_addr.value = 0
+    dut.wr_data.value = 0
+    dut.rd_a_en.value = 0
+    dut.rd_a_addr.value = 0
+    dut.rd_b_en.value = 0
+    dut.rd_b_addr.value = 0
+    dut.scrub_en.value = 0
+    dut.scrub_addr.value = 0
+    await reset(dut)
+
+    # Poison every bank-word with a non-zero pattern via back-door so we can
+    # detect the scrub actually doing work.
+    NUM_BANKS = 32
+    NUM_WORDS_PER_BANK = SMEM_BYTES // NUM_BANKS // 4
+    for b in range(NUM_BANKS):
+        for w in range(NUM_WORDS_PER_BANK):
+            dut.bank_mem[b][w].value = 0xDEADBEEF
+
+    # Wait one cycle for the back-door NBAs to commit.
+    await RisingEdge(dut.clk)
+
+    # Drive the scrub port for NUM_WORDS_PER_BANK cycles, walking scrub_addr.
+    for w in range(NUM_WORDS_PER_BANK):
+        dut.scrub_en.value = 1
+        dut.scrub_addr.value = w
+        await RisingEdge(dut.clk)
+    dut.scrub_en.value = 0
+    dut.scrub_addr.value = 0
+    await RisingEdge(dut.clk)
+    await ReadOnly()
+
+    # Every dword in every bank must be 0 now.
+    for b in range(NUM_BANKS):
+        for w in range(NUM_WORDS_PER_BANK):
+            v = int(dut.bank_mem[b][w].value)
+            assert v == 0, f"bank[{b}][{w}] != 0 after scrub: 0x{v:08x}"
+
+
+@cocotb.test()
 async def test_directed_load_then_read_a(dut):
     """Backdoor-load a tile; drive MMA_RD_A; verify exact match."""
     await start_clock(dut)
@@ -164,6 +210,8 @@ async def test_directed_load_then_read_a(dut):
     dut.rd_a_addr.value = 0
     dut.rd_b_en.value = 0
     dut.rd_b_addr.value = 0
+    dut.scrub_en.value = 0
+    dut.scrub_addr.value = 0
     await reset(dut)
 
     # Zero bank_mem (`initial` blocks only run at sim startup; if this test
@@ -212,6 +260,8 @@ async def test_random_vs_pymodel(dut):
     dut.rd_a_addr.value = 0
     dut.rd_b_en.value = 0
     dut.rd_b_addr.value = 0
+    dut.scrub_en.value = 0
+    dut.scrub_addr.value = 0
     await reset(dut)
 
     # Zero bank_mem to match pymodel's fresh state (reset preserves memory).
@@ -311,6 +361,8 @@ async def test_bank_conflict_random(dut):
     dut.rd_a_addr.value = 0
     dut.rd_b_en.value = 0
     dut.rd_b_addr.value = 0
+    dut.scrub_en.value = 0
+    dut.scrub_addr.value = 0
     await reset(dut)
 
     # Reset clears the registered outputs and pending state but does NOT

@@ -153,3 +153,42 @@ TEST CASES (in pymodel/tests/test_<sub>.py)
 ```
 
 If a module's BEHAVIOR section grows past ~10 rules, it's doing too much — split it.
+
+## fpnew reset audit (Phase 7e)
+
+Phase 7e replaced the simulation-only `initial begin` zero-init blocks in
+`smem.sv` / `tmem.sv` with a real `reset_seq` module that scrubs on-chip
+memories before deasserting `chip_in_reset`. As part of that work we
+audited the vendored CVFPU (`common/fpnew/*`) for FFs that lack reset
+paths.
+
+**Result: no live FFs in our integration.**
+
+Reasoning:
+
+- We instantiate `fpnew_fma` from `common/fp32_fma.sv` with `NumPipeRegs=0`.
+- All FFs in `fpnew_fma.sv` live inside three `for (genvar i = 0; i < NUM_*_REGS; i++)`
+  generate blocks (`gen_input_pipeline`, `gen_mid_pipeline`,
+  `gen_output_pipeline`). With `NumPipeRegs=0`, these iterate zero times
+  and no FFs are instantiated.
+- `fp32_fma.sv` ties `clk_i = 1'b0` and `rst_ni = 1'b1` for exactly this
+  reason — there are no clocked elements to drive.
+- The remaining vendored files (`fpnew_classifier.sv`, `fpnew_rounding.sv`,
+  `lzc.sv`, `cf_math_pkg.sv`) are pure combinational logic (`always_comb`
+  only).
+- The macros in `common_cells/registers.svh` (`FF`, `FFL`, `FFAR`, …) DO
+  use asynchronous active-low reset (`rst_ni`) — these would have been
+  fine for our active-high synchronous reset convention if any were live,
+  but none are.
+
+**Status flagged for synthesis hardening:**
+
+If a future phase ever bumps `NumPipeRegs > 0` (to register inputs / mids /
+outputs of the FMA), every pipeline register would come up in X-state on
+power-on with no reset path back to a defined value. At that point
+`reset_seq` would also need to gate `clk_i` of fpnew or drive `rst_ni`
+synchronously, and `fp32_fma.sv` would have to surface `clk_i`/`rst_ni`
+as actual ports rather than tied-off constants.
+
+Acceptable for sim today. Flagged for synthesis hardening when fpnew
+pipeline registers come online.

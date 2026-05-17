@@ -32,6 +32,18 @@ PORTS
         OUTPUTS: rd_tile, rd_valid (registered)
         cycle T: if rd_en, capture slot → rd_valid at T+1 with rd_tile
 
+    SCRUB (reset-only; driven by reset_seq)
+        INPUT: tmem_scrub_en
+        When asserted on a cycle, ALL cells (across all slots, all
+        (i, j) MAC positions) are written to 0 that cycle. TMEM is built
+        from flip-flops, so unlimited parallel writes are physically free.
+        Mutually exclusive with MMA_PORT.op != NONE and STORE_RD.rd_en —
+        chip_in_reset gates those off upstream.
+
+        In this pymodel, scrub_en is a no-op against the numpy `cells`
+        array (zero-initialized at TMEM() construction). The pymodel
+        enforces the mutual-exclusion assert to catch driver bugs.
+
 INTERNAL STATE
     cells          : np.float32[MMA_M, MMA_N, TMEM_SLOTS], zero-init
     mma_rd_pending : slot | None
@@ -122,10 +134,18 @@ class TMEM:
         mma_write_tile=None,
         store_rd_en: int = 0,
         store_rd_slot: int = 0,
+        tmem_scrub_en: int = 0,
     ) -> None:
         mma_op = MMAOp(int(mma_op))
 
         # Sample-phase asserts.
+        if tmem_scrub_en:
+            assert mma_op == MMAOp.NONE, (
+                "tmem_scrub_en concurrent with MMA_PORT op (chip_in_reset should gate)"
+            )
+            assert not store_rd_en, (
+                "tmem_scrub_en concurrent with STORE_RD (chip_in_reset should gate)"
+            )
         if mma_op != MMAOp.NONE:
             assert 0 <= mma_slot < TMEM_SLOTS, f"mma_slot {mma_slot} OOR"
         if mma_op == MMAOp.WRITE:

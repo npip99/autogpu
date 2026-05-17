@@ -87,7 +87,11 @@ module cmdproc_tb_top #(
     output logic [NUM_BARRIERS*16-1:0]    bars_pending,
     output logic [NUM_BARRIERS*16-1:0]    bars_expected,
     output logic [NUM_BARRIERS*32-1:0]    bars_tx_pending,
-    output logic [NUM_BARRIERS-1:0]       bars_phase
+    output logic [NUM_BARRIERS-1:0]       bars_phase,
+
+    // reset_seq observable state (for TB wait_until_chip_ready).
+    output logic                          chip_in_reset,
+    output logic                          scrub_done
 );
 
     // ------------------------------------------------------------------
@@ -183,6 +187,38 @@ module cmdproc_tb_top #(
     logic                              st_busy, st_done;
 
     // ------------------------------------------------------------------
+    // reset_seq — power-on reset + on-chip memory scrubber.
+    //
+    // External `reset` is treated as a pin-level reset_in. The sequencer
+    // holds chip_in_reset high while it walks every SMEM bank-word index
+    // and parallel-clears TMEM, then releases the pipeline. Phase 7e
+    // replaces the old `initial` zero-init in smem.sv / tmem.sv with this
+    // mechanism for synthesis-readiness.
+    // ------------------------------------------------------------------
+    localparam int SMEM_SCRUB_DEPTH = SMEM_BYTES / 32 / 4;  // per-bank word count
+    logic                                       smem_scrub_en;
+    logic [$clog2(SMEM_SCRUB_DEPTH)-1:0]        smem_scrub_addr_narrow;
+    logic [31:0]                                smem_scrub_addr;
+    logic                                       tmem_scrub_en;
+    // chip_in_reset and scrub_done are top-level outputs (declared in the
+    // port list above) so testbenches can wait on them via
+    // common.tb_utils.wait_until_chip_ready.
+
+    reset_seq #(
+        .SCRUB_DEPTH(SMEM_SCRUB_DEPTH)
+    ) u_reset_seq (
+        .clk            (clk),
+        .reset_in       (reset),
+        .chip_in_reset  (chip_in_reset),
+        .smem_scrub_en  (smem_scrub_en),
+        .smem_scrub_addr(smem_scrub_addr_narrow),
+        .tmem_scrub_en  (tmem_scrub_en),
+        .scrub_done     (scrub_done)
+    );
+    // Widen the per-bank word index to 32 bits for the smem port.
+    assign smem_scrub_addr = {{(32 - $clog2(SMEM_SCRUB_DEPTH)){1'b0}}, smem_scrub_addr_narrow};
+
+    // ------------------------------------------------------------------
     // cmdproc
     // ------------------------------------------------------------------
     cmdproc #(
@@ -190,7 +226,7 @@ module cmdproc_tb_top #(
         .NUM_BARRIERS    (NUM_BARRIERS)
     ) u_cmdproc (
         .clk                 (clk),
-        .reset               (reset),
+        .reset               (chip_in_reset),
         .push_en             (push_en),
         .push_instr          (push_instr),
 
@@ -240,7 +276,7 @@ module cmdproc_tb_top #(
         .MMA_K(MMA_K)
     ) u_mma (
         .clk           (clk),
-        .reset         (reset),
+        .reset         (chip_in_reset),
         .start         (cp_mma_start),
         .a_smem_offset (cp_mma_a),
         .b_smem_offset (cp_mma_b),
@@ -277,7 +313,7 @@ module cmdproc_tb_top #(
         .INSTR_FIFO_DEPTH(INSTR_FIFO_DEPTH)
     ) u_load (
         .clk           (clk),
-        .reset         (reset),
+        .reset         (chip_in_reset),
         .issue_en      (cp_load_en),
         .gmem_ptr      (cp_load_g),
         .smem_ptr      (cp_load_s),
@@ -313,7 +349,7 @@ module cmdproc_tb_top #(
         .BEAT_BYTES(BEAT_BYTES)
     ) u_store (
         .clk           (clk),
-        .reset         (reset),
+        .reset         (chip_in_reset),
         .issue_en      (cp_store_en),
         .tmem_slot     (cp_store_slot),
         .gmem_ptr      (cp_store_g),
@@ -358,7 +394,7 @@ module cmdproc_tb_top #(
         .MMA_N     (MMA_N)
     ) u_smem (
         .clk        (clk),
-        .reset      (reset),
+        .reset      (chip_in_reset),
         .wr_en      (l_smem_wr_en),
         .wr_addr    (l_smem_wr_addr),
         .wr_data    (l_smem_wr_data),
@@ -366,6 +402,8 @@ module cmdproc_tb_top #(
         .rd_a_addr  (m_rd_a_addr),
         .rd_b_en    (m_rd_b_en),
         .rd_b_addr  (m_rd_b_addr),
+        .scrub_en   (smem_scrub_en),
+        .scrub_addr (smem_scrub_addr),
         .rd_a_data  (s_rd_a_data),
         .rd_a_valid (s_rd_a_valid),
         .rd_b_data  (s_rd_b_data),
@@ -384,12 +422,13 @@ module cmdproc_tb_top #(
         .MMA_N     (MMA_N)
     ) u_tmem (
         .clk           (clk),
-        .reset         (reset),
+        .reset         (chip_in_reset),
         .mma_op        (m_tmem_op),
         .mma_slot      (m_tmem_slot),
         .mma_write_tile(m_tmem_write),
         .store_rd_en   (st_rd_en),
         .store_rd_slot (st_rd_slot),
+        .tmem_scrub_en (tmem_scrub_en),
         .mma_rd_tile   (t_mma_rd_tile),
         .mma_rd_valid  (t_mma_rd_valid),
         .store_rd_tile (t_store_rd_tile),
@@ -404,7 +443,7 @@ module cmdproc_tb_top #(
         .NUM_BARRIERS(NUM_BARRIERS)
     ) u_barrier (
         .clk                  (clk),
-        .reset                (reset),
+        .reset                (chip_in_reset),
         .init_en              (cp_init_en),
         .init_bar_id          (cp_init_bar_id),
         .init_count           (cp_init_count),

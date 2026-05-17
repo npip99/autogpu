@@ -52,7 +52,18 @@
 //
 // RESET
 //   Dominant. Clears pending state and registered outputs; cell contents are
-//   preserved (matches gmem reset semantics, and pymodel never clears cells).
+//   preserved (matches gmem reset semantics). The post-power-on zeroing of
+//   cell contents is now performed by the SCRUB PORT below (driven by
+//   reset_seq), not by an `initial begin` block.
+//
+// SCRUB PORT
+//   Driven by reset_seq during the post-power-on scrub window. When
+//   tmem_scrub_en=1, ALL cells across all (i, j) MAC positions and all
+//   TMEM_SLOTS are written to 0 in parallel (flip-flops support unlimited
+//   parallel writes). One cycle suffices.
+//
+//   Mutually exclusive with mma_op != NONE and store_rd_en — chip_in_reset
+//   gates those off upstream, so no internal arbitration is needed.
 
 module tmem #(
     parameter int TMEM_SLOTS = 4,
@@ -71,6 +82,9 @@ module tmem #(
     input  logic                                 store_rd_en,
     input  logic [31:0]                          store_rd_slot,
 
+    // SCRUB (reset-only; driven by reset_seq)
+    input  logic                                 tmem_scrub_en,
+
     // Outputs (registered)
     output logic [MMA_M*MMA_N*32-1:0]            mma_rd_tile,
     output logic                                 mma_rd_valid,
@@ -85,17 +99,10 @@ module tmem #(
 
     // Per-cell spatially-banked storage: each (i, j) MAC cell owns its own
     // TMEM_SLOTS-word micro register file. Indexed as cells[i][j][slot].
-    // Zero-initialized to match pymodel.TMEM.__init__ (np.zeros).
+    // NOTE: no longer zero-initialized at sim startup. reset_seq must
+    // pulse tmem_scrub_en for at least one cycle before chip_in_reset
+    // deasserts. This mirrors real silicon FF power-on behavior.
     logic [31:0] cells [MMA_M][MMA_N][TMEM_SLOTS];
-    initial begin
-        for (int i = 0; i < MMA_M; i++) begin
-            for (int j = 0; j < MMA_N; j++) begin
-                for (int s = 0; s < TMEM_SLOTS; s++) begin
-                    cells[i][j][s] = 32'd0;
-                end
-            end
-        end
-    end
 
     // Pending read state (captured cycle T-1, drained cycle T).
     logic                rd_mma_pending_valid;
@@ -140,6 +147,20 @@ module tmem #(
     endfunction
 
     always_ff @(posedge clk) begin
+        // SCRUB PORT — independent of reset. reset_seq drives tmem_scrub_en
+        // for one cycle during the post-power-on scrub window. Writes ALL
+        // cells (every (i, j, slot)) to 0 in parallel. Mutually exclusive
+        // with MMA_PORT op and STORE_RD (upstream is gated by chip_in_reset).
+        if (tmem_scrub_en) begin
+            for (int i = 0; i < MMA_M; i++) begin
+                for (int j = 0; j < MMA_N; j++) begin
+                    for (int s = 0; s < TMEM_SLOTS; s++) begin
+                        cells[i][j][s] <= 32'd0;
+                    end
+                end
+            end
+        end
+
         if (reset) begin
             rd_mma_pending_valid   <= 1'b0;
             rd_mma_pending_slot    <= 32'd0;

@@ -29,7 +29,7 @@ import numpy as np
 from cocotb.triggers import RisingEdge, ReadOnly, NextTimeStep
 
 from common.tb_utils import start_clock, reset
-from config import MMA_K, MMA_M, MMA_N, SMEM_TILE_BASE, BEAT_BYTES
+from config import MMA_K, MMA_M, MMA_N, SMEM_BYTES, SMEM_TILE_BASE, BEAT_BYTES, TMEM_SLOTS
 from golden.fp8 import decode_e4m3, encode_e4m3
 from golden.matmul_reference import generate
 
@@ -107,6 +107,25 @@ def _seed_smem(dut, offset: int, data: bytes) -> None:
     # 3. Write one word at a time.
     for (bank, word), v in word_cache.items():
         bank_mem[bank][word].value = v & 0xFFFFFFFF
+
+
+def _zero_on_chip_mem(dut) -> None:
+    """Back-door zero SMEM bank_mem and TMEM cells.
+
+    Replaces the old `initial begin` zero-init that smem.sv / tmem.sv
+    used to provide. In the top-level cmdproc_tb_top this is handled by
+    reset_seq; in the standalone mma_tb_top wrapper we tie the scrub
+    ports off and zero contents from Python instead.
+    """
+    NUM_BANKS = 32
+    NUM_WORDS_PER_BANK = SMEM_BYTES // NUM_BANKS // 4
+    for b in range(NUM_BANKS):
+        for w in range(NUM_WORDS_PER_BANK):
+            dut.u_smem.bank_mem[b][w].value = 0
+    for i in range(MMA_M):
+        for j in range(MMA_N):
+            for s in range(TMEM_SLOTS):
+                dut.u_tmem.cells[i][j][s].value = 0
 
 
 async def _init_barrier(dut, bar_id: int, count: int) -> None:
@@ -195,6 +214,8 @@ async def test_directed(dut):
     await start_clock(dut)
     await _drive_defaults(dut)
     await reset(dut)
+    _zero_on_chip_mem(dut)
+    await RisingEdge(dut.clk)
 
     # Use a tiny deterministic seed.
     A_fp32 = (np.random.RandomState(0).randn(MMA_M, MMA_K) * 0.5).astype(np.float32)
@@ -247,6 +268,8 @@ async def test_random_vs_golden(dut):
     await start_clock(dut)
     await _drive_defaults(dut)
     await reset(dut)
+    _zero_on_chip_mem(dut)
+    await RisingEdge(dut.clk)
 
     a_off = SMEM_TILE_BASE
     b_off = SMEM_TILE_BASE + MMA_M * MMA_K

@@ -176,6 +176,9 @@ module load_tb_top #(
         .rd_a_addr  (32'd0),
         .rd_b_en    (1'b0),
         .rd_b_addr  (32'd0),
+        // Scrub port tied off; TB back-doors bank_mem to zero at start.
+        .scrub_en   (1'b0),
+        .scrub_addr (32'd0),
         .rd_a_data  (),
         .rd_a_valid (),
         .rd_b_data  (),
