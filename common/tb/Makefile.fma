@@ -1,0 +1,26 @@
+SIM            ?= verilator
+TOPLEVEL_LANG  ?= verilog
+VERILOG_SOURCES = $(PWD)/fp32_fma_tb_top.sv \
+                  $(PWD)/../fp32_fma.sv \
+                  $(PWD)/../fpnew/cf_math_pkg.sv \
+                  $(PWD)/../fpnew/fpnew_pkg.sv \
+                  $(PWD)/../fpnew/fpnew_classifier.sv \
+                  $(PWD)/../fpnew/fpnew_rounding.sv \
+                  $(PWD)/../fpnew/fpnew_fma.sv \
+                  $(PWD)/../fpnew/lzc.sv
+TOPLEVEL        = fp32_fma_tb_top
+COCOTB_TEST_MODULES = test_fp32_fma
+
+export PYTHONPATH := $(PWD)/../..:$(PYTHONPATH)
+EXTRA_ARGS     += --trace --trace-structs
+# Suppress the noisy (but harmless) UNOPTFLAT warning from common_cells/lzc.sv.
+# The tree-reduction in lzc.sv uses /*verilator split_var*/ pragmas, but
+# Verilator still flags the combinational tree as a potential loop.
+EXTRA_ARGS     += -Wno-UNOPTFLAT
+
+# Verilator needs the include path for "common_cells/registers.svh".
+COMPILE_ARGS += +incdir+$(PWD)/../fpnew
+
+SIM_BUILD ?= sim_build_fma
+
+include $(shell cocotb-config --makefiles)/Makefile.sim

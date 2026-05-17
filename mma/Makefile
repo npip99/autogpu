@@ -13,8 +13,19 @@ TOPLEVEL_LANG  ?= verilog
 VERILOG_SOURCES = $(PWD)/mma.sv $(PWD)/mma_tb_top.sv \
                   $(PWD)/../smem/smem.sv \
                   $(PWD)/../tmem/tmem.sv \
-                  $(PWD)/../barrier/barrier.sv
+                  $(PWD)/../barrier/barrier.sv \
+                  $(PWD)/../common/fpnew/cf_math_pkg.sv \
+                  $(PWD)/../common/fpnew/fpnew_pkg.sv \
+                  $(PWD)/../common/fpnew/fpnew_classifier.sv \
+                  $(PWD)/../common/fpnew/fpnew_rounding.sv \
+                  $(PWD)/../common/fpnew/fpnew_fma.sv \
+                  $(PWD)/../common/fpnew/lzc.sv \
+                  $(PWD)/../common/fp32_fma.sv \
+                  $(PWD)/../common/fp8_decode.sv
 TOPLEVEL        = mma_tb_top
+
+# Include path for "common_cells/registers.svh" inside fpnew sources.
+COMPILE_ARGS += +incdir+$(PWD)/../common/fpnew
 
 # cocotb 2.0: use COCOTB_TEST_MODULES; the tb lives in ./tb/test_mma.py
 COCOTB_TEST_MODULES = tb.test_mma
@@ -24,6 +35,13 @@ COCOTB_TEST_MODULES = tb.test_mma
 export PYTHONPATH := $(PWD)/..:$(PYTHONPATH)
 
 EXTRA_ARGS     += --trace --trace-structs
+# Suppress harmless warnings from vendored fpnew / common_cells:
+#   - UNOPTFLAT   : lzc.sv's tree reduction
+#   - WIDTHTRUNC  : fpnew_fma.sv intentional truncations
+#   - ASCRANGE    : fpnew_pkg uses [0:N-1] vector ranges
+#   - WIDTHEXPAND : fpnew_pkg has a 2-bit literal assigned to 32-bit
+#   - SPLITVAR    : lzc.sv split_var pragmas conflict with cocotb's --public-flat-rw
+EXTRA_ARGS     += -Wno-UNOPTFLAT -Wno-WIDTHTRUNC -Wno-ASCRANGE -Wno-WIDTHEXPAND -Wno-SPLITVAR
 
 # Run with the project's venv ACTIVATED:
 #   cd mma/ && source ../.venv/bin/activate && make

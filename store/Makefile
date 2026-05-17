@@ -9,7 +9,8 @@
 
 SIM            ?= verilator
 TOPLEVEL_LANG  ?= verilog
-VERILOG_SOURCES = $(PWD)/store.sv $(PWD)/store_tb_top.sv $(PWD)/../tmem/tmem.sv $(PWD)/../gmem/gmem.sv
+VERILOG_SOURCES = $(PWD)/store.sv $(PWD)/store_tb_top.sv $(PWD)/../tmem/tmem.sv $(PWD)/../gmem/gmem.sv \
+                  $(PWD)/../common/fp8_encode.sv
 TOPLEVEL        = store_tb_top
 
 # cocotb 2.0: use COCOTB_TEST_MODULES; the tb lives in ./tb/test_store.py

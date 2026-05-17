@@ -17,8 +17,20 @@ VERILOG_SOURCES = $(PWD)/cmdproc.sv \
                   $(PWD)/../barrier/barrier.sv \
                   $(PWD)/../mma/mma.sv \
                   $(PWD)/../load/load.sv \
-                  $(PWD)/../store/store.sv
+                  $(PWD)/../store/store.sv \
+                  $(PWD)/../common/fpnew/cf_math_pkg.sv \
+                  $(PWD)/../common/fpnew/fpnew_pkg.sv \
+                  $(PWD)/../common/fpnew/fpnew_classifier.sv \
+                  $(PWD)/../common/fpnew/fpnew_rounding.sv \
+                  $(PWD)/../common/fpnew/fpnew_fma.sv \
+                  $(PWD)/../common/fpnew/lzc.sv \
+                  $(PWD)/../common/fp32_fma.sv \
+                  $(PWD)/../common/fp8_decode.sv \
+                  $(PWD)/../common/fp8_encode.sv
 TOPLEVEL        = cmdproc_tb_top
+
+# Include path for "common_cells/registers.svh" inside fpnew sources.
+COMPILE_ARGS += +incdir+$(PWD)/../common/fpnew
 
 # cocotb 2.0: use COCOTB_TEST_MODULES; the tb lives in ./tb/test_cmdproc.py
 COCOTB_TEST_MODULES = tb.test_cmdproc
@@ -26,7 +38,15 @@ COCOTB_TEST_MODULES = tb.test_cmdproc
 # Make pymodel.*, golden.*, common.tb_utils, config importable from the TB.
 export PYTHONPATH := $(PWD)/..:$(PYTHONPATH)
 
-EXTRA_ARGS     += --trace --trace-structs
+# NOTE: --trace / --trace-structs are intentionally disabled here.
+# cmdproc instantiates the full pipeline INCLUDING the 1024-element MMA FMA
+# grid, which causes Verilator's per-module trace code to balloon the
+# generated archive past macOS `ar`'s 32-bit offset limit (link fails with
+# "malformed archive, member exceeds file size"). Tracing is still available
+# on the smaller mma/Makefile and store/Makefile harnesses if needed.
+# EXTRA_ARGS     += --trace --trace-structs
+# Suppress harmless warnings from vendored fpnew / common_cells (see mma/Makefile).
+EXTRA_ARGS     += -Wno-UNOPTFLAT -Wno-WIDTHTRUNC -Wno-ASCRANGE -Wno-WIDTHEXPAND -Wno-SPLITVAR
 
 # Run with the project's venv ACTIVATED:
 #   cd cmdproc/ && source ../.venv/bin/activate && make

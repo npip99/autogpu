@@ -1,0 +1,13 @@
+SIM            ?= verilator
+TOPLEVEL_LANG  ?= verilog
+VERILOG_SOURCES = $(PWD)/fp8_decode_tb_top.sv $(PWD)/../fp8_decode.sv
+TOPLEVEL        = fp8_decode_tb_top
+COCOTB_TEST_MODULES = test_fp8_decode
+
+export PYTHONPATH := $(PWD)/../..:$(PYTHONPATH)
+EXTRA_ARGS     += --trace --trace-structs
+
+# Use a unique sim build dir so the three sub-targets don't clobber each other.
+SIM_BUILD ?= sim_build_decode
+
+include $(shell cocotb-config --makefiles)/Makefile.sim

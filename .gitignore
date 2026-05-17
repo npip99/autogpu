@@ -10,7 +10,7 @@ __pycache__/
 venv/
 
 # --- cocotb / Verilator build artifacts ---
-sim_build/
+sim_build*/
 results.xml
 *.vcd
 *.fst
