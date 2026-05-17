@@ -59,3 +59,19 @@ SYNTH_ABC_BUFFERING: false
 # replicated MACs. ("deferred_flatten" still flattens at the end, which
 # defeats the purpose for our pathological modules — use "keep" instead.)
 SYNTH_HIERARCHY_MODE: keep
+
+# Bind sky130 SRAM macro for SMEM bank storage. The wrapper in
+# mem/sram_1rw.sv instantiates `sky130_sram_1kbyte_1rw1r_32x256_8` when
+# USE_SKY130_MACRO is defined (sv2v step above passes -D USE_SKY130_MACRO).
+# Yosys treats it as a blackbox; OpenROAD uses .lef for placement and
+# .lib for timing. Validated in `cd smem && make USE_MACRO=1` — 4/4 tests
+# pass against the macro's behavioral model.
+MACROS:
+  sky130_sram_1kbyte_1rw1r_32x256_8:
+    gds:
+      - pdk_dir::libs.ref/sky130_sram_macros/gds/sky130_sram_1kbyte_1rw1r_32x256_8.gds
+    lef:
+      - pdk_dir::libs.ref/sky130_sram_macros/lef/sky130_sram_1kbyte_1rw1r_32x256_8.lef
+    lib:
+      "*":
+        - pdk_dir::libs.ref/sky130_sram_macros/lib/sky130_sram_1kbyte_1rw1r_32x256_8_TT_1p8V_25C.lib

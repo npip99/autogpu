@@ -37,7 +37,9 @@ $(BUILD_DIR)/chip_top.v: $(SV_SOURCES)
 	# --exclude=Always keeps `always_comb` instead of materializing an
 	# explicit sensitivity list. The explicit list would include unpacked
 	# arrays like smem's bank_rdata, which Yosys 0.46 rejects.
-	sv2v -I $(REPO_ROOT)/common/fpnew --exclude=Always $(SV_SOURCES) --top=chip_top -w $@
+	# -D USE_SKY130_MACRO makes sram_1rw instantiate the sky130 SRAM macro
+	# instead of the FF behavioral fallback (validated in smem cocotb).
+	sv2v -I $(REPO_ROOT)/common/fpnew -D USE_SKY130_MACRO --exclude=Always $(SV_SOURCES) --top=chip_top -w $@
 
 synth: sv2v
 	sg docker -c './run.sh < /dev/null'

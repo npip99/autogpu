@@ -115,12 +115,20 @@ def _overlap(a0: int, a1: int, b0: int, b1: int) -> bool:
 
 def _backdoor_write_word(smem, bank: int, word: int, value: int) -> None:
     """As of Phase 7f, SMEM banks live inside `sram_1rw` generate instances.
-    A backdoor word write must update BOTH the operational sram_1rw storage
-    AND the parallel `bank_mem` shadow (used by backdoor reads). The shadow
-    is also what subsequent backdoor reads in this test will return.
+    A backdoor word write must update the operational SRAM storage AND the
+    parallel `bank_mem` shadow used by backdoor reads.
+
+    The operational storage path depends on which sram_1rw impl is active:
+      - FF impl (default):       `u_sram.mem[w]`
+      - sky130 macro wrapper:    `u_sram.u_macro.mem[w]`
     """
-    smem.gen_banks[bank].u_sram.mem[word].value = value & 0xFFFFFFFF
-    smem.bank_mem[bank][word].value = value & 0xFFFFFFFF
+    sram = smem.gen_banks[bank].u_sram
+    masked = value & 0xFFFFFFFF
+    if hasattr(sram, "mem"):
+        sram.mem[word].value = masked
+    else:
+        sram.u_macro.mem[word].value = masked
+    smem.bank_mem[bank][word].value = masked
 
 
 def _backdoor_load_dut(dut, addr: int, data: bytes) -> None:
