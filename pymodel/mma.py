@@ -127,7 +127,19 @@ class MMA:
         d_tmem_slot: int = 0,
         accum: int = 0,
         bar_id: int = 0,
+        rd_a_stall_in: int = 0,
+        rd_b_stall_in: int = 0,
     ) -> None:
+        """Tick one cycle.
+
+        `rd_a_stall_in` / `rd_b_stall_in` mirror the SMEM's combinational
+        stall outputs for this cycle. In the current pymodel sim, MMA uses
+        back-door SMEM access (smem.dump) so it never actually contends
+        with LOAD writes — but for parity with the RTL stall protocol,
+        when either stall is asserted we pause the per-K-cycle accumulate
+        (do not advance _cyc this tick). When the stall clears, MMA
+        resumes from the same column.
+        """
         # Default pulse outputs to 0 each cycle.
         self.done = 0
         self.arrive_en = 0
@@ -155,6 +167,11 @@ class MMA:
 
         cyc = self._cyc
         if 1 <= cyc <= MMA_K:
+            # If either SMEM read port stalled this cycle, pause the
+            # accumulate. The consumer would re-issue the same reads next
+            # cycle and re-attempt the same column.
+            if rd_a_stall_in or rd_b_stall_in:
+                return
             k = cyc - 1
             a_addr = self._saved["a_off"] + k * MMA_M
             b_addr = self._saved["b_off"] + k * MMA_N

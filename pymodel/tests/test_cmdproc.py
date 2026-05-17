@@ -244,7 +244,8 @@ def test_k_loop_matmul_via_repeat():
     C_gmem = 16 * 1024
 
     A_smem = SMEM_TILE_BASE
-    B_smem = SMEM_TILE_BASE + MMA_M * MMA_K  # one A-tile worth past A_smem
+    # +32 puts B in a different 8-bank group from A → no bank conflicts.
+    B_smem = SMEM_TILE_BASE + MMA_M * MMA_K + 32
 
     A_chunk_bytes = MMA_M * MMA_K   # one column-major K-chunk of A
     B_chunk_bytes = MMA_K * MMA_N   # one row-major K-chunk of B

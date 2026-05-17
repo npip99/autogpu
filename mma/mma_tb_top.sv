@@ -86,6 +86,17 @@ module mma_tb_top #(
     assign arrive_en_out     = mma_arrive_en;
     assign arrive_bar_id_out = mma_arrive_bar_id;
 
+    // SMEM stall signals (combinational, fed back into the consumers).
+    logic                              smem_load_wr_stall_out;
+    logic                              smem_rd_a_stall_out;
+    logic                              smem_rd_b_stall_out;
+    // load_wr_stall_out is wired to the TB LOAD_WR but unused (LOAD is
+    // top priority and never stalls); silence verilator unused warning.
+    /* verilator lint_off UNUSEDSIGNAL */
+    logic smem_load_wr_stall_unused;
+    assign smem_load_wr_stall_unused = smem_load_wr_stall_out;
+    /* verilator lint_on UNUSEDSIGNAL */
+
     // ------------------------------------------------------------------
     // MMA engine.
     // ------------------------------------------------------------------
@@ -106,6 +117,8 @@ module mma_tb_top #(
         .rd_a_valid(mma_rd_a_valid),
         .rd_b_data(mma_rd_b_data),
         .rd_b_valid(mma_rd_b_valid),
+        .rd_a_stall_in(smem_rd_a_stall_out),
+        .rd_b_stall_in(smem_rd_b_stall_out),
         .mma_rd_tile(mma_tmem_rd_tile),
         .mma_rd_valid(mma_tmem_rd_valid),
         .rd_a_en(mma_rd_a_en),
@@ -142,7 +155,10 @@ module mma_tb_top #(
         .rd_a_data(mma_rd_a_data),
         .rd_a_valid(mma_rd_a_valid),
         .rd_b_data(mma_rd_b_data),
-        .rd_b_valid(mma_rd_b_valid)
+        .rd_b_valid(mma_rd_b_valid),
+        .load_wr_stall_out (smem_load_wr_stall_out),
+        .mma_rd_a_stall_out(smem_rd_a_stall_out),
+        .mma_rd_b_stall_out(smem_rd_b_stall_out)
     );
 
     // ------------------------------------------------------------------

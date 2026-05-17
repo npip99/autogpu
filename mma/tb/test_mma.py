@@ -73,11 +73,40 @@ async def _drive_defaults(dut) -> None:
 
 
 def _seed_smem(dut, offset: int, data: bytes) -> None:
-    """Back-door write `data` into the SMEM byte array starting at `offset`."""
-    mem = dut.u_smem.mem
+    """Back-door write `data` into the SMEM banked storage starting at `offset`.
+
+    The banked smem (32 banks × NUM_WORDS_PER_BANK × 4 bytes) exposes its
+    byte array `mem[]` as a read-only combinational alias of the banks,
+    so we have to write directly into `bank_mem[bank][word]`. cocotb
+    hierarchical writes are scheduled (NBA-like) — successive
+    read-modify-write of the same word would race — so we gather all
+    bytes per (bank, word) into a dict first, then issue one write per
+    word.
+    """
+    NUM_BANKS = 32
+    bank_mem = dut.u_smem.bank_mem
+    # 1. Pre-read existing words for any (bank, word) we'll touch.
+    word_cache: dict[tuple[int, int], int] = {}
+    for i in range(len(data)):
+        byte_addr = offset + i
+        bank = (byte_addr >> 2) & (NUM_BANKS - 1)
+        word = byte_addr >> (2 + 5)
+        key = (bank, word)
+        if key not in word_cache:
+            word_cache[key] = int(bank_mem[bank][word].value)
+    # 2. Apply byte updates.
     for i, b in enumerate(data):
-        # Verilator unpacks memories as a flat array indexed by address.
-        mem[offset + i].value = int(b) & 0xFF
+        byte_addr = offset + i
+        bank = (byte_addr >> 2) & (NUM_BANKS - 1)
+        word = byte_addr >> (2 + 5)
+        byte_in_dw = byte_addr & 3
+        v = word_cache[(bank, word)]
+        v &= ~(0xFF << (byte_in_dw * 8))
+        v |= (int(b) & 0xFF) << (byte_in_dw * 8)
+        word_cache[(bank, word)] = v
+    # 3. Write one word at a time.
+    for (bank, word), v in word_cache.items():
+        bank_mem[bank][word].value = v & 0xFFFFFFFF
 
 
 async def _init_barrier(dut, bar_id: int, count: int) -> None:

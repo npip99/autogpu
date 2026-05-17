@@ -59,6 +59,10 @@ module mma #(
     // From SMEM MMA_RD_B
     input  logic [MMA_N*8-1:0]                rd_b_data,
     input  logic                              rd_b_valid,
+    // Combinational stall signals from SMEM (high if the read driven LAST
+    // cycle was rejected due to bank conflict; mma must re-drive next).
+    input  logic                              rd_a_stall_in,
+    input  logic                              rd_b_stall_in,
     // From TMEM MMA_PORT
     input  logic [MMA_M*MMA_N*32-1:0]         mma_rd_tile,
     input  logic                              mma_rd_valid,
@@ -123,6 +127,46 @@ module mma #(
 
     // Internal accumulator: a `real` grid (simulation-only).
     real acc [MMA_M][MMA_N];
+
+    // ---- TMEM seed latch (for accum=1 path) ----
+    //
+    // tmem.sv asserts mma_rd_valid for exactly ONE cycle after the read
+    // request lands. With bank conflicts on the SMEM, the FIRST
+    // accumulate can land later than mma_rd_valid pulses — so we latch
+    // the tile when valid and consume the latched copy on the first
+    // accumulate.
+    logic                            tmem_seed_valid;
+    logic [MMA_M*MMA_N*32-1:0]       tmem_seed_tile;
+
+    // ---- Bank-conflict stash + inflight tracking ----
+    //
+    // SMEM has fixed priority LOAD_WR > RD_A > RD_B. When RD_A / RD_B target
+    // the same 8-bank group, RD_B stalls every cycle until RD_A backs off.
+    // The two ports thus complete their reads on different cycles. We
+    // stash whichever port's data arrives first and hold it until the
+    // second arrives; then both feed the same K-column accumulation.
+    //
+    //   cur_collect_k : column we're currently collecting reads for
+    //                   (this is the column whose pa_data + pb_data will
+    //                   accumulate next).
+    //   pa_valid / pa_data : stashed rd_a_data for cur_collect_k
+    //   pb_valid / pb_data : stashed rd_b_data for cur_collect_k
+    //   a_inflight : 1 iff we drove rd_a_en for cur_collect_k and SMEM
+    //                accepted it (not stalled). The corresponding
+    //                rd_a_valid will arrive ONE cycle later (smem's drain).
+    //                Drops to 0 when rd_a_valid is observed (stash).
+    //   b_inflight : analogous.
+    //
+    // Issue logic: drive rd_a_en for cur_collect_k iff (!pa_valid &&
+    // !a_inflight). Same for B. When both pa_valid && pb_valid (or
+    // arrive this cycle), accumulate and advance.
+    logic                  pa_valid;
+    logic [MMA_M*8-1:0]    pa_data;
+    logic                  pb_valid;
+    logic [MMA_N*8-1:0]    pb_data;
+    logic                  a_inflight;
+    logic                  b_inflight;
+    logic [31:0]           cur_collect_k;
 
     // -------------------------------------------------------------------
     // Convert a 32-bit IEEE 754 fp32 bit pattern to a `real`. Mirrors the
@@ -369,6 +413,15 @@ module mma #(
             issue_k           <= 32'd0;
             accum_k           <= 32'd0;
             accum_initialized <= 1'b0;
+            pa_valid          <= 1'b0;
+            pa_data           <= '0;
+            pb_valid          <= 1'b0;
+            pb_data           <= '0;
+            a_inflight        <= 1'b0;
+            b_inflight        <= 1'b0;
+            cur_collect_k     <= 32'd0;
+            tmem_seed_valid   <= 1'b0;
+            tmem_seed_tile    <= TILE_ZERO;
             for (i = 0; i < MMA_M; i++) begin
                 for (j = 0; j < MMA_N; j++) begin
                     acc[i][j] <= 0.0;
@@ -418,6 +471,20 @@ module mma #(
                         rd_b_en   <= 1'b1;
                         rd_b_addr <= b_smem_offset;
 
+                        // Clear stash/inflight for fresh op. We're about
+                        // to drive rd_*_en for col 0 — that's accounted for
+                        // by stamping a_inflight/b_inflight on the next
+                        // cycle's edge (see S_COMPUTE inflight update).
+                        pa_valid       <= 1'b0;
+                        pa_data        <= '0;
+                        pb_valid       <= 1'b0;
+                        pb_data        <= '0;
+                        a_inflight     <= 1'b0;
+                        b_inflight     <= 1'b0;
+                        cur_collect_k  <= 32'd0;
+                        tmem_seed_valid <= 1'b0;
+                        tmem_seed_tile  <= TILE_ZERO;
+
                         busy    <= 1'b1;
                         state   <= S_COMPUTE;
                         issue_k <= 32'd1;
@@ -426,27 +493,136 @@ module mma #(
                 end
 
                 S_COMPUTE: begin
-                    // Keep issuing SMEM reads until we've issued all MMA_K columns.
-                    if (issue_k < MMA_K) begin
-                        rd_a_en   <= 1'b1;
-                        rd_a_addr <= saved_a_off + issue_k * MMA_M;
-                        rd_b_en   <= 1'b1;
-                        rd_b_addr <= saved_b_off + issue_k * MMA_N;
-                        issue_k   <= issue_k + 32'd1;
+                    // ----------------------------------------------------
+                    // Pipeline (bank-conflict-aware):
+                    //
+                    //   Per column K (cur_collect_k), we need both rd_a and
+                    //   rd_b data. Each drive of rd_*_en at cycle T:
+                    //     - if SMEM accepted (!rd_*_stall_in seen at T+1)
+                    //       → data drains at edge T+2 (rd_*_valid=1 at T+2).
+                    //     - if SMEM stalled (rd_*_stall_in=1 at T+1)
+                    //       → no data; must redrive.
+                    //
+                    //   We track per-port:
+                    //     - inflight (1 = SMEM captured but data not yet
+                    //       drained this side)
+                    //     - stash    (1 = data has arrived & is held)
+                    //   Issue:   drive rd_*_en iff (!stash && !inflight).
+                    //   Inflight update: set at edge T iff
+                    //     "previous-cycle drive succeeded" =
+                    //     rd_*_en (own reg) && !rd_*_stall_in.
+                    //   Stash:   on rd_*_valid, stash data, clear inflight.
+                    //   Accumulate: when both stashes are full (or one
+                    //   stashed + the other arriving this cycle), do MAC,
+                    //   clear stashes, advance cur_collect_k. The same
+                    //   cycle, drive the NEXT column's reads (issue_k).
+                    // ----------------------------------------------------
+
+                    // Capture rd_*_valid (data arriving THIS cycle).
+                    automatic logic a_arrives = rd_a_valid;
+                    automatic logic b_arrives = rd_b_valid;
+
+                    // After this cycle's arrivals, will we have BOTH?
+                    automatic logic next_pa = pa_valid || a_arrives;
+                    automatic logic next_pb = pb_valid || b_arrives;
+                    automatic logic accumulate_now = next_pa && next_pb;
+
+                    // Data fields used in the accumulate (this cycle).
+                    automatic logic [MMA_M*8-1:0] a_data_now =
+                        pa_valid ? pa_data : rd_a_data;
+                    automatic logic [MMA_N*8-1:0] b_data_now =
+                        pb_valid ? pb_data : rd_b_data;
+
+                    // Compute new inflight state (this cycle):
+                    //   inflight_next = (inflight && !arrived) || just_issued_success
+                    //   where "just_issued_success" = our previous-cycle
+                    //   drive of rd_*_en succeeded (not stalled).
+                    automatic logic a_just_success =
+                        rd_a_en && !rd_a_stall_in;
+                    automatic logic b_just_success =
+                        rd_b_en && !rd_b_stall_in;
+                    automatic logic a_inflight_after =
+                        (a_inflight && !a_arrives) || a_just_success;
+                    automatic logic b_inflight_after =
+                        (b_inflight && !b_arrives) || b_just_success;
+
+                    // ---- ISSUE: drive rd_*_en for the column we're collecting.
+                    // After accumulate, "current collect" rolls over to the
+                    // next column.
+                    automatic logic [31:0] next_collect_k =
+                        accumulate_now ? cur_collect_k + 32'd1 : cur_collect_k;
+                    // After accumulate, stash clears.
+                    automatic logic pa_after = accumulate_now ? 1'b0 : next_pa;
+                    automatic logic pb_after = accumulate_now ? 1'b0 : next_pb;
+                    // After accumulate, inflight also clears (any drained
+                    // data was consumed in the MAC).
+                    automatic logic a_inflight_after2 =
+                        accumulate_now ? 1'b0 : a_inflight_after;
+                    automatic logic b_inflight_after2 =
+                        accumulate_now ? 1'b0 : b_inflight_after;
+
+                    // Now decide what to drive THIS cycle (NBA → visible
+                    // to SMEM next edge). Only drive if we don't have data
+                    // and no read is already in flight, AND next_collect_k
+                    // is still within MMA_K range.
+                    if (next_collect_k < MMA_K) begin
+                        if (!pa_after && !a_inflight_after2) begin
+                            rd_a_en   <= 1'b1;
+                            rd_a_addr <= saved_a_off + next_collect_k * MMA_M;
+                        end
+                        if (!pb_after && !b_inflight_after2) begin
+                            rd_b_en   <= 1'b1;
+                            rd_b_addr <= saved_b_off + next_collect_k * MMA_N;
+                        end
                     end
 
-                    // Accumulate when both SMEM ports are valid this cycle.
-                    if (rd_a_valid && rd_b_valid) begin
+                    // ---- STATE COMMIT ----
+                    if (accumulate_now) begin
+                        pa_valid <= 1'b0;
+                        pa_data  <= '0;
+                        pb_valid <= 1'b0;
+                        pb_data  <= '0;
+                        cur_collect_k <= cur_collect_k + 32'd1;
+                        // Inflight clears on accumulate (consumed both reads).
+                        a_inflight <= 1'b0;
+                        b_inflight <= 1'b0;
+                    end else begin
+                        if (a_arrives && !pa_valid) begin
+                            pa_valid <= 1'b1;
+                            pa_data  <= rd_a_data;
+                        end
+                        if (b_arrives && !pb_valid) begin
+                            pb_valid <= 1'b1;
+                            pb_data  <= rd_b_data;
+                        end
+                        a_inflight <= a_inflight_after;
+                        b_inflight <= b_inflight_after;
+                    end
+
+                    // Track when a new read is issued by this cycle's
+                    // NBA — that's accounted for as a NEXT-cycle
+                    // a_just_success (when we observe our own rd_a_en==1
+                    // and check rd_a_stall_in). The inflight register is
+                    // updated above based on the PRIOR drive's outcome.
+                    // For "this cycle, did we drive?" we'd set inflight
+                    // on the FOLLOWING cycle; this is the conventional
+                    // "rd_*_en (own reg) && !rd_*_stall_in" pattern.
+
+                    // ---- ACCUMULATE ----
+                    if (accumulate_now) begin
+                        // Use the latched seed (or the current cycle's
+                        // mma_rd_tile if it just arrived and we haven't
+                        // latched yet — defensive in case mma_rd_valid and
+                        // accumulate_now coincide on the very first cycle).
+                        automatic logic [MMA_M*MMA_N*32-1:0] seed_tile =
+                            tmem_seed_valid ? tmem_seed_tile : mma_rd_tile;
                         if (!accum_initialized) begin
-                            // First valid cycle on the accum=1 path: capture
-                            // the TMEM rd_tile as the seed, then add the
-                            // first outer product on top.
                             for (i = 0; i < MMA_M; i++) begin
                                 for (j = 0; j < MMA_N; j++) begin
                                     acc[i][j] <= fp32_bits_to_real(
-                                        mma_rd_tile[((i*MMA_N) + j)*32 +: 32]
-                                    ) + decode_e4m3(rd_a_data[i*8 +: 8])
-                                        * decode_e4m3(rd_b_data[j*8 +: 8]);
+                                        seed_tile[((i*MMA_N) + j)*32 +: 32]
+                                    ) + decode_e4m3(a_data_now[i*8 +: 8])
+                                        * decode_e4m3(b_data_now[j*8 +: 8]);
                                 end
                             end
                             accum_initialized <= 1'b1;
@@ -454,18 +630,31 @@ module mma #(
                             for (i = 0; i < MMA_M; i++) begin
                                 for (j = 0; j < MMA_N; j++) begin
                                     acc[i][j] <= acc[i][j]
-                                        + decode_e4m3(rd_a_data[i*8 +: 8])
-                                          * decode_e4m3(rd_b_data[j*8 +: 8]);
+                                        + decode_e4m3(a_data_now[i*8 +: 8])
+                                          * decode_e4m3(b_data_now[j*8 +: 8]);
                                 end
                             end
                         end
 
                         if (accum_k + 32'd1 == MMA_K) begin
-                            // Last accumulation this cycle; writeback next cycle
-                            // (when `acc` reflects the just-NBA'd final value).
-                            state   <= S_WRITEBACK;
+                            state <= S_WRITEBACK;
                         end
                         accum_k <= accum_k + 32'd1;
+
+                        // issue_k now mirrors next_collect_k for clarity
+                        // (we don't actually consult issue_k anymore —
+                        // next_collect_k drives issuance). Keep it
+                        // updated for any external observation.
+                        issue_k <= cur_collect_k + 32'd1;
+                    end
+
+                    // ---- TMEM seed latch ----
+                    // mma_rd_valid pulses one cycle only; with bank
+                    // conflicts the first accumulate may land later, so
+                    // we latch the tile while it's valid.
+                    if (mma_rd_valid && !tmem_seed_valid) begin
+                        tmem_seed_valid <= 1'b1;
+                        tmem_seed_tile  <= mma_rd_tile;
                     end
                 end
 

@@ -1,2 +1,4 @@
 - [Running `make` requires uv-run](make-uv-run.md) — `uv run make` works; `cd ... && source venv && make` is sandboxed
 - [Cross-module write-drain latency for cocotb tests](cross-module-drain.md) — after sys_idle, add a few RisingEdge cycles before reading smem/tmem
+- [Banked SMEM backdoor convention](smem-banked-backdoor.md) — TB writes via bank_mem[bank][word], reads via mem[byte] alias
+- [SMEM bank conflict with canonical matmul layout](smem-bank-conflict.md) — A/B at 128/1152 both land in bank group 0 → RD_B stalls every cycle

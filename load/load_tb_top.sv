@@ -84,6 +84,15 @@ module load_tb_top #(
     logic                       l_smem_wr_en;
     logic [31:0]                l_smem_wr_addr;
     logic [BEAT_BYTES*8-1:0]    l_smem_wr_data;
+    // smem -> load (combinational stall; always 0 in practice given LOAD's
+    // top priority — included for wiring parity).
+    logic                       smem_load_wr_stall;
+    logic                       smem_rd_a_stall_unused;
+    logic                       smem_rd_b_stall_unused;
+    /* verilator lint_off UNUSEDSIGNAL */
+    logic                       smem_unused_sink;
+    assign smem_unused_sink = smem_rd_a_stall_unused | smem_rd_b_stall_unused;
+    /* verilator lint_on UNUSEDSIGNAL */
 
     // load -> barrier
     logic                       l_add_tx_en;
@@ -117,6 +126,7 @@ module load_tb_top #(
         .smem_wr_en    (l_smem_wr_en),
         .smem_wr_addr  (l_smem_wr_addr),
         .smem_wr_data  (l_smem_wr_data),
+        .smem_wr_stall_in (smem_load_wr_stall),
         .add_tx_en     (l_add_tx_en),
         .add_tx_bar_id (l_add_tx_bar_id),
         .add_tx_bytes  (l_add_tx_bytes),
@@ -169,7 +179,10 @@ module load_tb_top #(
         .rd_a_data  (),
         .rd_a_valid (),
         .rd_b_data  (),
-        .rd_b_valid ()
+        .rd_b_valid (),
+        .load_wr_stall_out  (smem_load_wr_stall),
+        .mma_rd_a_stall_out (smem_rd_a_stall_unused),
+        .mma_rd_b_stall_out (smem_rd_b_stall_unused)
     );
 
     // -----------------------------------------------------------------

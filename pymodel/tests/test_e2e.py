@@ -21,7 +21,9 @@ def test_single_tile_matmul_random():
     B_gmem = len(A_bytes)
     C_gmem = 16 * 1024  # well past A/B
     A_smem = SMEM_TILE_BASE
-    B_smem = SMEM_TILE_BASE + len(A_bytes)
+    # +32 puts B in a different 8-bank group from A, avoiding RD_A/RD_B
+    # bank conflicts during the K-loop. See pymodel/smem.py §BANK CONFLICTS.
+    B_smem = SMEM_TILE_BASE + len(A_bytes) + 32
 
     sim = Sim()
     sim.load_gmem(A_gmem, A_bytes)

@@ -159,7 +159,20 @@ class Load:
         smem_ptr: int = 0,
         bytes_n: int = 0,
         bar_id: int = 0,
+        smem_wr_stall_in: int = 0,
     ) -> None:
+        """Tick one cycle.
+
+        `smem_wr_stall_in` mirrors the SMEM's combinational `load_wr_stall_out`
+        for the current cycle. In the current pymodel sim, LOAD uses
+        back-door SMEM access (smem.load) so it never actually contends
+        with MMA reads — but for parity with the RTL stall protocol, when
+        `smem_wr_stall_in` is 1 we pause the per-beat transfer (do not
+        increment _bytes_transferred and do not signal completion this
+        cycle). Note: per the priority arbitration (LOAD_WR > RD_A > RD_B),
+        the SMEM's `load_wr_stall_out` is always 0; this parameter exists
+        purely as a forward-compatibility hook.
+        """
         # Clear pulse outputs.
         self.done = 0
         self.accept = 0
@@ -192,7 +205,8 @@ class Load:
             self._bytes_transferred = 0
 
         # 3. If executing, transfer one beat per cycle (back-door).
-        if self._cur is not None:
+        #    Paused when smem_wr_stall_in is high (parity with RTL).
+        if self._cur is not None and not smem_wr_stall_in:
             n = BEAT_BYTES
             off = self._bytes_transferred
             chunk = self.gmem.dump(self._cur["gmem"] + off, n)

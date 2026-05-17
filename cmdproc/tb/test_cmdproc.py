@@ -436,7 +436,9 @@ async def test_e2e_matmul(dut):
     B_gmem = len(A_bytes)
     C_gmem = 16 * 1024  # past A/B
     A_smem = SMEM_TILE_BASE
-    B_smem = SMEM_TILE_BASE + len(A_bytes)
+    # +32 puts B in a different 8-bank group from A, avoiding RD_A/RD_B
+    # bank conflicts during the MMA. See pymodel/smem.py §BANK CONFLICTS.
+    B_smem = SMEM_TILE_BASE + len(A_bytes) + 32
 
     _backdoor_gmem_write(dut, A_gmem, A_bytes)
     _backdoor_gmem_write(dut, B_gmem, B_bytes)
@@ -616,7 +618,8 @@ async def test_k_loop_matmul(dut):
     C_gmem = 16 * 1024
 
     A_smem = SMEM_TILE_BASE
-    B_smem = SMEM_TILE_BASE + MMA_M * MMA_K  # one A-tile worth past A_smem
+    # +32 puts B in a different 8-bank group from A → no bank conflicts.
+    B_smem = SMEM_TILE_BASE + MMA_M * MMA_K + 32
 
     A_chunk_bytes = MMA_M * MMA_K   # 1024 bytes
     B_chunk_bytes = MMA_K * MMA_N   # 1024 bytes

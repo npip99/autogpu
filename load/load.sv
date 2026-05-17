@@ -92,6 +92,13 @@ module load #(
     output logic                       smem_wr_en,
     output logic [31:0]                smem_wr_addr,
     output logic [BEAT_BYTES*8-1:0]    smem_wr_data,
+    // Combinational stall from SMEM. With the SMEM's fixed-priority
+    // arbiter (LOAD_WR > RD_A > RD_B), LOAD_WR is top priority and never
+    // stalls — `smem_wr_stall_in` is always 0 in practice. We accept the
+    // pin for wiring parity / future-compatibility but do not use it.
+    /* verilator lint_off UNUSEDSIGNAL */
+    input  logic                       smem_wr_stall_in,
+    /* verilator lint_on UNUSEDSIGNAL */
 
     // Barrier drives.
     output logic                       add_tx_en,

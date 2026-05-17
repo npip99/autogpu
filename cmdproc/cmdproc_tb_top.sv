@@ -153,6 +153,11 @@ module cmdproc_tb_top #(
     logic                              s_rd_a_valid;
     logic [MMA_N*8-1:0]                s_rd_b_data;
     logic                              s_rd_b_valid;
+
+    // smem combinational stall outputs (back-pressure for LOAD / MMA).
+    logic                              s_load_wr_stall;
+    logic                              s_rd_a_stall;
+    logic                              s_rd_b_stall;
     // MMA <-> tmem
     logic [1:0]                        m_tmem_op;
     logic [31:0]                       m_tmem_slot;
@@ -246,6 +251,8 @@ module cmdproc_tb_top #(
         .rd_a_valid    (s_rd_a_valid),
         .rd_b_data     (s_rd_b_data),
         .rd_b_valid    (s_rd_b_valid),
+        .rd_a_stall_in (s_rd_a_stall),
+        .rd_b_stall_in (s_rd_b_stall),
         .mma_rd_tile   (t_mma_rd_tile),
         .mma_rd_valid  (t_mma_rd_valid),
         .rd_a_en       (m_rd_a_en),
@@ -283,6 +290,7 @@ module cmdproc_tb_top #(
         .smem_wr_en    (l_smem_wr_en),
         .smem_wr_addr  (l_smem_wr_addr),
         .smem_wr_data  (l_smem_wr_data),
+        .smem_wr_stall_in (s_load_wr_stall),
         .add_tx_en     (l_add_tx_en),
         .add_tx_bar_id (l_add_tx_bar_id),
         .add_tx_bytes  (l_add_tx_bytes),
@@ -361,7 +369,10 @@ module cmdproc_tb_top #(
         .rd_a_data  (s_rd_a_data),
         .rd_a_valid (s_rd_a_valid),
         .rd_b_data  (s_rd_b_data),
-        .rd_b_valid (s_rd_b_valid)
+        .rd_b_valid (s_rd_b_valid),
+        .load_wr_stall_out  (s_load_wr_stall),
+        .mma_rd_a_stall_out (s_rd_a_stall),
+        .mma_rd_b_stall_out (s_rd_b_stall)
     );
 
     // ------------------------------------------------------------------

@@ -74,6 +74,19 @@ class SMEMAdapter:
     def rd_b_valid(self) -> int:
         return int(self._s.rd_b_valid)
 
+    # Combinational stall outputs (per-port).
+    @property
+    def load_wr_stall_out(self) -> int:
+        return int(self._s.load_wr_stall_out)
+
+    @property
+    def mma_rd_a_stall_out(self) -> int:
+        return int(self._s.mma_rd_a_stall_out)
+
+    @property
+    def mma_rd_b_stall_out(self) -> int:
+        return int(self._s.mma_rd_b_stall_out)
+
 
 def _rand_wr_addr(rng: random.Random) -> int:
     """Random BEAT_BYTES-aligned address inside the tile region."""
@@ -101,9 +114,42 @@ def _overlap(a0: int, a1: int, b0: int, b1: int) -> bool:
 
 
 def _backdoor_load_dut(dut, addr: int, data: bytes) -> None:
-    """Write `data` bytes into dut.mem[addr:] one byte at a time."""
+    """Write `data` bytes into the banked storage by addressing
+    `bank_mem[bank][word]`. The new banked smem exposes `mem[]` as a
+    read-only combinational alias of the banks, so we have to write
+    directly into the banks.
+
+    cocotb hierarchical writes are scheduled NBA — successive
+    read-modify-write of the same word would race. We instead gather all
+    bytes per (bank, word) into a dict in Python, then issue one write
+    per word.
+    """
+    NUM_BANKS = 32
+
+    # Pre-read existing words for any (bank, word) we'll touch.
+    word_cache: dict[tuple[int, int], int] = {}
+    for i in range(len(data)):
+        byte_addr = addr + i
+        bank = (byte_addr >> 2) & (NUM_BANKS - 1)
+        word = byte_addr >> (2 + 5)
+        key = (bank, word)
+        if key not in word_cache:
+            word_cache[key] = int(dut.bank_mem[bank][word].value)
+
+    # Apply byte updates in the cache.
     for i, byte in enumerate(data):
-        dut.mem[addr + i].value = byte
+        byte_addr = addr + i
+        bank = (byte_addr >> 2) & (NUM_BANKS - 1)
+        word = byte_addr >> (2 + 5)
+        byte_in_dw = byte_addr & 3
+        v = word_cache[(bank, word)]
+        v &= ~(0xFF << (byte_in_dw * 8))
+        v |= (int(byte) & 0xFF) << (byte_in_dw * 8)
+        word_cache[(bank, word)] = v
+
+    # Write one word at a time.
+    for (bank, word), v in word_cache.items():
+        dut.bank_mem[bank][word].value = v & 0xFFFFFFFF
 
 
 @cocotb.test()
@@ -119,6 +165,14 @@ async def test_directed_load_then_read_a(dut):
     dut.rd_b_en.value = 0
     dut.rd_b_addr.value = 0
     await reset(dut)
+
+    # Zero bank_mem (`initial` blocks only run at sim startup; if this test
+    # ran a second time on the same sim, bank_mem could be stale).
+    NUM_BANKS = 32
+    NUM_WORDS_PER_BANK = SMEM_BYTES // NUM_BANKS // 4
+    for b in range(NUM_BANKS):
+        for w in range(NUM_WORDS_PER_BANK):
+            dut.bank_mem[b][w].value = 0
 
     # Build a deterministic tile of A_TILE_BYTES bytes at SMEM_TILE_BASE.
     # We'll read the first MMA_M bytes (one "column" worth in the spec's terms).
@@ -160,10 +214,20 @@ async def test_random_vs_pymodel(dut):
     dut.rd_b_addr.value = 0
     await reset(dut)
 
+    # Zero bank_mem to match pymodel's fresh state (reset preserves memory).
+    NUM_BANKS = 32
+    NUM_WORDS_PER_BANK = SMEM_BYTES // NUM_BANKS // 4
+    for b in range(NUM_BANKS):
+        for w in range(NUM_WORDS_PER_BANK):
+            dut.bank_mem[b][w].value = 0
+
     py = SMEMAdapter()
     rng = random.Random(0xBEEF)
 
-    outputs = ["rd_a_data", "rd_a_valid", "rd_b_data", "rd_b_valid"]
+    outputs = [
+        "rd_a_data", "rd_a_valid", "rd_b_data", "rd_b_valid",
+        "load_wr_stall_out", "mma_rd_a_stall_out", "mma_rd_b_stall_out",
+    ]
 
     for cycle in range(500):
         wr_en = rng.randint(0, 1)
@@ -201,4 +265,114 @@ async def test_random_vs_pymodel(dut):
             "rd_b_addr": rd_b_addr,
         }
 
+        await step_and_compare(dut, py, inputs, outputs)
+
+
+# ---------------------------------------------------------------------------
+# Bank-conflict random test.
+# Drives addresses biased toward bank conflicts so the stall logic is heavily
+# exercised. Pymodel and SV must match cycle-by-cycle on outputs + stalls.
+# ---------------------------------------------------------------------------
+
+
+def _rand_in_group(rng: random.Random, group: int, align: int, width: int) -> int:
+    """Return a random `align`-aligned addr whose 8-bank group == `group`.
+
+    group ∈ {0,1,2,3}. A 128-byte block has 4 groups of 32B each (banks
+    [0-7], [8-15], [16-23], [24-31]). To land in group `group`, the address
+    needs bits [6:5] == group. We pick a random 128-byte block, then add the
+    in-group offset.
+    """
+    # Total addresses with this group: SMEM_BYTES / 128 * 32 = SMEM_BYTES/4
+    block_lo = SMEM_TILE_BASE // 128
+    block_hi = (SMEM_BYTES // 128) - 1
+    if block_lo > block_hi:
+        block_lo = 0
+    block = rng.randint(block_lo, block_hi)
+    base = block * 128 + group * 32
+    # Number of `align`-aligned slots inside this 32B group.
+    slots = max(1, 32 // align)
+    slot = rng.randint(0, slots - 1)
+    addr = base + slot * align
+    # If the resulting addr+width exceeds smem, slide down.
+    while addr + width > SMEM_BYTES:
+        addr -= align
+    return addr
+
+
+@cocotb.test()
+async def test_bank_conflict_random(dut):
+    """Drive 3-port traffic with frequent bank-group collisions; compare to pymodel."""
+    await start_clock(dut)
+    dut.wr_en.value = 0
+    dut.wr_addr.value = 0
+    dut.wr_data.value = 0
+    dut.rd_a_en.value = 0
+    dut.rd_a_addr.value = 0
+    dut.rd_b_en.value = 0
+    dut.rd_b_addr.value = 0
+    await reset(dut)
+
+    # Reset clears the registered outputs and pending state but does NOT
+    # clear bank_mem contents (preserves memory across resets — matches the
+    # gmem/tmem convention). Since the previous test left random data in
+    # bank_mem, we zero it explicitly so both pymodel and DUT start with
+    # the same all-zero memory.
+    NUM_BANKS = 32
+    NUM_WORDS_PER_BANK = SMEM_BYTES // NUM_BANKS // 4
+    for b in range(NUM_BANKS):
+        for w in range(NUM_WORDS_PER_BANK):
+            dut.bank_mem[b][w].value = 0
+
+    py = SMEMAdapter()
+    rng = random.Random(0xC0FFEE)
+
+    outputs = [
+        "rd_a_data", "rd_a_valid", "rd_b_data", "rd_b_valid",
+        "load_wr_stall_out", "mma_rd_a_stall_out", "mma_rd_b_stall_out",
+    ]
+
+    for cycle in range(500):
+        wr_en = rng.randint(0, 1)
+        rd_a_en = rng.randint(0, 1)
+        rd_b_en = rng.randint(0, 1)
+
+        # ~70% of the time, pick all three addresses from the SAME 8-bank
+        # group to provoke conflicts. Remaining 30%: random groups (often
+        # no conflict).
+        if rng.random() < 0.7:
+            group = rng.randint(0, 3)
+            wr_addr   = _rand_in_group(rng, group, BEAT_BYTES, BEAT_BYTES) if wr_en   else 0
+            rd_a_addr = _rand_in_group(rng, group, MMA_M,      MMA_M)      if rd_a_en else 0
+            rd_b_addr = _rand_in_group(rng, group, MMA_N,      MMA_N)      if rd_b_en else 0
+        else:
+            wr_addr   = _rand_wr_addr(rng)   if wr_en   else 0
+            rd_a_addr = _rand_rd_a_addr(rng) if rd_a_en else 0
+            rd_b_addr = _rand_rd_b_addr(rng) if rd_b_en else 0
+
+        # Pymodel still asserts on BYTE-overlap (a strict subset of bank
+        # conflict). Drop the write if its byte range overlaps either read.
+        if wr_en and rd_a_en and _overlap(
+            wr_addr, wr_addr + BEAT_BYTES, rd_a_addr, rd_a_addr + MMA_M
+        ):
+            wr_en = 0
+            wr_addr = 0
+        if wr_en and rd_b_en and _overlap(
+            wr_addr, wr_addr + BEAT_BYTES, rd_b_addr, rd_b_addr + MMA_N
+        ):
+            wr_en = 0
+            wr_addr = 0
+
+        wr_data = rng.getrandbits(BEAT_BYTES * 8) if wr_en else 0
+
+        inputs = {
+            "reset": 0,
+            "wr_en": wr_en,
+            "wr_addr": wr_addr,
+            "wr_data": wr_data,
+            "rd_a_en": rd_a_en,
+            "rd_a_addr": rd_a_addr,
+            "rd_b_en": rd_b_en,
+            "rd_b_addr": rd_b_addr,
+        }
         await step_and_compare(dut, py, inputs, outputs)
