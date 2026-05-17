@@ -40,7 +40,7 @@ module cmdproc_tb_top #(
 
     // Instruction push (TB side).
     input  logic                          push_en,
-    input  logic [223:0]                  push_instr,
+    input  logic [255:0]                  push_instr,
 
     // Cmdproc-observable drives (so the directed test can sample them).
     output logic                          init_en,

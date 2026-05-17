@@ -1,0 +1,2 @@
+- [Running `make` requires uv-run](make-uv-run.md) — `uv run make` works; `cd ... && source venv && make` is sandboxed
+- [Cross-module write-drain latency for cocotb tests](cross-module-drain.md) — after sys_idle, add a few RisingEdge cycles before reading smem/tmem

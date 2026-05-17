@@ -1,12 +1,17 @@
 """
 cocotb testbench for cmdproc.sv.
 
-Two tests:
-  1. test_directed_dispatch  — push one of each opcode, sample the engine-issue
-     drives, check FSM transitions (idle, WAIT stall, STORE stall) align with
-     the spec.
+Tests:
+  1. test_directed_dispatch  — push one of each old-style opcode, sample the
+     engine-issue drives, check FSM transitions (idle, WAIT stall, STORE stall)
+     align with the spec.
   2. test_e2e_matmul         — push the headline 8-instruction matmul program;
      wait for sys_idle; compare gmem[C_gmem:] against golden.matmul_reference.
+  3. test_repeat_basic       — REPEAT N + LOAD inside body + END runs N times.
+  4. test_alu_addi_loop      — manual SET_REG/ADDI/BRNZ loop with no engine ops.
+  5. test_load_reg_off       — LOAD with reg-offset operand.
+  6. test_k_loop_matmul      — REPEAT-driven K-loop matmul (parity-headline);
+                               mirrors pymodel test_k_loop_matmul_via_repeat.
 
 We DO NOT cycle-compare cmdproc vs pymodel.cmdproc — cross-module registered
 handoffs add a few cycles, so we test on contract signals and final memory
@@ -26,8 +31,10 @@ from config import (
     MMA_N,
     NUM_BARRIERS,
     OP_BAR_INIT,
+    OP_END,
     OP_LOAD,
     OP_MMA,
+    OP_REPEAT,
     OP_STORE,
     OP_WAIT,
     SMEM_TILE_BASE,
@@ -36,80 +43,215 @@ from golden.matmul_reference import generate
 
 
 # ---------------------------------------------------------------------------
-# Instruction packing helper. Mirrors the bit layout in cmdproc.sv header.
-#
-#   [  2:  0]  op (3 bits)
-#   [ 10:  3]  bar_id (8 bits)
-#   [ 26: 11]  count (16 bits)
-#   [ 58: 27]  gmem_ptr (32 bits)
-#   [ 90: 59]  smem_ptr (32 bits)
-#   [122: 91]  bytes_n (32 bits)
-#   [154:123]  a_smem_offset (32 bits)
-#   [186:155]  b_smem_offset (32 bits)
-#   [194:187]  d_tmem_slot (8 bits)
-#   [195:195]  accum (1 bit)
-#   [203:196]  tmem_slot (8 bits)
-#   [204:204]  dtype (1 bit)
-#   [205:205]  expected_phase (1 bit)
+# Opcodes for the new ALU/control-flow instructions. SV-internal — not in
+# config.py. Must match the localparams in cmdproc.sv.
 # ---------------------------------------------------------------------------
-INSTR_WIDTH = 224  # padded to 28 bytes
+OP_SET_REG = 0x07
+OP_ADD     = 0x08
+OP_ADDI    = 0x09
+OP_SUB     = 0x0A
+OP_AND     = 0x0B
+OP_BRZ     = 0x0C
+OP_BRNZ    = 0x0D
+OP_JMP     = 0x0E
+
+# Operand modes (used in pack_LOAD / pack_MMA / pack_STORE).
+MODE_IMM       = 0
+MODE_ITER_ADDR = 1
+MODE_REG_REF   = 2
+MODE_REG_OFF   = 3
+
+
+# ---------------------------------------------------------------------------
+# Instruction packing helpers (256-bit packed instruction).
+#
+# Layout (must match cmdproc.sv header):
+#   [  7:  0]  op
+#   [ 15:  8]  byte1   — bar_id / rd / tmem_slot
+#   [ 23: 16]  byte2   — a_reg / ra / reg
+#   [ 31: 24]  byte3   — b_reg / rb
+#   [ 33: 32]  a_mode  (2 bits)
+#   [ 35: 34]  b_mode  (2 bits)
+#   [ 36: 36]  accum_mode (MMA: 0=imm, 1=iter_nonzero)
+#   [ 37: 37]  flag1   — dtype / expected_phase / accum_imm
+#   [ 47: 40]  d_tmem_slot (MMA)
+#   [ 79: 48]  field0  — 32-bit immediate (count / value / imm / offset /
+#                        base for a/gmem)
+#   [111: 80]  field1  — a/gmem stride
+#   [143:112]  field2  — smem/b base
+#   [175:144]  field3  — smem/b stride
+#   [207:176]  field4  — bytes_n (LOAD)
+#   [255:208]  pad
+# ---------------------------------------------------------------------------
+INSTR_WIDTH = 256
+_MASK32 = (1 << 32) - 1
+
+
+def _u32(x: int) -> int:
+    """Mask signed → unsigned 32-bit."""
+    return x & _MASK32
 
 
 def pack_instr(
     op: int,
-    bar_id: int = 0,
-    count: int = 0,
-    gmem_ptr: int = 0,
-    smem_ptr: int = 0,
-    bytes_n: int = 0,
-    a_smem_offset: int = 0,
-    b_smem_offset: int = 0,
+    byte1: int = 0,
+    byte2: int = 0,
+    byte3: int = 0,
+    a_mode: int = 0,
+    b_mode: int = 0,
+    accum_mode: int = 0,
+    flag1: int = 0,
     d_tmem_slot: int = 0,
-    accum: int = 0,
-    tmem_slot: int = 0,
-    dtype: int = 0,
-    expected_phase: int = 0,
+    field0: int = 0,
+    field1: int = 0,
+    field2: int = 0,
+    field3: int = 0,
+    field4: int = 0,
 ) -> int:
     w = 0
-    w |= (op             & 0x7)        <<   0
-    w |= (bar_id         & 0xFF)       <<   3
-    w |= (count          & 0xFFFF)     <<  11
-    w |= (gmem_ptr       & 0xFFFFFFFF) <<  27
-    w |= (smem_ptr       & 0xFFFFFFFF) <<  59
-    w |= (bytes_n        & 0xFFFFFFFF) <<  91
-    w |= (a_smem_offset  & 0xFFFFFFFF) << 123
-    w |= (b_smem_offset  & 0xFFFFFFFF) << 155
-    w |= (d_tmem_slot    & 0xFF)       << 187
-    w |= (accum          & 0x1)        << 195
-    w |= (tmem_slot      & 0xFF)       << 196
-    w |= (dtype          & 0x1)        << 204
-    w |= (expected_phase & 0x1)        << 205
+    w |= (op           & 0xFF)       <<   0
+    w |= (byte1        & 0xFF)       <<   8
+    w |= (byte2        & 0xFF)       <<  16
+    w |= (byte3        & 0xFF)       <<  24
+    w |= (a_mode       & 0x3)        <<  32
+    w |= (b_mode       & 0x3)        <<  34
+    w |= (accum_mode   & 0x1)        <<  36
+    w |= (flag1        & 0x1)        <<  37
+    w |= (d_tmem_slot  & 0xFF)       <<  40
+    w |= (_u32(field0))              <<  48
+    w |= (_u32(field1))              <<  80
+    w |= (_u32(field2))              << 112
+    w |= (_u32(field3))              << 144
+    w |= (_u32(field4))              << 176
     return w
 
 
 def pack_BAR_INIT(bar: int, count: int) -> int:
-    return pack_instr(op=OP_BAR_INIT, bar_id=bar, count=count)
+    return pack_instr(op=OP_BAR_INIT, byte1=bar, field0=count)
 
 
-def pack_LOAD(bar: int, gmem_ptr: int, smem_ptr: int, bytes_n: int) -> int:
-    return pack_instr(op=OP_LOAD, bar_id=bar, gmem_ptr=gmem_ptr,
-                      smem_ptr=smem_ptr, bytes_n=bytes_n)
+def pack_LOAD(
+    bar: int,
+    gmem_ptr: int,
+    smem_ptr: int,
+    bytes_n: int,
+    *,
+    a_mode: int = MODE_IMM,
+    b_mode: int = MODE_IMM,
+    gmem_stride: int = 0,
+    smem_stride: int = 0,
+    gmem_reg: int = 0,
+    smem_reg: int = 0,
+) -> int:
+    return pack_instr(
+        op=OP_LOAD,
+        byte1=bar,
+        byte2=gmem_reg,
+        byte3=smem_reg,
+        a_mode=a_mode,
+        b_mode=b_mode,
+        field0=gmem_ptr,
+        field1=gmem_stride,
+        field2=smem_ptr,
+        field3=smem_stride,
+        field4=bytes_n,
+    )
 
 
-def pack_MMA(bar: int, a_smem_offset: int, b_smem_offset: int,
-             d_tmem_slot: int, accum: int) -> int:
-    return pack_instr(op=OP_MMA, bar_id=bar, a_smem_offset=a_smem_offset,
-                      b_smem_offset=b_smem_offset, d_tmem_slot=d_tmem_slot,
-                      accum=accum)
+def pack_MMA(
+    bar: int,
+    a_smem_offset: int,
+    b_smem_offset: int,
+    d_tmem_slot: int,
+    accum: int = 0,
+    *,
+    a_mode: int = MODE_IMM,
+    b_mode: int = MODE_IMM,
+    accum_mode: int = 0,
+    a_smem_stride: int = 0,
+    b_smem_stride: int = 0,
+    a_reg: int = 0,
+    b_reg: int = 0,
+) -> int:
+    return pack_instr(
+        op=OP_MMA,
+        byte1=bar,
+        byte2=a_reg,
+        byte3=b_reg,
+        a_mode=a_mode,
+        b_mode=b_mode,
+        accum_mode=accum_mode,
+        flag1=accum,
+        d_tmem_slot=d_tmem_slot,
+        field0=a_smem_offset,
+        field1=a_smem_stride,
+        field2=b_smem_offset,
+        field3=b_smem_stride,
+    )
 
 
-def pack_STORE(tmem_slot: int, gmem_ptr: int, dtype: int = 0) -> int:
-    return pack_instr(op=OP_STORE, tmem_slot=tmem_slot,
-                      gmem_ptr=gmem_ptr, dtype=dtype)
+def pack_STORE(
+    tmem_slot: int,
+    gmem_ptr: int,
+    dtype: int = 0,
+    *,
+    a_mode: int = MODE_IMM,
+    gmem_stride: int = 0,
+    gmem_reg: int = 0,
+) -> int:
+    return pack_instr(
+        op=OP_STORE,
+        byte1=tmem_slot,
+        byte2=gmem_reg,
+        a_mode=a_mode,
+        flag1=dtype,
+        field0=gmem_ptr,
+        field1=gmem_stride,
+    )
 
 
 def pack_WAIT(bar: int, expected_phase: int) -> int:
-    return pack_instr(op=OP_WAIT, bar_id=bar, expected_phase=expected_phase)
+    return pack_instr(op=OP_WAIT, byte1=bar, field0=expected_phase & 1)
+
+
+def pack_REPEAT(count: int) -> int:
+    return pack_instr(op=OP_REPEAT, field0=count)
+
+
+def pack_END() -> int:
+    return pack_instr(op=OP_END)
+
+
+def pack_SET_REG(rd: int, value: int) -> int:
+    return pack_instr(op=OP_SET_REG, byte1=rd, field0=value)
+
+
+def pack_ADD(rd: int, ra: int, rb: int) -> int:
+    return pack_instr(op=OP_ADD, byte1=rd, byte2=ra, byte3=rb)
+
+
+def pack_ADDI(rd: int, ra: int, imm: int) -> int:
+    return pack_instr(op=OP_ADDI, byte1=rd, byte2=ra, field0=imm)
+
+
+def pack_SUB(rd: int, ra: int, rb: int) -> int:
+    return pack_instr(op=OP_SUB, byte1=rd, byte2=ra, byte3=rb)
+
+
+def pack_AND(rd: int, ra: int, rb: int) -> int:
+    return pack_instr(op=OP_AND, byte1=rd, byte2=ra, byte3=rb)
+
+
+def pack_BRZ(ra: int, offset: int) -> int:
+    return pack_instr(op=OP_BRZ, byte2=ra, field0=offset)
+
+
+def pack_BRNZ(ra: int, offset: int) -> int:
+    return pack_instr(op=OP_BRNZ, byte2=ra, field0=offset)
+
+
+def pack_JMP(offset: int) -> int:
+    return pack_instr(op=OP_JMP, field0=offset)
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +281,15 @@ async def _push(dut, instr_word: int) -> None:
     dut.push_en.value = 1
     dut.push_instr.value = instr_word
     await RisingEdge(dut.clk)
+    dut.push_en.value = 0
+    dut.push_instr.value = 0
+
+
+async def _push_program(dut, program: list) -> None:
+    for instr in program:
+        dut.push_en.value = 1
+        dut.push_instr.value = instr
+        await RisingEdge(dut.clk)
     dut.push_en.value = 0
     dut.push_instr.value = 0
 
@@ -177,9 +328,8 @@ async def test_directed_dispatch(dut):
     await NextTimeStep()
 
     # ---- 1) BAR_INIT(0, 1) ----
-    # Push at cycle T. Dispatch happens at cycle T's posedge (FIFO empty +
+    # Push at cycle T. Dispatch happens at cycle T's posedge (imem empty +
     # push -> take_from_push path). init_en should be high at cycle T+1.
-    # count=1 because we only do 1 LOAD on bar 0 in this directed test.
     await _push(dut, pack_BAR_INIT(bar=0, count=1))
     await ReadOnly()
     assert int(dut.init_en.value)     == 1, "BAR_INIT should drive init_en"
@@ -199,9 +349,6 @@ async def test_directed_dispatch(dut):
     await RisingEdge(dut.clk)  # let init_en drop
 
     # ---- 2) LOAD(bar=0, gmem=0, smem=128, bytes=64) ----
-    # Preload gmem so the LOAD has something to copy (otherwise the data
-    # path is irrelevant for the dispatch test, but the engine needs to
-    # produce a sub_tx+arrive to release the barrier).
     pat = bytes((i & 0xFF) for i in range(64))
     _backdoor_gmem_write(dut, 0, pat)
 
@@ -215,45 +362,24 @@ async def test_directed_dispatch(dut):
     assert int(dut.load_bar_id.value)   == 0
     await NextTimeStep()
 
-    # ---- 3) Push WAIT(bar=0, expected_phase=0). The FIFO is non-empty at the
-    # moment we push (load just issued, but cmdproc itself is back to IDLE).
-    # The WAIT will dispatch the next cycle (or immediately if same-cycle
-    # push-into-empty), and the FSM transitions to S_WAITING_FOR_WAIT_DONE.
+    # ---- 3) WAIT(bar=0, expected_phase=0).
     await _push(dut, pack_WAIT(bar=0, expected_phase=0))
-
-    # After the WAIT dispatches, query_* should be combinationally driven
-    # while in WAITING_FOR_WAIT_DONE. idle should be 0 (state != IDLE).
-    # cmdproc.idle goes 0 when state is non-IDLE. Wait one cycle for state
-    # to settle, then sample.
     for _ in range(2):
         await RisingEdge(dut.clk)
     await ReadOnly()
-    # cmdproc-local idle should be 0 while WAIT pending OR while we're
-    # in another state (load could still be busy).
     state_idle = int(dut.idle.value)
-    # idle is 0 because state is WAITING_FOR_WAIT_DONE.
     assert state_idle == 0, f"idle should be 0 while WAITING; got {state_idle}"
-    # query_bar_id should be 0 (the bar we're waiting on).
     assert int(dut.query_bar_id.value) == 0
     await NextTimeStep()
 
-    # The WAIT shouldn't release until barrier flips on bar 0. Load is going
-    # to finish in <some cycles> -> sub_tx + arrive -> barrier flips ->
-    # wait_done -> cmdproc releases. Run the system until sys_idle.
     cycles = await _wait_sys_idle(dut, max_cycles=2000)
     cocotb.log.info(f"directed test: LOAD+WAIT settled in {cycles} cycles")
 
-    # Verify bar 0 phase flipped to 1 (since expected was 0 and we WAITed).
     bars_phase = int(dut.bars_phase.value)
     bar0_phase = bars_phase & 1
     assert bar0_phase == 1, f"bar 0 phase should be 1 after flip; got {bar0_phase}"
 
     # ---- 4) MMA dispatch ----
-    # Push an MMA. SMEM has A (bytes 0..) from the LOAD; B is implicitly zero
-    # (no preload). The dispatch test only verifies the cmdproc drives;
-    # the actual matmul correctness is covered by test_e2e_matmul.
-    # First we re-init bar 1 (it's count=1 and unflipped; an MMA will
-    # arrive once -> flip).
     await _push(dut, pack_MMA(bar=1, a_smem_offset=SMEM_TILE_BASE,
                               b_smem_offset=SMEM_TILE_BASE + 1024,
                               d_tmem_slot=0, accum=0))
@@ -266,12 +392,9 @@ async def test_directed_dispatch(dut):
     assert int(dut.mma_bar_id.value)        == 1
     await NextTimeStep()
 
-    # Wait for MMA to finish.
     await _wait_sys_idle(dut, max_cycles=2000)
 
     # ---- 5) STORE dispatch ----
-    # The MMA wrote slot 0; STORE drains it. We just verify the dispatch
-    # signals here.
     await _push(dut, pack_STORE(tmem_slot=0, gmem_ptr=16 * 1024, dtype=0))
     await ReadOnly()
     assert int(dut.store_issue_en.value)  == 1
@@ -280,14 +403,10 @@ async def test_directed_dispatch(dut):
     assert int(dut.store_dtype.value)     == 0
     await NextTimeStep()
 
-    # While STORE busy, cmdproc.idle should be 0 (state = WAITING_FOR_STORE_DONE).
-    # Verify within a few cycles.
     await RisingEdge(dut.clk)
     await RisingEdge(dut.clk)
     await ReadOnly()
-    # State should be WAITING_FOR_STORE_DONE -> idle = 0.
     assert int(dut.idle.value) == 0, "idle should be 0 while waiting for STORE"
-    # store_issue_en should now be 0 (pulsed for 1 cycle).
     assert int(dut.store_issue_en.value) == 0, (
         "store_issue_en should be 0 after the dispatch cycle (pulse-only)"
     )
@@ -298,7 +417,7 @@ async def test_directed_dispatch(dut):
 
 
 # ---------------------------------------------------------------------------
-# Test 2: end-to-end matmul.
+# Test 2: end-to-end matmul (single K-tile).
 # ---------------------------------------------------------------------------
 @cocotb.test()
 async def test_e2e_matmul(dut):
@@ -319,7 +438,6 @@ async def test_e2e_matmul(dut):
     A_smem = SMEM_TILE_BASE
     B_smem = SMEM_TILE_BASE + len(A_bytes)
 
-    # Preload gmem with A_bytes and B_bytes.
     _backdoor_gmem_write(dut, A_gmem, A_bytes)
     _backdoor_gmem_write(dut, B_gmem, B_bytes)
 
@@ -335,22 +453,213 @@ async def test_e2e_matmul(dut):
         pack_STORE(tmem_slot=0, gmem_ptr=C_gmem, dtype=0),
     ]
 
-    # Push all instructions back-to-back (one per cycle).
-    for instr in program:
-        dut.push_en.value = 1
-        dut.push_instr.value = instr
-        await RisingEdge(dut.clk)
-    dut.push_en.value = 0
-    dut.push_instr.value = 0
+    await _push_program(dut, program)
 
-    # Run until sys_idle.
     cycles = await _wait_sys_idle(dut, max_cycles=50_000)
     cocotb.log.info(f"e2e matmul: completed in {cycles} cycles "
                     f"(including {len(program)} push cycles)")
 
-    # Read back C from gmem.
     C_bytes = _backdoor_gmem_read(dut, C_gmem, MMA_M * MMA_N * 4)
     C_actual = np.frombuffer(C_bytes, dtype="<f4").reshape(MMA_M, MMA_N)
 
     np.testing.assert_allclose(C_actual, C_expected, rtol=0, atol=1e-5)
     cocotb.log.info(f"e2e matmul: result matches golden (rtol=0, atol=1e-5)")
+
+
+# ---------------------------------------------------------------------------
+# Test 3: REPEAT basic — body loops N times.
+# ---------------------------------------------------------------------------
+@cocotb.test()
+async def test_repeat_basic(dut):
+    """REPEAT 4 + LOAD inside body + END runs body 4 times."""
+    await start_clock(dut)
+    _drive_defaults(dut)
+    await reset(dut)
+
+    pat = b"\xcd" * 64
+    _backdoor_gmem_write(dut, 0, pat)
+
+    program = [
+        pack_BAR_INIT(bar=0, count=4),
+        pack_REPEAT(4),
+        pack_LOAD(bar=0, gmem_ptr=0, smem_ptr=SMEM_TILE_BASE, bytes_n=64),
+        pack_END(),
+        pack_WAIT(bar=0, expected_phase=0),
+    ]
+    await _push_program(dut, program)
+
+    cycles = await _wait_sys_idle(dut, max_cycles=10_000)
+    cocotb.log.info(f"repeat_basic: settled in {cycles} cycles")
+
+    # Barrier should have seen 4 arrivals → phase flipped.
+    bars_phase = int(dut.bars_phase.value)
+    assert (bars_phase & 1) == 1, (
+        f"bar 0 phase should be 1 after 4 loop iters; got {bars_phase & 1}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 4: ALU ADDI loop — manual counted loop using SET_REG/ADDI/BRNZ.
+# ---------------------------------------------------------------------------
+@cocotb.test()
+async def test_alu_addi_loop(dut):
+    """4-iteration counted loop with no engine ops; verify reg state via
+       observable side effect (single LOAD using register-relative addr at the
+       end)."""
+    await start_clock(dut)
+    _drive_defaults(dut)
+    await reset(dut)
+
+    # Place data so a LOAD at gmem=64 (r0 final value after loop: 64) copies it.
+    pat = bytes([0x5A] * 32)
+    _backdoor_gmem_write(dut, 64, pat)
+
+    # Program:
+    #   SET_REG r0, 0
+    #   SET_REG r2, 4           # iter count
+    # loop:                       (pc=2)
+    #   ADDI r0, r0, 16         # r0 += 16
+    #   ADDI r2, r2, -1         # r2 -= 1
+    #   BRNZ r2, -2             # if r2 != 0, back to ADDI r0
+    # # r0 should be 64 after 4 iters.
+    #   BAR_INIT(0, 1)
+    #   LOAD bar=0, gmem=reg_ref(r0), smem=SMEM_TILE_BASE, bytes=32
+    #   WAIT(0, 0)
+    program = [
+        pack_SET_REG(rd=0, value=0),
+        pack_SET_REG(rd=2, value=4),
+        pack_ADDI(rd=0, ra=0, imm=16),
+        pack_ADDI(rd=2, ra=2, imm=-1),
+        pack_BRNZ(ra=2, offset=-2),
+        pack_BAR_INIT(bar=0, count=1),
+        pack_LOAD(
+            bar=0,
+            gmem_ptr=0, smem_ptr=SMEM_TILE_BASE, bytes_n=32,
+            a_mode=MODE_REG_REF, gmem_reg=0,
+        ),
+        pack_WAIT(bar=0, expected_phase=0),
+    ]
+    await _push_program(dut, program)
+
+    cycles = await _wait_sys_idle(dut, max_cycles=10_000)
+    cocotb.log.info(f"alu_addi_loop: settled in {cycles} cycles")
+
+    for _ in range(10):
+        await RisingEdge(dut.clk)
+
+    # If the loop and reg-ref operand worked, the data at gmem[64:64+32] will
+    # have been loaded into smem[SMEM_TILE_BASE..]. Verify via the smem.
+    actual = bytes(int(dut.u_smem.mem[SMEM_TILE_BASE + i].value) for i in range(32))
+    assert actual == pat, (
+        f"alu_addi_loop: smem mismatch; final r0 likely wrong "
+        f"(expected 64 → gmem[64:64+32]=={pat!r}, got {actual!r})"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 5: LOAD with reg-offset operand.
+# ---------------------------------------------------------------------------
+@cocotb.test()
+async def test_load_reg_off(dut):
+    """LOAD with reg-offset operand: gmem_ptr = base(0) + regs[1]."""
+    await start_clock(dut)
+    _drive_defaults(dut)
+    await reset(dut)
+
+    pat = b"\xab" * 32
+    _backdoor_gmem_write(dut, 64, pat)
+
+    program = [
+        pack_BAR_INIT(bar=0, count=1),
+        pack_SET_REG(rd=1, value=64),
+        pack_LOAD(
+            bar=0,
+            gmem_ptr=0,                              # base=0
+            smem_ptr=SMEM_TILE_BASE,
+            bytes_n=32,
+            a_mode=MODE_REG_OFF, gmem_reg=1,         # gmem = 0 + regs[1]
+        ),
+        pack_WAIT(bar=0, expected_phase=0),
+    ]
+    await _push_program(dut, program)
+
+    cycles = await _wait_sys_idle(dut, max_cycles=10_000)
+    cocotb.log.info(f"load_reg_off: settled in {cycles} cycles")
+
+    # Give the LOAD pipeline a few more cycles to drain its smem writes
+    # (cross-module registered handoff latency: see DEVELOPMENT.md).
+    for _ in range(10):
+        await RisingEdge(dut.clk)
+
+    actual = bytes(int(dut.u_smem.mem[SMEM_TILE_BASE + i].value) for i in range(32))
+    assert actual == pat
+
+
+# ---------------------------------------------------------------------------
+# Test 6: K-loop matmul via REPEAT — the headline parity test.
+# Mirrors pymodel/tests/test_cmdproc.py::test_k_loop_matmul_via_repeat.
+# ---------------------------------------------------------------------------
+@cocotb.test()
+async def test_k_loop_matmul(dut):
+    """K=128 matmul via REPEAT 4 over K-chunks (each K-chunk = MMA_K=32)."""
+    await start_clock(dut)
+    _drive_defaults(dut)
+    await reset(dut)
+
+    M, N, K_total = MMA_M, MMA_N, 4 * MMA_K  # 32x32x128
+    n_chunks = K_total // MMA_K              # 4
+
+    A_bytes, B_bytes, C_expected = generate(M, N, K_total, seed=0)
+
+    A_gmem = 0
+    B_gmem = len(A_bytes)
+    C_gmem = 16 * 1024
+
+    A_smem = SMEM_TILE_BASE
+    B_smem = SMEM_TILE_BASE + MMA_M * MMA_K  # one A-tile worth past A_smem
+
+    A_chunk_bytes = MMA_M * MMA_K   # 1024 bytes
+    B_chunk_bytes = MMA_K * MMA_N   # 1024 bytes
+
+    _backdoor_gmem_write(dut, A_gmem, A_bytes)
+    _backdoor_gmem_write(dut, B_gmem, B_bytes)
+
+    program = [
+        pack_REPEAT(n_chunks),
+        pack_BAR_INIT(bar=0, count=2),
+        pack_BAR_INIT(bar=1, count=1),
+        pack_LOAD(
+            bar=0,
+            gmem_ptr=A_gmem, smem_ptr=A_smem, bytes_n=A_chunk_bytes,
+            a_mode=MODE_ITER_ADDR, gmem_stride=A_chunk_bytes,
+        ),
+        pack_LOAD(
+            bar=0,
+            gmem_ptr=B_gmem, smem_ptr=B_smem, bytes_n=B_chunk_bytes,
+            a_mode=MODE_ITER_ADDR, gmem_stride=B_chunk_bytes,
+        ),
+        pack_WAIT(bar=0, expected_phase=0),
+        pack_MMA(
+            bar=1,
+            a_smem_offset=A_smem, b_smem_offset=B_smem,
+            d_tmem_slot=0, accum=0,
+            accum_mode=1,  # iter_nonzero
+        ),
+        pack_WAIT(bar=1, expected_phase=0),
+        pack_END(),
+        pack_STORE(tmem_slot=0, gmem_ptr=C_gmem, dtype=0),
+    ]
+
+    await _push_program(dut, program)
+
+    cycles = await _wait_sys_idle(dut, max_cycles=200_000)
+    cocotb.log.info(
+        f"k_loop_matmul: K={K_total} ({n_chunks} chunks) completed in "
+        f"{cycles} cycles (pymodel ref: 919)"
+    )
+
+    C_bytes = _backdoor_gmem_read(dut, C_gmem, MMA_M * MMA_N * 4)
+    C_actual = np.frombuffer(C_bytes, dtype="<f4").reshape(MMA_M, MMA_N)
+
+    np.testing.assert_allclose(C_actual, C_expected, rtol=0, atol=1e-5)
+    cocotb.log.info("k_loop_matmul: result matches golden (rtol=0, atol=1e-5)")

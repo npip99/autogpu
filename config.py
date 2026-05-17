@@ -43,3 +43,5 @@ OP_LOAD     = 0x01
 OP_MMA      = 0x02
 OP_STORE    = 0x03
 OP_WAIT     = 0x04
+OP_REPEAT   = 0x05   # REPEAT N: begin counted loop, body runs N times
+OP_END      = 0x06   # END: close innermost REPEAT; jump back if more iters
