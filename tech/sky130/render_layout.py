@@ -40,11 +40,24 @@ layout.read(def_path, options)
 view = pya.LayoutView()
 cell_view_idx = view.create_layout(True)
 view.load_layout(def_path, options, cell_view_idx)
+# Show subcells, all hierarchy levels. Default visibility is sometimes
+# limited to a few levels which hides the actual standard-cell geometry.
+view.max_hier_levels = 99
+view.min_hier_levels = 0
 
 # Apply sky130 colors so layers are actually visible.
 lyp_path = os.path.join(sky130A, "libs.tech/klayout/tech/sky130A.lyp")
 if os.path.exists(lyp_path):
     view.load_layer_props(lyp_path)
+
+# Force ALL layers visible (some .lyp configs hide layers by default
+# or based on zoom). Walk the layer list and set visible=True.
+iter = view.begin_layers()
+while not iter.at_end():
+    lp = iter.current()
+    lp.visible = True
+    iter.next()
+view.update_content()
 
 view.zoom_fit()
 
@@ -54,14 +67,16 @@ bg_white = globals().get("bg_white") or os.environ.get("BG_WHITE", "0")
 if bg_white == "1":
     view.set_config("background-color", "#ffffff")
 
-# `zoom`: "crop" picks a small box near the origin; "fit" uses the whole die.
+# `zoom`: "crop" picks a CROP_UM × CROP_UM box centered on the design's
+# bbox (where cells actually are); "fit" uses the whole die.
 zoom_mode = globals().get("zoom_mode") or os.environ.get("ZOOM_MODE", "fit")
 if zoom_mode == "crop":
-    # microns; tiny box so cells are visible at 4K canvas (cells are ~0.4µm
-    # wide so a multi-mm die is sub-pixel even at 4K when fit).
-    crop_um = float(os.environ.get("CROP_UM", "50"))
-    box = pya.DBox(0.0, 0.0, crop_um, crop_um)
-    view.zoom_box(box)
+    crop_um = float(os.environ.get("CROP_UM", "100"))
+    bbox = layout.top_cell().dbbox()
+    cx, cy = (bbox.left + bbox.right) / 2, (bbox.bottom + bbox.top) / 2
+    half = crop_um / 2
+    view.zoom_box(pya.DBox(cx - half, cy - half, cx + half, cy + half))
 
-view.save_image(out_png, 4096, 4096)
+res = int(os.environ.get("RES", "4096"))
+view.save_image(out_png, res, res)
 print(f"Wrote {out_png}")

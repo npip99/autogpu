@@ -29,11 +29,8 @@ TOPLEVEL_LANG  ?= verilog
 VERILOG_SOURCES = $(PWD)/../mem/sram_1rw.sv \
                   $(PWD)/../cmdproc/cmdproc.sv \
                   $(PWD)/../smem/smem.sv \
-                  $(PWD)/../tmem/tmem.sv \
                   $(PWD)/../barrier/barrier.sv \
-                  $(PWD)/../mma/mma.sv \
                   $(PWD)/../load/load.sv \
-                  $(PWD)/../store/store.sv \
                   $(PWD)/../reset_seq/reset_seq.sv \
                   $(PWD)/../common/fpnew/cf_math_pkg.sv \
                   $(PWD)/../common/fpnew/fpnew_pkg.sv \
@@ -44,6 +41,9 @@ VERILOG_SOURCES = $(PWD)/../mem/sram_1rw.sv \
                   $(PWD)/../common/fp32_fma.sv \
                   $(PWD)/../common/fp8_decode.sv \
                   $(PWD)/../common/fp8_encode.sv \
+                  $(PWD)/../mac_tmem_cell/mac_tmem_cell.sv \
+                  $(PWD)/../compute_array/compute_array.sv \
+                  $(PWD)/../store/store.sv \
                   $(PWD)/chip_top.sv \
                   $(PWD)/../gmem/gmem.sv \
                   $(PWD)/tb/chip_tb_top.sv
@@ -112,11 +112,8 @@ include $(shell cocotb-config --makefiles)/Makefile.sim
 LINT_SOURCES = $(PWD)/../mem/sram_1rw.sv \
                $(PWD)/../cmdproc/cmdproc.sv \
                $(PWD)/../smem/smem.sv \
-               $(PWD)/../tmem/tmem.sv \
                $(PWD)/../barrier/barrier.sv \
-               $(PWD)/../mma/mma.sv \
                $(PWD)/../load/load.sv \
-               $(PWD)/../store/store.sv \
                $(PWD)/../reset_seq/reset_seq.sv \
                $(PWD)/../common/fpnew/cf_math_pkg.sv \
                $(PWD)/../common/fpnew/fpnew_pkg.sv \
@@ -127,6 +124,9 @@ LINT_SOURCES = $(PWD)/../mem/sram_1rw.sv \
                $(PWD)/../common/fp32_fma.sv \
                $(PWD)/../common/fp8_decode.sv \
                $(PWD)/../common/fp8_encode.sv \
+               $(PWD)/../mac_tmem_cell/mac_tmem_cell.sv \
+               $(PWD)/../compute_array/compute_array.sv \
+               $(PWD)/../store/store.sv \
                $(PWD)/chip_top.sv
 
 # fpnew-only suppressions. None of these fire in project RTL.

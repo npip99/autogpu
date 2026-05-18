@@ -12,38 +12,44 @@ The split was introduced in Phase 7f. Before it, `cmdproc/cmdproc_tb_top.sv` mix
 ## Chip boundary diagram
 
 ```
-        ┌──────────────────────────────────────────────────────────────┐
-        │                          chip_top                            │
-        │                                                              │
-        │   ┌──────────┐                  ┌─────────────────────┐      │
-        │   │ reset_seq│                  │       cmdproc       │      │
-        │   └──────────┘                  └─────────────────────┘      │
-        │       │                          │         │       │         │
-        │  chip_in_reset    init/wait    mma_start  load   store       │
-        │       │                          │         │       │         │
-        │       ▼                          ▼         ▼       ▼         │
-        │   ┌─────────────┐         ┌──────┐   ┌──────┐  ┌──────┐      │
-        │   │  smem       │◀────────│ mma  │   │ load │  │store │      │
-        │   │ (32 sram_1rw│         │      │   │      │  │      │      │
-        │   │   banks)    │─────────│      │   │      │  │      │      │
-        │   └─────────────┘         └──────┘   └──────┘  └──────┘      │
-        │                            │  │         │       │            │
-        │                            ▼  ▼         │       │            │
-        │                          ┌────────┐     │       │            │
-        │                          │  tmem  │◀────┘       │            │
-        │                          │ (flops)│             │            │
-        │                          └────────┘             │            │
-        │                                                 │            │
-        │   ┌─────────────────── mc_* memory-controller bus ──┐        │
-        └───┤  mc_rd_en/addr/data/valid     mc_wr_en/addr/data │────────┘
-            └──────────────────────┬──────────────────────────┘
-                                   │  (off-chip / pads)
-                                   ▼
-                              ┌──────────┐
-                              │   gmem   │   ← behavioral DRAM (testbench),
-                              │ (DRAM)   │     replaced by real DDR + AXI
-                              └──────────┘     shim at tape-out time.
+        ┌──────────────────────────────────────────────────────────────────────┐
+        │                              chip_top                                │
+        │                                                                      │
+        │   ┌──────────┐                       ┌─────────────────────┐         │
+        │   │ reset_seq│                       │       cmdproc       │         │
+        │   └──────────┘                       └─────────────────────┘         │
+        │       │                               │         │       │            │
+        │  chip_in_reset      init/wait      mma_start  load   store           │
+        │       │                               │         │       │            │
+        │       ▼                               ▼         ▼       ▼            │
+        │   ┌─────────────┐           ┌────────────────┐  ┌────┐  ┌─────┐      │
+        │   │  smem       │◀──────────│ compute_array  │  │load│  │store│      │
+        │   │ (32 sram_1rw│           │ (1024 leaves:  │  │    │  │     │      │
+        │   │   banks)    │──────────▶│  mac_tmem_cell)│  │    │  │     │      │
+        │   └─────────────┘           │  K-loop, drain │  │    │  │     │      │
+        │                             └────────────────┘  └────┘  └─────┘      │
+        │                                   │   ▲           │        ▲         │
+        │                                   │   │drain      │        │         │
+        │                                   ▼   │ stream    │        │         │
+        │                                   (per-cell TMEM)─┴────────┘         │
+        │                                                                      │
+        │   ┌────────────────────── mc_* memory-controller bus ────┐           │
+        └───┤  mc_rd_en/addr/data/valid          mc_wr_en/addr/data │───────────┘
+            └────────────────────────┬──────────────────────────────┘
+                                     │  (off-chip / pads)
+                                     ▼
+                                ┌──────────┐
+                                │   gmem   │   ← behavioral DRAM (testbench),
+                                │ (DRAM)   │     replaced by real DDR + AXI
+                                └──────────┘     shim at tape-out time.
 ```
+
+Phase 7h dissolved the separate `mma` + `tmem` modules into a single
+`compute_array` (1024 `mac_tmem_cell` leaves, each owning its own
+per-(i, j) TMEM micro-storage). The chip-level `mma_*` port names are
+preserved as the public contract; STORE now consumes the compute_array
+drain *stream* (one fp32 element per cycle) instead of a wide TMEM
+read.
 
 ## mc_* memory-controller port contract
 
@@ -80,9 +86,9 @@ response. The behavioral DRAM commits in the same cycle.
 - `clk` is a free-running clock. No clock gating today.
 - `reset_in` is an external, active-high, synchronous reset. Internally,
   `chip_top`'s `reset_seq` re-times this and walks every on-chip memory
-  through a scrub cycle (zeroes all SMEM banks and TMEM cells) before
-  releasing `chip_in_reset`. Pipeline modules see `chip_in_reset`, not
-  `reset_in` directly.
+  through a scrub cycle (zeroes all SMEM banks and the per-cell TMEM
+  storage inside `compute_array`) before releasing `chip_in_reset`.
+  Pipeline modules see `chip_in_reset`, not `reset_in` directly.
 - `chip_in_reset` and `scrub_done` are exposed as outputs so the TB can
   wait for the chip to be ready (`common.tb_utils.wait_until_chip_ready`).
 - `sys_idle` indicates `cmdproc.idle && !load_busy && !mma_busy &&

@@ -1,13 +1,17 @@
 """
 cocotb testbench for store.sv.
 
-Drives store_tb_top (store + tmem + gmem) and verifies that the STORE engine
-produces the same gmem bytes as pymodel.store.Store on the same input tile.
+Drives store_tb_top (store + compute_array + gmem) and verifies that the
+STORE engine produces the same gmem bytes as pymodel.store.Store on the
+same input tile.
+
+Phase 7h-3: store now consumes compute_array's drain-stream interface
+(one row per cycle), not a 32k-bit one-shot tile from tmem. We seed the
+tile into compute_array via cocotb back-door into the per-cell storage,
+following the pattern in compute_array/tb/test_compute_array.py.
 
 Conventions (see DEVELOPMENT.md §Testing):
   - SV port names match pymodel kwargs / attrs exactly.
-  - Packed tiles cross SV<->Python as an int (element [0][0] in low 32 bits,
-    fp32 IEEE 754 LSB-first per word). Same convention as pymodel.tmem.
   - gmem bytes cross SV<->Python as an int (byte 0 in low 8 bits, little-endian).
 """
 
@@ -20,9 +24,9 @@ from cocotb.triggers import RisingEdge, ReadOnly, NextTimeStep
 from common.tb_utils import start_clock, reset
 from config import BEAT_BYTES, MMA_M, MMA_N
 from golden.fp8 import decode_e4m3, encode_e4m3
+from pymodel.compute_array import ComputeArray
 from pymodel.gmem import GMEM
 from pymodel.store import Store
-from pymodel.tmem import MMAOp, TMEM
 
 
 TILE_BYTES = MMA_M * MMA_N * 4
@@ -32,12 +36,9 @@ TILE_BITS = TILE_BYTES * 8
 # ----------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------
-def tile_to_int(tile: np.ndarray) -> int:
-    """Convert (MMA_M, MMA_N) fp32 array -> packed int matching SV layout."""
-    assert tile.shape == (MMA_M, MMA_N)
-    assert tile.dtype == np.float32
-    buf = np.ascontiguousarray(tile, dtype="<f4").tobytes()
-    return int.from_bytes(buf, "little")
+def _fp32_bits(x: float) -> int:
+    """fp32 → 32-bit unsigned bit pattern."""
+    return int(np.array([np.float32(x)], dtype=np.float32).view(np.uint32)[0])
 
 
 def _bytes_to_int(b: bytes) -> int:
@@ -55,23 +56,21 @@ async def _drive_defaults(dut) -> None:
     dut.tmem_slot.value = 0
     dut.gmem_ptr.value = 0
     dut.dtype.value = 0
-    dut.mma_op.value = 0
-    dut.mma_slot.value = 0
-    dut.mma_write_tile.value = 0
     dut.gmem_rd_en.value = 0
     dut.gmem_rd_addr.value = 0
 
 
 async def _seed_tile(dut, slot: int, tile: np.ndarray) -> None:
-    """Seed a tile into TMEM slot via the MMA_PORT WRITE (one cycle)."""
-    dut.mma_op.value = int(MMAOp.WRITE)
-    dut.mma_slot.value = slot
-    dut.mma_write_tile.value = tile_to_int(tile)
-    await RisingEdge(dut.clk)
-    # Clear write.
-    dut.mma_op.value = 0
-    dut.mma_slot.value = 0
-    dut.mma_write_tile.value = 0
+    """Seed a tile into compute_array slot via per-cell storage back-door.
+
+    Phase 7h-3: matches compute_array/tb/test_compute_array.py's pattern.
+    """
+    assert tile.shape == (MMA_M, MMA_N)
+    for i in range(MMA_M):
+        for j in range(MMA_N):
+            dut.u_compute_array.gen_row[i].gen_col[j].u_cell.storage[slot].value = (
+                _fp32_bits(tile[i, j])
+            )
 
 
 async def _issue_and_wait(
@@ -228,11 +227,12 @@ async def test_random_vs_pymodel(dut):
             scale = rng.choice([0.1, 0.5, 1.0, 5.0])
             tile = np.random.RandomState(seed).randn(MMA_M, MMA_N).astype(np.float32) * scale
 
-            # Mirror pymodel side: tick Store on a fresh GMEM/TMEM to get expected bytes.
-            py_tmem = TMEM()
+            # Mirror pymodel side: tick Store on a fresh GMEM/ComputeArray
+            # to get expected bytes.
+            py_ca = ComputeArray()
             py_gmem = GMEM()
-            py_store = Store(py_tmem, py_gmem)
-            py_tmem.set_slot(0, tile)
+            py_store = Store(py_ca, py_gmem)
+            py_ca.set_tile(0, tile)
             py_store.tick(issue_en=1, tmem_slot=0, gmem_ptr=cur_ptr, dtype=dtype)
             while py_store.busy:
                 py_store.tick()

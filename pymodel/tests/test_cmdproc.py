@@ -52,7 +52,7 @@ def test_store_sync_stalls_then_completes():
     """STORE holds cmdproc until store.done."""
     sim = Sim()
     tile = np.arange(MMA_M * MMA_N, dtype=np.float32).reshape(MMA_M, MMA_N)
-    sim.tmem.set_slot(0, tile)
+    sim.compute_array.set_tile(0, tile)
     sim.load_program([STORE(tmem_slot=0, gmem_ptr=0, dtype=0)])
     sim.run_until_idle()
     expected = bytes(np.ascontiguousarray(tile.astype("<f4")).tobytes())

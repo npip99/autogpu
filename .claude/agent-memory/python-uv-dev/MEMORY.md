@@ -5,3 +5,5 @@
 - [Vendored fpnew (CVFPU) for synthesizable fp32 FMA](project_fpnew_vendor.md) — common/fpnew/ + wrappers replace `real` arithmetic in mma/store.
 - [Verilator trace + 1024 FMAs hits macOS ar limit](feedback_verilator_trace_archive_limit.md) — cmdproc/Makefile must omit `--trace`; archive offset overflows.
 - [Reset sequencer + on-chip memory scrub (Phase 7e)](project_reset_seq_scrub.md) — reset_seq replaces `initial` zero-init in smem/tmem; only instantiated in cmdproc_tb_top.
+- [Drain pipeline needs 2 stages, not 1](feedback_drain_pipeline_two_stage.md) — cell.drain_data is registered, so wrapper must wait an extra cycle before sampling.
+- [Phase 7h-3: store↔compute_array drain-stream](project_phase7h3_drain_stream.md) — chip_top now uses compute_array (no tmem); STORE consumes row-per-cycle drain.

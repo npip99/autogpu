@@ -69,7 +69,7 @@ These started as ad-hoc agent decisions and are now project conventions:
 
 - **Reset port on every SV module.** Pymodels don't model `reset` (they construct fresh classes), but the cocotb `tb_utils.reset()` helper drives a `reset` port. Every SV module exposes one: dominant (clears registered outputs + pending state, preserves memory contents). The TB adapter pops `reset` from the kwargs before calling `pymodel.tick()`.
 - **Byte-packing for SV↔Python bytes.** SV byte vectors and Python `bytes` round-trip as little-endian: byte 0 in the low 8 bits of the int. SV side: `wr_data[7:0]` is byte 0. Python side: `int.from_bytes(blob, "little")`.
-- **TMEM tile packing.** Documented in `pymodel/tmem.py` §"RTL TILE PACKING CONVENTION". Row-major, fp32 LSB-first per word, element `[i][j]` at bit `(i*MMA_N+j)*32`.
+- **TMEM tile packing.** Row-major, fp32 LSB-first per word, element `[i][j]` at bit `(i*MMA_N+j)*32`. Pre-Phase-7h this lived in a monolithic `tmem` module; today the equivalent storage is distributed across 1024 `mac_tmem_cell` leaves inside `compute_array`, and STORE consumes the drain *stream* — one element per cycle — instead of reading a full tile.
 - **Write-then-drain forwarding.** Memory modules (gmem/smem/tmem) commit writes BEFORE draining the prior-cycle pending read. So a same-cycle wr + drain-of-pending-rd at the same addr returns the NEW data. Requires byte/element-level write-forwarding muxes on drain paths.
 - **Overlap granularity** is byte-range intersection: `[wr_addr, wr_addr+BEAT_BYTES) ∩ [rd_addr, rd_addr+READ_WIDTH) ≠ ∅`. Pymodel asserts on this; the cocotb random test must filter same-cycle wr+rd that would overlap.
 - **Cross-module registered-handoff latency**: when an engine (MMA / LOAD / STORE) drives a registered port (e.g. `rd_en`) consumed by a registered memory (e.g. `gmem` / `smem` / `tmem`), the round-trip takes **3 cycles end-to-end**, not the producer's documented 1: posedge T (engine drives `rd_en<=1`), T+1 (memory captures pending), T+2 (memory commits `rd_data<=`, `rd_valid<=1`), T+3 (engine's `always_ff` observes new `rd_data`). The pymodel uses back-door access (zero latency), so any pymodel spec saying "N cycles" becomes "N + a few" in RTL.
@@ -164,13 +164,64 @@ TEST CASES (in pymodel/tests/test_<sub>.py)
 
 If a module's BEHAVIOR section grows past ~10 rules, it's doing too much — split it.
 
+## Phase 7h notes — compute_array refactor
+
+Phase 7h replaced the old monolithic `mma` + `tmem` pair with two new
+modules:
+
+- `mac_tmem_cell/mac_tmem_cell.sv` — single leaf cell: one fp32 FMA +
+  per-(i, j) TMEM micro-storage for `TMEM_SLOTS` slots. The full TMEM
+  is now distributed across 1024 of these (`MMA_M × MMA_N`), one per
+  MAC position.
+- `compute_array/compute_array.sv` — wraps the 1024 leaves with the
+  K-loop, A/B broadcast network (one SMEM row + one SMEM column per
+  cycle), and the drain stream out to STORE.
+
+**Module hierarchy:**
+
+```
+chip_top
+├── cmdproc
+├── smem
+├── barrier
+├── reset_seq
+├── load
+├── compute_array          ← Phase 7h-2 (replaces mma + tmem)
+│   └── mac_tmem_cell × 1024  ← Phase 7h-1 (leaf)
+└── store
+```
+
+**Why we moved away from `mma` + `tmem`.** The old design had `tmem`
+expose a single wide RMW port (`MMA_M × MMA_N × 32 = 32768 bits`) to
+`mma`. That interface didn't synthesize at sky130 — every net was
+shared across all 1024 cells, so the place-and-route fan-out blew up
+on AREA-3 with no realistic timing path. Pushing the FMA *and* its
+per-position storage into a single leaf eliminates that interface
+entirely; the wide bus dissolves into 1024 local cell-internal nets,
+and the per-cell module is small enough that synth converges per
+hierarchy instance and ABC only optimizes the leaf once.
+
+**Drain stream contract (compute_array → store).** STORE no longer
+reads a 32k-bit tile from TMEM in one shot. The new contract: STORE
+asserts `drain_start` with a slot id; `compute_array` then walks the
+1024 cells one element per cycle, producing
+`drain_valid + drain_data[31:0]`. STORE collects the elements into
+its outbound BEAT_BYTES write packets. See `store/store.sv` and
+`compute_array/compute_array.sv` for the exact handshake.
+
+**Signal naming.** `chip_top` still exposes the legacy `mma_*` /
+`tmem_*` port names (`mma_busy`, `mma_done`, `TMEM_SLOTS`, …) — they
+are the *public contract* of the chip, not a reference to the old
+modules. The cmdproc instruction class `Mma` is also unchanged — it's
+the ISA-level matmul instruction, not the dead module.
+
 ## fpnew reset audit (Phase 7e)
 
 Phase 7e replaced the simulation-only `initial begin` zero-init blocks in
-`smem.sv` / `tmem.sv` with a real `reset_seq` module that scrubs on-chip
-memories before deasserting `chip_in_reset`. As part of that work we
-audited the vendored CVFPU (`common/fpnew/*`) for FFs that lack reset
-paths.
+`smem.sv` and the (since-removed in Phase 7h) `tmem.sv` with a real
+`reset_seq` module that scrubs on-chip memories before deasserting
+`chip_in_reset`. As part of that work we audited the vendored CVFPU
+(`common/fpnew/*`) for FFs that lack reset paths.
 
 **Result: no live FFs in our integration.**
 

@@ -7,8 +7,9 @@ cmdproc/tb/test_cmdproc.py as part of Phase 7f when the chip boundary
 was drawn (chip_top synthesizable, gmem outside the die). Hierarchy:
 
     dut (chip_tb_top)
-    ├── u_chip   — chip_top (cmdproc + smem + tmem + mma + load + store
-    │              + barrier + reset_seq)
+    ├── u_chip   — chip_top (cmdproc + smem + compute_array + load + store
+    │              + barrier + reset_seq)  [Phase 7h-3: compute_array
+    │              replaces the old mma + tmem pair]
     └── u_gmem   — behavioral off-chip DRAM model
 
 Tests:

@@ -17,8 +17,7 @@ results.xml
 *.log
 
 # --- OpenLane synthesis outputs + intermediate build artifacts ---
-tech/*/runs/
-tech/*/*/runs/
+tech/**/runs/
 slpp_all/
 build/
 

@@ -109,25 +109,64 @@ completion as seen by cmdproc — architecturally correct (matches RTL's
 registered output semantics).
 """
 
+from config import MMA_M, MMA_N
 from pymodel.barrier import Barrier
 from pymodel.cmdproc import CmdProc
+from pymodel.compute_array import ComputeArray
 from pymodel.gmem import GMEM
 from pymodel.load import Load
-from pymodel.mma import MMA
 from pymodel.smem import SMEM
 from pymodel.store import Store
-from pymodel.tmem import TMEM
+
+
+# Phase 7h-3: chip_top replaced the old monolithic mma + tmem pair with a
+# single compute_array (1024 mac_tmem_cell leaves + K-loop + drain mux).
+# The sim harness mirrors that — `self.mma` is now a thin shim around the
+# compute_array's matmul side, and STORE now consumes the drain stream.
+
+
+class _MmaShim:
+    """Thin wrapper exposing the old MMA contract (start/busy/done/arrive_*)
+    on top of compute_array's K-loop side.
+
+    cmdproc.tick() reads mma.busy / mma.done from the previous tick's commit;
+    cmdproc.mma_args is a dict matching the OLD MMA's kwargs
+    (a_smem_offset, b_smem_offset, d_tmem_slot, accum, bar_id). We translate
+    that into compute_array's tick() kwargs at the Sim level. This shim only
+    surfaces the read-side of the contract so cmdproc keeps working.
+    """
+
+    def __init__(self, compute_array: ComputeArray):
+        self._ca = compute_array
+
+    @property
+    def busy(self) -> int:
+        return int(self._ca.mma_busy)
+
+    @property
+    def done(self) -> int:
+        return int(self._ca.mma_done)
+
+    @property
+    def arrive_en(self) -> int:
+        return int(self._ca.arrive_en)
+
+    @property
+    def arrive_bar_id(self) -> int:
+        return int(self._ca.arrive_bar_id)
 
 
 class Sim:
     def __init__(self):
         self.gmem = GMEM()
         self.smem = SMEM()
-        self.tmem = TMEM()
         self.barrier = Barrier()
-        self.mma = MMA(self.smem, self.tmem)
+        # compute_array replaces (mma + tmem). See Phase 7h-3.
+        self.compute_array = ComputeArray()
+        self.mma = _MmaShim(self.compute_array)
         self.load = Load(self.gmem, self.smem)
-        self.store = Store(self.tmem, self.gmem)
+        # STORE consumes compute_array's drain stream (was tmem pre-7h-3).
+        self.store = Store(self.compute_array, self.gmem)
         self.cmdproc = CmdProc(self.mma, self.load, self.store, self.barrier)
         self.cycle: int = 0
 
@@ -145,35 +184,78 @@ class Sim:
     def tick(self) -> None:
         self.cycle += 1
         cp = self.cmdproc
+        ca = self.compute_array
 
         # 1. cmdproc decides
         cp.tick()
 
-        # 2. engines (gated on cmdproc's current-cycle drives)
-        if cp.mma_start:
-            self.mma.tick(start=1, **cp.mma_args)
-        else:
-            self.mma.tick()
+        # 2. SMEM serves compute_array's prior-cycle read requests. We tick
+        # SMEM with the registered rd_a_en/rd_b_en/addr from compute_array's
+        # previous commit; the resulting rd_a_data/rd_a_valid become this
+        # cycle's compute_array inputs. LOAD's SMEM writes still go through
+        # the back-door (smem.load()) inside Load.tick, so SMEM tick here
+        # only services the read side.
+        prev_rd_a_en = int(ca.rd_a_en)
+        prev_rd_a_addr = int(ca.rd_a_addr)
+        prev_rd_b_en = int(ca.rd_b_en)
+        prev_rd_b_addr = int(ca.rd_b_addr)
+        self.smem.tick(
+            rd_a_en=prev_rd_a_en,
+            rd_a_addr=prev_rd_a_addr,
+            rd_b_en=prev_rd_b_en,
+            rd_b_addr=prev_rd_b_addr,
+        )
 
+        # 3. compute_array — receives SMEM drained data + cmdproc's mma_start
+        # drives this cycle. mma_args matches the OLD MMA's keys; we map them
+        # to compute_array's kwargs and supply hardcoded MMA_M/MMA_N strides
+        # (matching the RTL chip_top wiring).
+        ca_kwargs = dict(
+            rd_a_data=self.smem.rd_a_data,
+            rd_a_valid=self.smem.rd_a_valid,
+            rd_a_stall_in=self.smem.mma_rd_a_stall_out,
+            rd_b_data=self.smem.rd_b_data,
+            rd_b_valid=self.smem.rd_b_valid,
+            rd_b_stall_in=self.smem.mma_rd_b_stall_out,
+        )
+        if cp.mma_start:
+            args = cp.mma_args
+            ca.tick(
+                mma_issue=1,
+                mma_slot=args["d_tmem_slot"],
+                mma_accum=args["accum"],
+                mma_bar_id=args["bar_id"],
+                issue_a_off=args["a_smem_offset"],
+                issue_b_off=args["b_smem_offset"],
+                issue_a_stride=MMA_M,
+                issue_b_stride=MMA_N,
+                **ca_kwargs,
+            )
+        else:
+            ca.tick(**ca_kwargs)
+
+        # 4. LOAD (back-door SMEM writes).
         if cp.load_issue_en:
             self.load.tick(issue_en=1, **cp.load_args)
         else:
             self.load.tick()
 
+        # 5. STORE (back-door compute_array drain via get_tile()).
         if cp.store_issue_en:
             self.store.tick(issue_en=1, **cp.store_args)
         else:
             self.store.tick()
 
-        # 3. barrier — gathers init + arrive + tx from this cycle's signals
+        # 6. barrier — gathers init + arrive + tx from this cycle's signals.
+        # compute_array drives the MMA-side arrive (was self.mma.arrive_* pre-7h-3).
         self.barrier.tick(
             init_en=cp.init_en,
             init_bar_id=cp.init_bar_id,
             init_count=cp.init_count,
             arrive_en_a=self.load.arrive_en,
             arrive_bar_id_a=self.load.arrive_bar_id,
-            arrive_en_b=self.mma.arrive_en,
-            arrive_bar_id_b=self.mma.arrive_bar_id,
+            arrive_en_b=ca.arrive_en,
+            arrive_bar_id_b=ca.arrive_bar_id,
             add_tx_en=self.load.add_tx_en,
             add_tx_bar_id=self.load.add_tx_bar_id,
             add_tx_bytes=self.load.add_tx_bytes,

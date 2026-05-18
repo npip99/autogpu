@@ -20,9 +20,9 @@ SV_SOURCES := \
     $(REPO_ROOT)/mem/sram_1rw.sv \
     $(REPO_ROOT)/cmdproc/cmdproc.sv \
     $(REPO_ROOT)/smem/smem.sv \
-    $(REPO_ROOT)/tmem/tmem.sv \
     $(REPO_ROOT)/barrier/barrier.sv \
-    $(REPO_ROOT)/mma/mma.sv \
+    $(REPO_ROOT)/mac_tmem_cell/mac_tmem_cell.sv \
+    $(REPO_ROOT)/compute_array/compute_array.sv \
     $(REPO_ROOT)/load/load.sv \
     $(REPO_ROOT)/store/store.sv \
     $(REPO_ROOT)/reset_seq/reset_seq.sv \

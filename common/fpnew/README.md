@@ -3,7 +3,8 @@
 This directory contains a minimal vendored subset of two upstream
 projects, used to provide a synthesizable IEEE-754 fp32 fused
 multiply-add (used by `common/fp32_fma.sv` and consumed by
-`mma/mma.sv`).
+`mac_tmem_cell/mac_tmem_cell.sv` — one FMA per (i, j) compute cell,
+1024 cells per `compute_array`).
 
 ## Sources
 

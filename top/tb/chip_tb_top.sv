@@ -10,7 +10,9 @@
 //   ├── u_chip       — synthesizable chip_top
 //   │    ├── u_smem      (32 sram_1rw banks; access via .bank_mem[b][w]
 //   │    │                shadow, or .gen_banks[b].u_sram.mem[w] direct)
-//   │    ├── u_tmem      (.cells[i][j][slot])
+//   │    ├── u_compute_array (1024 mac_tmem_cell leaves; per-cell storage
+//   │    │                accessible via
+//   │    │                .gen_row[i].gen_col[j].u_cell.storage[slot])
 //   │    └── ... other on-chip submodules ...
 //   └── u_gmem       — behavioral DRAM model (.mem[byte_addr])
 

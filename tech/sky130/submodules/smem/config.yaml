@@ -1,0 +1,194 @@
+meta:
+  version: 2
+DESIGN_NAME: smem
+VERILOG_FILES:
+- dir::../../../../build/sv2v/chip_top.v
+CLOCK_PORT: clk
+CLOCK_PERIOD: 40
+RUN_LINTER: false
+SYNTH_STRATEGY: AREA 3
+SYNTH_SHARE_RESOURCES: false
+SYNTH_ABC_BUFFERING: false
+SYNTH_HIERARCHY_MODE: keep
+PL_TIME_DRIVEN: false
+MACROS:
+  sky130_sram_1kbyte_1rw1r_32x256_8:
+    gds:
+    - pdk_dir::libs.ref/sky130_sram_macros/gds/sky130_sram_1kbyte_1rw1r_32x256_8.gds
+    lef:
+    - pdk_dir::libs.ref/sky130_sram_macros/lef/sky130_sram_1kbyte_1rw1r_32x256_8.lef
+    lib:
+      '*':
+      - pdk_dir::libs.ref/sky130_sram_macros/lib/sky130_sram_1kbyte_1rw1r_32x256_8_TT_1p8V_25C.lib
+    instances:
+      gen_banks\[0\].u_sram.u_macro:
+        location:
+        - 100
+        - 100
+        orientation: N
+      gen_banks\[1\].u_sram.u_macro:
+        location:
+        - 570
+        - 100
+        orientation: N
+      gen_banks\[2\].u_sram.u_macro:
+        location:
+        - 1040
+        - 100
+        orientation: N
+      gen_banks\[3\].u_sram.u_macro:
+        location:
+        - 1510
+        - 100
+        orientation: N
+      gen_banks\[4\].u_sram.u_macro:
+        location:
+        - 100
+        - 800
+        orientation: N
+      gen_banks\[5\].u_sram.u_macro:
+        location:
+        - 570
+        - 800
+        orientation: N
+      gen_banks\[6\].u_sram.u_macro:
+        location:
+        - 1040
+        - 800
+        orientation: N
+      gen_banks\[7\].u_sram.u_macro:
+        location:
+        - 1510
+        - 800
+        orientation: N
+      gen_banks\[8\].u_sram.u_macro:
+        location:
+        - 100
+        - 1500
+        orientation: N
+      gen_banks\[9\].u_sram.u_macro:
+        location:
+        - 570
+        - 1500
+        orientation: N
+      gen_banks\[10\].u_sram.u_macro:
+        location:
+        - 1040
+        - 1500
+        orientation: N
+      gen_banks\[11\].u_sram.u_macro:
+        location:
+        - 1510
+        - 1500
+        orientation: N
+      gen_banks\[12\].u_sram.u_macro:
+        location:
+        - 100
+        - 2200
+        orientation: N
+      gen_banks\[13\].u_sram.u_macro:
+        location:
+        - 570
+        - 2200
+        orientation: N
+      gen_banks\[14\].u_sram.u_macro:
+        location:
+        - 1040
+        - 2200
+        orientation: N
+      gen_banks\[15\].u_sram.u_macro:
+        location:
+        - 1510
+        - 2200
+        orientation: N
+      gen_banks\[16\].u_sram.u_macro:
+        location:
+        - 100
+        - 2900
+        orientation: N
+      gen_banks\[17\].u_sram.u_macro:
+        location:
+        - 570
+        - 2900
+        orientation: N
+      gen_banks\[18\].u_sram.u_macro:
+        location:
+        - 1040
+        - 2900
+        orientation: N
+      gen_banks\[19\].u_sram.u_macro:
+        location:
+        - 1510
+        - 2900
+        orientation: N
+      gen_banks\[20\].u_sram.u_macro:
+        location:
+        - 100
+        - 3600
+        orientation: N
+      gen_banks\[21\].u_sram.u_macro:
+        location:
+        - 570
+        - 3600
+        orientation: N
+      gen_banks\[22\].u_sram.u_macro:
+        location:
+        - 1040
+        - 3600
+        orientation: N
+      gen_banks\[23\].u_sram.u_macro:
+        location:
+        - 1510
+        - 3600
+        orientation: N
+      gen_banks\[24\].u_sram.u_macro:
+        location:
+        - 100
+        - 4300
+        orientation: N
+      gen_banks\[25\].u_sram.u_macro:
+        location:
+        - 570
+        - 4300
+        orientation: N
+      gen_banks\[26\].u_sram.u_macro:
+        location:
+        - 1040
+        - 4300
+        orientation: N
+      gen_banks\[27\].u_sram.u_macro:
+        location:
+        - 1510
+        - 4300
+        orientation: N
+      gen_banks\[28\].u_sram.u_macro:
+        location:
+        - 100
+        - 5000
+        orientation: N
+      gen_banks\[29\].u_sram.u_macro:
+        location:
+        - 570
+        - 5000
+        orientation: N
+      gen_banks\[30\].u_sram.u_macro:
+        location:
+        - 1040
+        - 5000
+        orientation: N
+      gen_banks\[31\].u_sram.u_macro:
+        location:
+        - 1510
+        - 5000
+        orientation: N
+FP_SIZING: absolute
+DIE_AREA:
+- 0
+- 0
+- 3000
+- 7000
+CORE_AREA:
+- 50
+- 50
+- 2950
+- 6950

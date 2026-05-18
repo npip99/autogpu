@@ -27,7 +27,10 @@ BARRIER_BYTES = 16              # each mbarrier object is 16 bytes
 
 # --- Instruction encoding ---
 INSTR_BYTES = 8                 # 64-bit fixed-width instructions
-INSTR_FIFO_DEPTH = 256          # command FIFO depth (pymodel + RTL)
+INSTR_FIFO_DEPTH = 64           # command FIFO depth (pymodel + RTL). Sized for
+                                # our biggest test (~25 instrs); each +1 entry
+                                # costs ~256+224 flops across cmdproc.imem and
+                                # load FIFOs. Bump if real programs need it.
 
 # --- Derived (do not edit) ---
 TMEM_BYTES = TMEM_SLOTS * MMA_M * MMA_N * 4

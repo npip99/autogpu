@@ -1,12 +1,17 @@
-"""Tests for pymodel.store."""
+"""Tests for pymodel.store.
+
+Phase 7h-3: store now consumes compute_array's drain stream (was tmem
+pre-7h-3). The pymodel uses back-door tile access via
+ComputeArray.get_tile(), so the test seeds via ComputeArray.set_tile().
+"""
 
 import numpy as np
 
 from config import BEAT_BYTES, MMA_M, MMA_N
 from golden.fp8 import decode_e4m3, encode_e4m3
+from pymodel.compute_array import ComputeArray
 from pymodel.gmem import GMEM
 from pymodel.store import Store
-from pymodel.tmem import TMEM
 
 
 def _tile(seed: int) -> np.ndarray:
@@ -22,11 +27,11 @@ def _run_until_idle(store: Store, max_cycles: int = 1000) -> None:
 
 
 def test_store_fp32():
-    tmem = TMEM()
+    ca = ComputeArray()
     gmem = GMEM()
-    store = Store(tmem, gmem)
+    store = Store(ca, gmem)
     tile = _tile(0)
-    tmem.set_slot(0, tile)
+    ca.set_tile(0, tile)
 
     store.tick(issue_en=1, tmem_slot=0, gmem_ptr=0, dtype=0)
     _run_until_idle(store)
@@ -36,11 +41,11 @@ def test_store_fp32():
 
 
 def test_store_fp8():
-    tmem = TMEM()
+    ca = ComputeArray()
     gmem = GMEM()
-    store = Store(tmem, gmem)
+    store = Store(ca, gmem)
     tile = _tile(1)
-    tmem.set_slot(0, tile)
+    ca.set_tile(0, tile)
 
     store.tick(issue_en=1, tmem_slot=0, gmem_ptr=0, dtype=1)
     _run_until_idle(store)
@@ -50,11 +55,11 @@ def test_store_fp8():
 
 
 def test_roundtrip_through_fp8():
-    tmem = TMEM()
+    ca = ComputeArray()
     gmem = GMEM()
-    store = Store(tmem, gmem)
+    store = Store(ca, gmem)
     tile = _tile(2)
-    tmem.set_slot(0, tile)
+    ca.set_tile(0, tile)
 
     store.tick(issue_en=1, tmem_slot=0, gmem_ptr=0, dtype=1)
     _run_until_idle(store)
@@ -68,11 +73,11 @@ def test_roundtrip_through_fp8():
 
 def test_multi_beat_correctness():
     """fp32 STORE produces MMA_M*MMA_N*4 / BEAT_BYTES beats, each correct."""
-    tmem = TMEM()
+    ca = ComputeArray()
     gmem = GMEM()
-    store = Store(tmem, gmem)
+    store = Store(ca, gmem)
     tile = _tile(3)
-    tmem.set_slot(0, tile)
+    ca.set_tile(0, tile)
     store.tick(issue_en=1, tmem_slot=0, gmem_ptr=0, dtype=0)
     _run_until_idle(store)
     # Verify byte-exact match.
@@ -81,10 +86,10 @@ def test_multi_beat_correctness():
 
 
 def test_busy_during_drain():
-    tmem = TMEM()
+    ca = ComputeArray()
     gmem = GMEM()
-    store = Store(tmem, gmem)
-    tmem.set_slot(0, _tile(4))
+    store = Store(ca, gmem)
+    ca.set_tile(0, _tile(4))
     store.tick(issue_en=1, tmem_slot=0, gmem_ptr=0, dtype=1)
     assert store.busy == 1
     # mid-drain

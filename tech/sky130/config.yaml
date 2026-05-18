@@ -1,77 +1,194 @@
-# OpenLane 2 config for chip_top.sv targeting sky130A.
-#
-# First-pass synthesis attempt: small MAC grid (4×4×4) to validate the flow
-# without paying full 32×32 area/timing costs. Scale up once the flow is clean.
-#
-# Source files are pre-converted from SystemVerilog to plain Verilog by sv2v
-# (see ../../Makefile or run `make -C ../.. sv2v` before invoking openlane).
-# OpenLane's bundled Yosys+Synlig rejects our SV-2012 constructs (packages,
-# automatic functions, part-select-on-function-call); sv2v handles them.
-#
-# Run from this directory:
-#   make sv2v  # if you haven't already
-#   ./run.sh
-
 meta:
   version: 2
-
 DESIGN_NAME: chip_top
-
 VERILOG_FILES:
-  - dir::../../build/sv2v/chip_top.v
-
-# Override the chip_top defaults at synth time: tiny 4×4 MAC grid (16 fp32_fma
-# instances vs 1024 for full). Lowers area + compile time by ~60×.
-SYNTH_PARAMETERS:
-  - MMA_M=4
-  - MMA_N=4
-  - MMA_K=4
-
-# Clock target: 25 MHz (40 ns) for first pass.
+- dir::../../build/sv2v/chip_top.v
 CLOCK_PORT: clk
 CLOCK_PERIOD: 40
-
-# Disable timing-driven global placement. The in-loop resizer call on our
-# large netlist costs more time than the timing improvement is worth at
-# this stage. The resizer still runs at later post-placement / pre-route
-# stages, so timing isn't ignored — just not used to weight placement.
 PL_TIME_DRIVEN: false
-
-# Skip OpenLane's Verilator lint step. sv2v leaves `func()[range]` intact
-# (legal SV-2012, Yosys accepts). Our own `make lint` in top/ already
-# validates synthesizability with full Verilator 5.048.
 RUN_LINTER: false
-
-# Fastest synthesis: trade QoR (area + timing) for compile time. Suitable
-# for "does it work" iteration; switch to a heavier strategy when chasing
-# timing closure or final area.
-#
-# Why "AREA 3" not "AREA 0": AREA 0 runs `choice2` (FRAIG + 3× resyn2 =
-# ~30 AIG passes) which is the dominant ABC cost. AREA 3 is the ORFS
-# script — strash, dch, map — ~8 commands total, no choice/FRAIG.
-SYNTH_STRATEGY: "AREA 3"
+SYNTH_STRATEGY: AREA 3
 SYNTH_SHARE_RESOURCES: false
 SYNTH_ABC_BUFFERING: false
-
-# Keep hierarchy throughout synthesis. ABC then optimizes each submodule
-# once; repeated instantiations (e.g., 16 fp32_fma) inherit the same
-# gate-mapped result. The key scaling property for chips with many
-# replicated MACs. ("deferred_flatten" still flattens at the end, which
-# defeats the purpose for our pathological modules — use "keep" instead.)
 SYNTH_HIERARCHY_MODE: keep
-
-# Bind sky130 SRAM macro for SMEM bank storage. The wrapper in
-# mem/sram_1rw.sv instantiates `sky130_sram_1kbyte_1rw1r_32x256_8` when
-# USE_SKY130_MACRO is defined (sv2v step above passes -D USE_SKY130_MACRO).
-# Yosys treats it as a blackbox; OpenROAD uses .lef for placement and
-# .lib for timing. Validated in `cd smem && make USE_MACRO=1` — 4/4 tests
-# pass against the macro's behavioral model.
 MACROS:
   sky130_sram_1kbyte_1rw1r_32x256_8:
     gds:
-      - pdk_dir::libs.ref/sky130_sram_macros/gds/sky130_sram_1kbyte_1rw1r_32x256_8.gds
+    - pdk_dir::libs.ref/sky130_sram_macros/gds/sky130_sram_1kbyte_1rw1r_32x256_8.gds
     lef:
-      - pdk_dir::libs.ref/sky130_sram_macros/lef/sky130_sram_1kbyte_1rw1r_32x256_8.lef
+    - pdk_dir::libs.ref/sky130_sram_macros/lef/sky130_sram_1kbyte_1rw1r_32x256_8.lef
     lib:
-      "*":
-        - pdk_dir::libs.ref/sky130_sram_macros/lib/sky130_sram_1kbyte_1rw1r_32x256_8_TT_1p8V_25C.lib
+      '*':
+      - pdk_dir::libs.ref/sky130_sram_macros/lib/sky130_sram_1kbyte_1rw1r_32x256_8_TT_1p8V_25C.lib
+    instances:
+      u_smem.gen_banks\[0\].u_sram.u_macro:
+        location:
+        - 50
+        - 50
+        orientation: N
+      u_smem.gen_banks\[1\].u_sram.u_macro:
+        location:
+        - 520
+        - 50
+        orientation: N
+      u_smem.gen_banks\[2\].u_sram.u_macro:
+        location:
+        - 990
+        - 50
+        orientation: N
+      u_smem.gen_banks\[3\].u_sram.u_macro:
+        location:
+        - 1460
+        - 50
+        orientation: N
+      u_smem.gen_banks\[4\].u_sram.u_macro:
+        location:
+        - 50
+        - 750
+        orientation: N
+      u_smem.gen_banks\[5\].u_sram.u_macro:
+        location:
+        - 520
+        - 750
+        orientation: N
+      u_smem.gen_banks\[6\].u_sram.u_macro:
+        location:
+        - 990
+        - 750
+        orientation: N
+      u_smem.gen_banks\[7\].u_sram.u_macro:
+        location:
+        - 1460
+        - 750
+        orientation: N
+      u_smem.gen_banks\[8\].u_sram.u_macro:
+        location:
+        - 50
+        - 1450
+        orientation: N
+      u_smem.gen_banks\[9\].u_sram.u_macro:
+        location:
+        - 520
+        - 1450
+        orientation: N
+      u_smem.gen_banks\[10\].u_sram.u_macro:
+        location:
+        - 990
+        - 1450
+        orientation: N
+      u_smem.gen_banks\[11\].u_sram.u_macro:
+        location:
+        - 1460
+        - 1450
+        orientation: N
+      u_smem.gen_banks\[12\].u_sram.u_macro:
+        location:
+        - 50
+        - 2150
+        orientation: N
+      u_smem.gen_banks\[13\].u_sram.u_macro:
+        location:
+        - 520
+        - 2150
+        orientation: N
+      u_smem.gen_banks\[14\].u_sram.u_macro:
+        location:
+        - 990
+        - 2150
+        orientation: N
+      u_smem.gen_banks\[15\].u_sram.u_macro:
+        location:
+        - 1460
+        - 2150
+        orientation: N
+      u_smem.gen_banks\[16\].u_sram.u_macro:
+        location:
+        - 50
+        - 2850
+        orientation: N
+      u_smem.gen_banks\[17\].u_sram.u_macro:
+        location:
+        - 520
+        - 2850
+        orientation: N
+      u_smem.gen_banks\[18\].u_sram.u_macro:
+        location:
+        - 990
+        - 2850
+        orientation: N
+      u_smem.gen_banks\[19\].u_sram.u_macro:
+        location:
+        - 1460
+        - 2850
+        orientation: N
+      u_smem.gen_banks\[20\].u_sram.u_macro:
+        location:
+        - 50
+        - 3550
+        orientation: N
+      u_smem.gen_banks\[21\].u_sram.u_macro:
+        location:
+        - 520
+        - 3550
+        orientation: N
+      u_smem.gen_banks\[22\].u_sram.u_macro:
+        location:
+        - 990
+        - 3550
+        orientation: N
+      u_smem.gen_banks\[23\].u_sram.u_macro:
+        location:
+        - 1460
+        - 3550
+        orientation: N
+      u_smem.gen_banks\[24\].u_sram.u_macro:
+        location:
+        - 50
+        - 4250
+        orientation: N
+      u_smem.gen_banks\[25\].u_sram.u_macro:
+        location:
+        - 520
+        - 4250
+        orientation: N
+      u_smem.gen_banks\[26\].u_sram.u_macro:
+        location:
+        - 990
+        - 4250
+        orientation: N
+      u_smem.gen_banks\[27\].u_sram.u_macro:
+        location:
+        - 1460
+        - 4250
+        orientation: N
+      u_smem.gen_banks\[28\].u_sram.u_macro:
+        location:
+        - 50
+        - 4950
+        orientation: N
+      u_smem.gen_banks\[29\].u_sram.u_macro:
+        location:
+        - 520
+        - 4950
+        orientation: N
+      u_smem.gen_banks\[30\].u_sram.u_macro:
+        location:
+        - 990
+        - 4950
+        orientation: N
+      u_smem.gen_banks\[31\].u_sram.u_macro:
+        location:
+        - 1460
+        - 4950
+        orientation: N
+FP_SIZING: absolute
+DIE_AREA:
+- 0
+- 0
+- 7000
+- 7000
+CORE_AREA:
+- 50
+- 50
+- 6950
+- 6950

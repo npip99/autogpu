@@ -1,8 +1,10 @@
 // chip_top.sv — synthesizable top of the toy fp8-matmul GPU.
 //
 // What's INSIDE the die (this file):
-//   cmdproc, smem (32 sram_1rw banks), tmem (flop array), mma (1024 fp32
-//   FMA cells), load, store, barrier, reset_seq.
+//   cmdproc, smem (32 sram_1rw banks), compute_array (1024 mac_tmem_cell
+//   leaves: 1 fp32 FMA + per-cell N_SLOTS register file at each (i, j)
+//   position; replaces the old monolithic mma + tmem pair as of Phase
+//   7h-3), load, store, barrier, reset_seq.
 //
 // What's OUTSIDE the die:
 //   gmem (off-chip DRAM model). chip_top exposes a simple memory-
@@ -25,7 +27,7 @@ module chip_top #(
     parameter int SMEM_BYTES       = 16384,
     parameter int BEAT_BYTES       = 16,
     parameter int NUM_BARRIERS     = 8,
-    parameter int INSTR_FIFO_DEPTH = 256
+    parameter int INSTR_FIFO_DEPTH = 64
 ) (
     input  logic                          clk,
     input  logic                          reset_in,            // external pin reset
@@ -157,24 +159,22 @@ module chip_top #(
     logic                              s_rd_a_stall;
     logic                              s_rd_b_stall;
 
-    // MMA <-> tmem
-    logic [1:0]                        m_tmem_op;
-    logic [31:0]                       m_tmem_slot;
-    logic [MMA_M*MMA_N*32-1:0]         m_tmem_write;
-    logic [MMA_M*MMA_N*32-1:0]         t_mma_rd_tile;
-    logic                              t_mma_rd_valid;
-
-    // MMA -> barrier
+    // compute_array -> barrier (matmul arrive, was old mma -> barrier)
     logic                              m_arrive_en;
     logic [31:0]                       m_arrive_bar_id;
 
     logic                              m_busy, m_done;
 
-    // STORE <-> tmem
-    logic                              st_rd_en;
-    logic [31:0]                       st_rd_slot;
-    logic [MMA_M*MMA_N*32-1:0]         t_store_rd_tile;
-    logic                              t_store_rd_valid;
+    // STORE <-> compute_array (drain interface; replaces the old wide
+    // store_rd_tile path through tmem)
+    logic                              ca_drain_issue;
+    logic [31:0]                       ca_drain_slot;
+    logic                              ca_drain_busy;
+    logic                              ca_drain_done;
+    logic                              ca_drain_row_valid;
+    logic [MMA_N*32-1:0]               ca_drain_row_data;
+    logic [$clog2(MMA_M)-1:0]          ca_drain_row_idx;
+    logic                              ca_drain_last;
 
     // STORE -> off-chip MC (write)
     logic                              st_wr_en;
@@ -256,40 +256,58 @@ module chip_top #(
     );
 
     // ------------------------------------------------------------------
-    // MMA
+    // compute_array — Phase 7h-3: replaces the old `mma + tmem` pair.
+    //
+    // Wraps 1024 (MMA_M * MMA_N) mac_tmem_cell leaves with the K-loop
+    // sequencer and a row-by-row drain mux. The matmul interface is
+    // identical to the old mma's contract (start pulse, SMEM reads with
+    // stall, busy/done, barrier arrive). The drain interface replaces the
+    // old wide store_rd_tile path: STORE drives drain_issue + drain_slot
+    // and receives one row of MMA_N fp32 words per cycle.
+    //
+    // Strides are constants here (the cmdproc doesn't emit them): A is
+    // column-major (stride = MMA_M bytes per column), B is row-major
+    // (stride = MMA_N bytes per row), matching the old hardcoded mma.sv.
     // ------------------------------------------------------------------
-    mma #(
-        .MMA_M(MMA_M),
-        .MMA_N(MMA_N),
-        .MMA_K(MMA_K)
-    ) u_mma (
-        .clk           (clk),
-        .reset         (chip_in_reset),
-        .start         (cp_mma_start),
-        .a_smem_offset (cp_mma_a),
-        .b_smem_offset (cp_mma_b),
-        .d_tmem_slot   (cp_mma_d),
-        .accum         (cp_mma_accum),
-        .bar_id        (cp_mma_bar),
-        .rd_a_data     (s_rd_a_data),
-        .rd_a_valid    (s_rd_a_valid),
-        .rd_b_data     (s_rd_b_data),
-        .rd_b_valid    (s_rd_b_valid),
-        .rd_a_stall_in (s_rd_a_stall),
-        .rd_b_stall_in (s_rd_b_stall),
-        .mma_rd_tile   (t_mma_rd_tile),
-        .mma_rd_valid  (t_mma_rd_valid),
-        .rd_a_en       (m_rd_a_en),
-        .rd_a_addr     (m_rd_a_addr),
-        .rd_b_en       (m_rd_b_en),
-        .rd_b_addr     (m_rd_b_addr),
-        .mma_op        (m_tmem_op),
-        .mma_slot      (m_tmem_slot),
-        .mma_write_tile(m_tmem_write),
-        .arrive_en     (m_arrive_en),
-        .arrive_bar_id (m_arrive_bar_id),
-        .busy          (m_busy),
-        .done          (m_done)
+    compute_array #(
+        .MMA_M  (MMA_M),
+        .MMA_N  (MMA_N),
+        .MMA_K  (MMA_K),
+        .N_SLOTS(TMEM_SLOTS)
+    ) u_compute_array (
+        .clk             (clk),
+        .reset           (chip_in_reset),
+        .mma_issue       (cp_mma_start),
+        .mma_slot        (cp_mma_d[$clog2(TMEM_SLOTS)-1:0]),
+        .mma_accum       (cp_mma_accum),
+        .mma_bar_id      (cp_mma_bar),
+        .issue_a_off     (cp_mma_a),
+        .issue_b_off     (cp_mma_b),
+        .issue_a_stride  (32'(MMA_M)),
+        .issue_b_stride  (32'(MMA_N)),
+        .mma_busy        (m_busy),
+        .mma_done        (m_done),
+        .arrive_en       (m_arrive_en),
+        .arrive_bar_id   (m_arrive_bar_id),
+        .rd_a_en         (m_rd_a_en),
+        .rd_a_addr       (m_rd_a_addr),
+        .rd_a_data       (s_rd_a_data),
+        .rd_a_valid      (s_rd_a_valid),
+        .rd_a_stall_in   (s_rd_a_stall),
+        .rd_b_en         (m_rd_b_en),
+        .rd_b_addr       (m_rd_b_addr),
+        .rd_b_data       (s_rd_b_data),
+        .rd_b_valid      (s_rd_b_valid),
+        .rd_b_stall_in   (s_rd_b_stall),
+        .drain_issue     (ca_drain_issue),
+        .drain_slot      (ca_drain_slot[$clog2(TMEM_SLOTS)-1:0]),
+        .drain_busy      (ca_drain_busy),
+        .drain_done      (ca_drain_done),
+        .drain_row_valid (ca_drain_row_valid),
+        .drain_row_data  (ca_drain_row_data),
+        .drain_row_idx   (ca_drain_row_idx),
+        .drain_last      (ca_drain_last),
+        .scrub_en        (tmem_scrub_en)
     );
 
     // ------------------------------------------------------------------
@@ -333,28 +351,33 @@ module chip_top #(
     assign mc_rd_addr = l_gmem_rd_addr;
 
     // ------------------------------------------------------------------
-    // STORE. Drives chip's mc_wr_* ports for off-chip writes.
+    // STORE. Drives chip's mc_wr_* ports for off-chip writes. Drains
+    // compute_array's accumulator row-by-row over the drain-stream
+    // interface (Phase 7h-3).
     // ------------------------------------------------------------------
     store #(
         .MMA_M(MMA_M),
         .MMA_N(MMA_N),
         .BEAT_BYTES(BEAT_BYTES)
     ) u_store (
-        .clk           (clk),
-        .reset         (chip_in_reset),
-        .issue_en      (cp_store_en),
-        .tmem_slot     (cp_store_slot),
-        .gmem_ptr      (cp_store_g),
-        .dtype         (cp_store_dt),
-        .store_rd_tile (t_store_rd_tile),
-        .store_rd_valid(t_store_rd_valid),
-        .store_rd_en   (st_rd_en),
-        .store_rd_slot (st_rd_slot),
-        .wr_en         (st_wr_en),
-        .wr_addr       (st_wr_addr),
-        .wr_data       (st_wr_data),
-        .busy          (st_busy),
-        .done          (st_done)
+        .clk             (clk),
+        .reset           (chip_in_reset),
+        .issue_en        (cp_store_en),
+        .tmem_slot       (cp_store_slot),
+        .gmem_ptr        (cp_store_g),
+        .dtype           (cp_store_dt),
+        .drain_issue     (ca_drain_issue),
+        .drain_slot      (ca_drain_slot),
+        .drain_row_valid (ca_drain_row_valid),
+        .drain_row_data  (ca_drain_row_data),
+        .drain_row_idx   (ca_drain_row_idx),
+        .drain_last      (ca_drain_last),
+        .drain_done      (ca_drain_done),
+        .wr_en           (st_wr_en),
+        .wr_addr         (st_wr_addr),
+        .wr_data         (st_wr_data),
+        .busy            (st_busy),
+        .done            (st_done)
     );
 
     // Memory-controller write port: combinational pass-through from STORE.
@@ -392,27 +415,11 @@ module chip_top #(
     );
 
     // ------------------------------------------------------------------
-    // TMEM (per-cell flop array).
-    // ------------------------------------------------------------------
-    tmem #(
-        .TMEM_SLOTS(TMEM_SLOTS),
-        .MMA_M     (MMA_M),
-        .MMA_N     (MMA_N)
-    ) u_tmem (
-        .clk           (clk),
-        .reset         (chip_in_reset),
-        .mma_op        (m_tmem_op),
-        .mma_slot      (m_tmem_slot),
-        .mma_write_tile(m_tmem_write),
-        .store_rd_en   (st_rd_en),
-        .store_rd_slot (st_rd_slot),
-        .tmem_scrub_en (tmem_scrub_en),
-        .mma_rd_tile   (t_mma_rd_tile),
-        .mma_rd_valid  (t_mma_rd_valid),
-        .store_rd_tile (t_store_rd_tile),
-        .store_rd_valid(t_store_rd_valid)
-    );
-
+    // (TMEM removed in Phase 7h-3 — its per-(i, j) micro-storage is now
+    // owned by mac_tmem_cell leaves inside u_compute_array. The
+    // tmem_scrub_en pulse from u_reset_seq drives compute_array.scrub_en
+    // directly.)
+    //
     // ------------------------------------------------------------------
     // Barrier.
     // ------------------------------------------------------------------
