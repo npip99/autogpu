@@ -11,17 +11,24 @@ SYNTH_SHARE_RESOURCES: false
 SYNTH_ABC_BUFFERING: false
 SYNTH_HIERARCHY_MODE: keep
 PL_TIME_DRIVEN: false
+FP_PIN_ORDER_CFG: dir::load.pin_order.cfg
+ERRORS_ON_UNMATCHED_IO: none
 FP_IO_HLAYER: met3
-FP_IO_VLAYER: met2 met4
+FP_IO_VLAYER: met4
 RT_MAX_LAYER: met4
+# Override load.sv's default INSTR_FIFO_DEPTH (256) for standalone synth.
+# chip_top.sv passes LOAD_FIFO_DEPTH=8 anyway; this just makes the
+# standalone-load synth match that.
+SYNTH_PARAMETERS:
+- "INSTR_FIFO_DEPTH=8"
 FP_SIZING: absolute
 DIE_AREA:
 - 0
 - 0
-- 5000
-- 5000
+- 700
+- 700
 CORE_AREA:
 - 50
 - 50
-- 4950
-- 4950
+- 650
+- 650

@@ -1,36 +1,21 @@
 """
-compute_array — MMA_M x MMA_N systolic grid of MacTmemCell.
+compute_array — MMA_M x MMA_N systolic grid of MacTmemCell with cell-level drain.
 
-PURPOSE (Phase 7i-4 refactor)
-    Replaces the broadcast network with a systolic mesh. Wraps 1024
-    MacTmemCell leaves (Phase 7i-1) with:
-      - A triangular row-skew buffer at the WEST edge: row i's a-byte is
-        delayed by i cycles, so a[i, k] enters cell (i, 0) at cycle k+i.
-      - A triangular col-skew buffer at the NORTH edge: col j's b-byte is
-        delayed by j cycles, so b[k, j] enters cell (0, j) at cycle k+j.
-      - The (compute, slot, accum) packet rides the row-skew with a.
-      - A K-loop sequencer that issues SMEM rd_a / rd_b and PUSHES into the
-        skew buffers each cycle a valid K-stripe arrives. Same cross-stall
-        protocol as the broadcast version.
-      - A wave-drain counter: after the K-th push, wait MMA_M + MMA_N - 2
-        more cycles for the last K-element's wave to reach cell (M-1, N-1).
-      - A row-by-row drain mux: identical to the broadcast version.
+PURPOSE (Phase 7i-6)
+    The cleanest 2-macro hierarchy. cmd_unit emits a single-cycle broadcast
+    drain_en pulse; every cell injects storage[drain_slot] into its drain_out
+    register, then on subsequent cycles drain_out forwards drain_in from the
+    south neighbor. Values shift north one cell per cycle. The chip's
+    drain_row_data is the concatenation of the top row's drain_out ports —
+    no centralised drain mux exists.
 
-    External interface (mma_issue / mma_done / drain_* / SMEM rd_*) is
-    UNCHANGED from the broadcast era — chip_top and tests need no edits.
+External interface (mma_issue / mma_done / drain_* / SMEM rd_*) is unchanged
+from the broadcast era. chip_top and tests need no edits.
 
-CYCLE TIMING DIFF vs broadcast version
-    Old: mma_done pulses 1 cycle after the last accumulate_now.
-    New: mma_done pulses MMA_M + MMA_N - 1 cycles after the last
-         push (= 1 + WAVE_DRAIN_CYCLES). For M=N=32 that's +62 cycles.
-
-INPUTS / OUTPUTS / INVARIANTS: see the SV header for the canonical spec.
-
-INTERNAL STATE (additions vs broadcast)
-    skew_a[i] : list of (byte, valid, slot, accum) of length i  (per row)
-    skew_b[j] : list of (byte, valid)                 of length j  (per col)
-    wave_cnt  : countdown after K pushes
-    state     : enum {IDLE, COMPUTE, WAVE_DRAIN}
+CYCLE TIMING
+    K-loop completion: same as Phase 7i-4 (K + M + N − 2 cycles total).
+    Drain: drain_issue at cycle T -> drain_en pulse at T+1 -> drain_row_valid
+           HIGH for M cycles starting T+2, idx 0..M-1. drain_done at T+M+2.
 """
 
 from enum import IntEnum
@@ -53,8 +38,9 @@ class _MMAState(IntEnum):
 
 class _DrainState(IntEnum):
     IDLE = 0
-    ISSUE = 1
-    DRAIN_LAST = 2
+    PULSE = 1
+    STREAM = 2
+    DONE = 3
 
 
 class ComputeArray:
@@ -76,7 +62,7 @@ class ComputeArray:
             for _ in range(mma_m)
         ]
 
-        # ---- Registered outputs (mma side) ----
+        # Registered outputs (mma side).
         self.mma_busy: int = 0
         self.mma_done: int = 0
         self.arrive_en: int = 0
@@ -86,7 +72,7 @@ class ComputeArray:
         self.rd_b_en: int = 0
         self.rd_b_addr: int = 0
 
-        # ---- Registered outputs (drain side) ----
+        # Registered outputs (drain side).
         self.drain_busy: int = 0
         self.drain_done: int = 0
         self.drain_row_valid: int = 0
@@ -94,7 +80,7 @@ class ComputeArray:
         self.drain_row_idx: int = 0
         self.drain_last: int = 0
 
-        # ---- K-loop FSM ----
+        # K-loop FSM.
         self._state: _MMAState = _MMAState.IDLE
         self._saved: dict | None = None
         self._pa_valid: int = 0
@@ -108,35 +94,25 @@ class ComputeArray:
         self._pending_done: int = 0
         self._wave_cnt: int = 0
 
-        # ---- Skew buffers ----
-        # skew_a[i] is a list of dicts (head = index 0) of length i (rows >= 1).
-        # Each entry: {byte, valid, slot, accum}.  Row 0 reads directly from
-        # the push payload (no skew needed).
+        # Skew buffers.
         self._skew_a: list[list[dict]] = [
             [{"byte": 0, "valid": 0, "slot": 0, "accum": 0} for _ in range(i)]
             for i in range(mma_m)
         ]
-        # skew_b[j] is a list of dicts of length j (cols >= 1).
-        # Each entry: {byte, valid}.  Col 0 reads directly from push.
         self._skew_b: list[list[dict]] = [
             [{"byte": 0, "valid": 0} for _ in range(j)]
             for j in range(mma_n)
         ]
 
-        # ---- Drain FSM ----
+        # Drain FSM (cmd_unit-side).
         self._drain_state: _DrainState = _DrainState.IDLE
         self._drain_saved_slot: int = 0
-        self._drain_next_row: int = 0
-        self._s1_valid: int = 0
-        self._s1_row: int = 0
-        self._s1_last: int = 0
-        self._s2_valid: int = 0
-        self._s2_row: int = 0
-        self._s2_last: int = 0
+        self._drain_count: int = 0
+        # cmd_unit's drain_en output (registered).  Drives every cell's drain_en
+        # next cycle.
+        self._cells_drain_en: int = 0
+        self._cells_drain_slot: int = 0
 
-    # ------------------------------------------------------------------
-    # tick
-    # ------------------------------------------------------------------
     def tick(
         self,
         *,
@@ -178,7 +154,6 @@ class ComputeArray:
         next_rd_b_en = 0
         next_rd_b_addr = 0
 
-        # Push payload computed this tick by the K-loop FSM.
         push_now = 0
         push_a_bytes: bytes = _ZERO_A_BYTES
         push_b_bytes: bytes = _ZERO_B_BYTES
@@ -211,7 +186,6 @@ class ComputeArray:
                 next_rd_a_addr = self._saved["a_off"]
                 next_rd_b_en = 1
                 next_rd_b_addr = self._saved["b_off"]
-
         elif self._state == _MMAState.COMPUTE:
             a_arrives = int(bool(rd_a_valid))
             b_arrives = int(bool(rd_b_valid))
@@ -262,7 +236,6 @@ class ComputeArray:
                 self._accum_done = 1
                 self._cur_collect_k = next_collect_k
                 if self._cur_collect_k == self.mma_k:
-                    # Last K-element just pushed. Transition to WAVE_DRAIN.
                     self._state = _MMAState.WAVE_DRAIN
                     self._wave_cnt = self._wave_drain_cycles
             else:
@@ -274,7 +247,6 @@ class ComputeArray:
                     self._pb_data = bytes(rd_b_data)
                 self._a_inflight = a_inflight_after
                 self._b_inflight = b_inflight_after
-
         elif self._state == _MMAState.WAVE_DRAIN:
             if self._wave_cnt == 0:
                 self._pending_done = 1
@@ -282,11 +254,7 @@ class ComputeArray:
             else:
                 self._wave_cnt -= 1
 
-        # ---- Compute systolic edge inputs from CURRENT skew state +
-        #      push payload ----
-        # Row 0 / col 0 read fresh push directly. Rows/cols >= 1 read
-        # from the deepest position of their respective skew queue
-        # (which holds the byte pushed i cycles ago for row i).
+        # ---- Skew edge outputs (read CURRENT skew state + push) ----
         edge_a = [0] * self.mma_m
         edge_compute = [0] * self.mma_m
         edge_slot = [0] * self.mma_m
@@ -309,26 +277,55 @@ class ComputeArray:
             tail = self._skew_b[j][-1]
             edge_b[j] = tail["byte"]
 
-        # ---- Drain FSM combinational outputs ----
-        cell_drain_en_row: int | None = None
-        cell_drain_slot = 0
-        drain_issue_now = 0
-        if self._drain_state == _DrainState.ISSUE:
-            if self._drain_next_row < self.mma_m:
-                cell_drain_en_row = self._drain_next_row
-                cell_drain_slot = self._drain_saved_slot
-                drain_issue_now = 1
+        # ---- Drain FSM (cmd_unit-side, mirrors SV) ----
+        # Output registers default to 0 each cycle; case arms can override.
+        next_cells_drain_en = 0
+        next_drain_row_valid = 0
+        next_drain_row_idx = 0
+        next_drain_last = 0
+        next_drain_state = self._drain_state
+        next_drain_busy = self.drain_busy
+        next_drain_count = self._drain_count
+        next_drain_saved_slot = self._drain_saved_slot
+        next_drain_done = 0
 
-        # ---- Snapshot all cells' _out values BEFORE ticking ----
-        # Each cell's _in for THIS tick depends on its west/north neighbor's
-        # _out as of the START of this tick.
+        if self._drain_state == _DrainState.IDLE:
+            if drain_issue:
+                next_drain_saved_slot = int(drain_slot)
+                next_drain_count = 0
+                next_drain_state = _DrainState.PULSE
+                next_drain_busy = 1
+                next_cells_drain_en = 1
+        elif self._drain_state == _DrainState.PULSE:
+            next_drain_state = _DrainState.STREAM
+            next_drain_count = 0
+            next_drain_row_valid = 1
+            next_drain_row_idx = 0
+            next_drain_last = 1 if self.mma_m == 1 else 0
+        elif self._drain_state == _DrainState.STREAM:
+            if self._drain_count + 1 < self.mma_m:
+                next_drain_count = self._drain_count + 1
+                next_drain_row_valid = 1
+                next_drain_row_idx = self._drain_count + 1
+                next_drain_last = 1 if self._drain_count + 2 == self.mma_m else 0
+            else:
+                next_drain_state = _DrainState.DONE
+        elif self._drain_state == _DrainState.DONE:
+            next_drain_state = _DrainState.IDLE
+            next_drain_busy = 0
+            next_drain_done = 1
+
+        # ---- Snapshot cells' _out values BEFORE ticking ----
         prev_a_out      = [[c.a_out      for c in row] for row in self.cells]
         prev_b_out      = [[c.b_out      for c in row] for row in self.cells]
         prev_compute_out= [[c.compute_out for c in row] for row in self.cells]
         prev_slot_out   = [[c.slot_out   for c in row] for row in self.cells]
         prev_accum_out  = [[c.accum_out  for c in row] for row in self.cells]
+        prev_drain_out  = [[c.drain_out  for c in row] for row in self.cells]
 
-        # ---- Tick each cell with its proper _in values ----
+        # ---- Tick each cell ----
+        cell_drain_en = self._cells_drain_en
+        cell_drain_slot = self._cells_drain_slot
         for i in range(self.mma_m):
             for j in range(self.mma_n):
                 a_in = edge_a[i]       if j == 0 else prev_a_out      [i][j-1]
@@ -336,22 +333,22 @@ class ComputeArray:
                 s_in = edge_slot[i]    if j == 0 else prev_slot_out   [i][j-1]
                 ac_in= edge_accum[i]   if j == 0 else prev_accum_out  [i][j-1]
                 b_in = edge_b[j]       if i == 0 else prev_b_out      [i-1][j]
-                de   = 1 if cell_drain_en_row == i else 0
+                # drain_in: from south neighbor (i+1); 0 if at south edge.
+                d_in = 0 if i == self.mma_m - 1 else prev_drain_out[i+1][j]
                 self.cells[i][j].tick(
                     compute_in=c_in,
                     a_in=a_in,
                     b_in=b_in,
                     slot_in=s_in,
                     accum_in=ac_in,
-                    drain_en=de,
+                    drain_en=cell_drain_en,
                     drain_slot=cell_drain_slot,
+                    drain_in=d_in,
                     scrub_en=scrub_en,
                 )
 
-        # ---- Advance skew buffers (after cells consumed this cycle's
-        #      head/tail values) ----
+        # ---- Advance skew buffers ----
         for i in range(1, self.mma_m):
-            # Shift down: position k+1 gets position k, head gets push.
             for k in range(len(self._skew_a[i]) - 1, 0, -1):
                 self._skew_a[i][k] = self._skew_a[i][k-1]
             self._skew_a[i][0] = (
@@ -369,83 +366,31 @@ class ComputeArray:
                 else {"byte": 0, "valid": 0}
             )
 
-        # ---- Drain pipeline + FSM (identical to broadcast version) ----
-        entering_s1_valid = self._s1_valid
-        entering_s1_row = self._s1_row
-        entering_s1_last = self._s1_last
-        entering_s2_valid = self._s2_valid
-        entering_s2_last = self._s2_last
-
-        if drain_issue_now:
-            next_s1_valid = 1
-            next_s1_row = cell_drain_en_row
-            next_s1_last = 1 if cell_drain_en_row == self.mma_m - 1 else 0
-        else:
-            next_s1_valid = 0
-            next_s1_row = 0
-            next_s1_last = 0
-
-        next_s2_valid = entering_s1_valid
-        next_s2_row = entering_s1_row
-        next_s2_last = entering_s1_last
-
-        next_drain_state = self._drain_state
-        next_drain_busy = self.drain_busy
-        next_drain_next_row = self._drain_next_row
-        next_drain_saved_slot = self._drain_saved_slot
-
-        if self._drain_state == _DrainState.IDLE:
-            if drain_issue:
-                next_drain_state = _DrainState.ISSUE
-                next_drain_busy = 1
-                next_drain_saved_slot = int(drain_slot)
-                next_drain_next_row = 0
-                next_s1_valid = 0
-                next_s2_valid = 0
-        elif self._drain_state == _DrainState.ISSUE:
-            if drain_issue_now:
-                next_drain_next_row = self._drain_next_row + 1
-            if (
-                self._drain_next_row >= self.mma_m
-                and not drain_issue_now
-                and not entering_s1_valid
-                and not entering_s2_valid
-            ):
-                next_drain_state = _DrainState.DRAIN_LAST
-        elif self._drain_state == _DrainState.DRAIN_LAST:
-            next_drain_state = _DrainState.IDLE
-            next_drain_busy = 0
-
-        self._s1_valid = next_s1_valid
-        self._s1_row = next_s1_row
-        self._s1_last = next_s1_last
-        self._s2_valid = next_s2_valid
-        self._s2_row = next_s2_row
-        self._s2_last = next_s2_last
+        # ---- Commit drain FSM registers ----
         self._drain_state = next_drain_state
         self.drain_busy = next_drain_busy
-        self._drain_next_row = next_drain_next_row
+        self._drain_count = next_drain_count
         self._drain_saved_slot = next_drain_saved_slot
+        self._cells_drain_en = next_cells_drain_en
+        self._cells_drain_slot = self._drain_saved_slot
+        self.drain_row_valid = next_drain_row_valid
+        self.drain_row_idx = next_drain_row_idx
+        self.drain_last = next_drain_last
 
-        next_drain_row_valid = 0
-        next_drain_row_data = 0
-        next_drain_row_idx = 0
-        next_drain_last = 0
-
-        if self._s2_valid:
-            row_idx = self._s2_row
+        # ---- Pack chip drain_row_data from top row cells' drain_out ----
+        # Gated by drain_row_valid (so output is 0 when not draining).
+        if self.drain_row_valid:
             packed = 0
             for j in range(self.mma_n):
-                word = self.cells[row_idx][j].drain_data & 0xFFFFFFFF
+                # The cells were just ticked this tick; their .drain_out now
+                # holds the NEW value for THIS cycle (per SV register semantics).
+                word = self.cells[0][j].drain_out & 0xFFFFFFFF
                 packed |= word << (j * 32)
-            next_drain_row_valid = 1
-            next_drain_row_data = packed
-            next_drain_row_idx = row_idx
-            if self._s2_last:
-                next_drain_last = 1
+            self.drain_row_data = packed
+        else:
+            self.drain_row_data = 0
 
-        next_drain_done = 1 if (entering_s2_valid and entering_s2_last) else 0
-
+        # ---- mma_done / arrive_en (one cycle after pending_done) ----
         next_mma_done = 0
         next_arrive_en = 0
         next_arrive_bar_id = 0
@@ -458,6 +403,7 @@ class ComputeArray:
             self._saved = None
             self._accum_done = 0
 
+        # ---- Commit registered outputs ----
         self.mma_done = next_mma_done
         self.arrive_en = next_arrive_en
         self.arrive_bar_id = next_arrive_bar_id
@@ -465,11 +411,6 @@ class ComputeArray:
         self.rd_a_addr = next_rd_a_addr
         self.rd_b_en = next_rd_b_en
         self.rd_b_addr = next_rd_b_addr
-
-        self.drain_row_valid = next_drain_row_valid
-        self.drain_row_data = next_drain_row_data
-        self.drain_row_idx = next_drain_row_idx
-        self.drain_last = next_drain_last
         self.drain_done = next_drain_done
 
     # ------------------------------------------------------------------

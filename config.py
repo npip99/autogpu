@@ -27,10 +27,15 @@ BARRIER_BYTES = 16              # each mbarrier object is 16 bytes
 
 # --- Instruction encoding ---
 INSTR_BYTES = 8                 # 64-bit fixed-width instructions
-INSTR_FIFO_DEPTH = 64           # command FIFO depth (pymodel + RTL). Sized for
-                                # our biggest test (~25 instrs); each +1 entry
-                                # costs ~256+224 flops across cmdproc.imem and
-                                # load FIFOs. Bump if real programs need it.
+INSTR_FIFO_DEPTH = 64           # legacy alias: cmdproc.imem capacity (max asm
+                                # program length). Kept for back-compat with
+                                # tests that read this. Use IMEM_DEPTH below.
+IMEM_DEPTH = 64                 # max asm program length (cmdproc.imem)
+LOAD_FIFO_DEPTH = 8             # pending LOAD command queue depth (load engine).
+                                # Each +1 entry costs ~7*32 flops in load.sv.
+                                # Worst-case observed test burst is 2 LOADs;
+                                # 8 gives 4× margin and shrinks load yosys synth
+                                # ~8× vs the old 64.
 
 # --- Derived (do not edit) ---
 TMEM_BYTES = TMEM_SLOTS * MMA_M * MMA_N * 4

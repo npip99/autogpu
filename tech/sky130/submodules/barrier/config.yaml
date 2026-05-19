@@ -11,10 +11,12 @@ SYNTH_SHARE_RESOURCES: false
 SYNTH_ABC_BUFFERING: false
 SYNTH_HIERARCHY_MODE: keep
 PL_TIME_DRIVEN: false
+FP_PIN_ORDER_CFG: dir::barrier.pin_order.cfg
+ERRORS_ON_UNMATCHED_IO: none
 FP_CORE_UTIL: 15
 # Keep met5 PDN-only; using met5 as a pin landing layer clashes with the
 # chip-level met5 power-grid straps and produces hundreds of Metal5 spacing
 # DRC errors at the die edge. Pin everything on met2/met3/met4.
 FP_IO_HLAYER: met3
-FP_IO_VLAYER: met2 met4
+FP_IO_VLAYER: met4
 RT_MAX_LAYER: met4

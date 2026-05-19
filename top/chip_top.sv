@@ -27,7 +27,13 @@ module chip_top #(
     parameter int SMEM_BYTES       = 16384,
     parameter int BEAT_BYTES       = 16,
     parameter int NUM_BARRIERS     = 8,
-    parameter int INSTR_FIFO_DEPTH = 64
+    // cmdproc instruction memory depth (max asm program length).
+    parameter int IMEM_DEPTH       = 64,
+    // load engine's pending-LOAD queue depth. Small (8) because LOADs are
+    // throttled by WAIT; large only inflates load.sv yosys synth time.
+    parameter int LOAD_FIFO_DEPTH  = 8,
+    // Back-compat alias — some testbenches still read this.
+    parameter int INSTR_FIFO_DEPTH = IMEM_DEPTH
 ) (
     input  logic                          clk,
     input  logic                          reset_in,            // external pin reset
@@ -208,7 +214,7 @@ module chip_top #(
     // cmdproc
     // ------------------------------------------------------------------
     cmdproc #(
-        .INSTR_FIFO_DEPTH(INSTR_FIFO_DEPTH)
+        .INSTR_FIFO_DEPTH(IMEM_DEPTH)
     ) u_cmdproc (
         .clk                 (clk),
         .reset               (chip_in_reset),
@@ -313,7 +319,7 @@ module chip_top #(
     // ------------------------------------------------------------------
     load #(
         .BEAT_BYTES      (BEAT_BYTES),
-        .INSTR_FIFO_DEPTH(INSTR_FIFO_DEPTH)
+        .INSTR_FIFO_DEPTH(LOAD_FIFO_DEPTH)
     ) u_load (
         .clk           (clk),
         .reset         (chip_in_reset),

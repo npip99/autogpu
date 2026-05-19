@@ -42,6 +42,8 @@ VERILOG_SOURCES = $(PWD)/../mem/sram_1rw.sv \
                   $(PWD)/../common/fp8_decode.sv \
                   $(PWD)/../common/fp8_encode.sv \
                   $(PWD)/../mac_tmem_cell/mac_tmem_cell.sv \
+                  $(PWD)/../cmd_unit/cmd_unit.sv \
+                  $(PWD)/../skew_lane/skew_lane.sv \
                   $(PWD)/../compute_array/compute_array.sv \
                   $(PWD)/../store/store.sv \
                   $(PWD)/chip_top.sv \

@@ -36,6 +36,7 @@ async def _drive_defaults(dut) -> None:
     dut.accum_in.value = 0
     dut.drain_en.value = 0
     dut.drain_slot.value = 0
+    dut.drain_in.value = 0
     dut.init_en.value = 0
     dut.init_slot.value = 0
     dut.init_data.value = 0
@@ -110,7 +111,7 @@ async def test_directed(dut):
     assert int(dut.compute_out.value) == 1
     await NextTimeStep()
 
-    # --- Cycle 3: drain slot 0 (capture) ---
+    # --- Cycle 3: drain slot 0 (drain_en pulses; drain_out becomes storage[0]) ---
     dut.compute_in.value = 0
     dut.a_in.value = 0
     dut.b_in.value = 0
@@ -121,24 +122,24 @@ async def test_directed(dut):
     await RisingEdge(dut.clk)
     py.tick(drain_en=1, drain_slot=0)
     await ReadOnly()
-    assert int(dut.drain_data.value) == int(py.drain_data), (
-        f"drain_data mismatch on capture cycle: sv={int(dut.drain_data.value)} "
-        f"py={int(py.drain_data)}"
+    assert int(dut.drain_out.value) == int(py.drain_out), (
+        f"drain_out mismatch on inject cycle: sv={int(dut.drain_out.value)} "
+        f"py={int(py.drain_out)}"
     )
-    # Pipe regs: should have cleared compute_out etc. since _in=0 last edge.
     assert int(dut.compute_out.value) == 0
     assert int(dut.a_out.value) == 0
     await NextTimeStep()
 
-    # --- Cycle 4: idle; drain_data should now reflect slot 0 ---
+    # --- Cycle 4: idle with drain_in=0; drain_out should register 0 ---
     dut.drain_en.value = 0
     dut.drain_slot.value = 0
+    dut.drain_in.value = 0
     await RisingEdge(dut.clk)
     py.tick()
     await ReadOnly()
-    sv = int(dut.drain_data.value)
-    pyval = int(py.drain_data)
-    assert sv == pyval, f"drain_data mismatch on drain cycle: sv={sv:#010x} py={pyval:#010x}"
+    sv = int(dut.drain_out.value)
+    pyval = int(py.drain_out)
+    assert sv == pyval, f"drain_out mismatch on idle cycle: sv={sv:#010x} py={pyval:#010x}"
     await NextTimeStep()
 
     # --- Cycle 5: scrub everything ---
@@ -171,6 +172,7 @@ def _rand_inputs(rng: random.Random) -> dict:
 
     drain_en = rng.randint(0, 1)
     drain_slot = rng.randrange(TMEM_SLOTS)
+    drain_in = rng.randint(0, 0xFFFFFFFF)
 
     return {
         "compute_in": compute_in,
@@ -180,6 +182,7 @@ def _rand_inputs(rng: random.Random) -> dict:
         "accum_in": accum_in,
         "drain_en": drain_en,
         "drain_slot": drain_slot,
+        "drain_in": drain_in,
         "init_en": init_en,
         "init_slot": init_slot,
         "init_data": init_data,
@@ -209,10 +212,10 @@ async def test_random_vs_pymodel(dut):
         py.tick(**inputs)
 
         await ReadOnly()
-        sv_drain = int(dut.drain_data.value)
-        py_drain = int(py.drain_data)
+        sv_drain = int(dut.drain_out.value)
+        py_drain = int(py.drain_out)
         assert sv_drain == py_drain, (
-            f"cycle {cyc}: drain_data mismatch sv=0x{sv_drain:08x} "
+            f"cycle {cyc}: drain_out mismatch sv=0x{sv_drain:08x} "
             f"py=0x{py_drain:08x} inputs={inputs}"
         )
         sv_storage = _read_storage(dut, TMEM_SLOTS)

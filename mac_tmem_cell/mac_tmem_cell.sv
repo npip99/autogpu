@@ -1,34 +1,32 @@
 // mac_tmem_cell.sv -- one MAC + one cell's per-position TMEM micro-storage.
 //
-// Phase 7i-1: systolic leaf. The five-signal compute packet (a, b, compute,
-// slot, accum) flows from west/north neighbors through a single pipeline
-// register per cell and out to east/south neighbors. The MAC operates on the
-// FRESH inputs (a_in / b_in / compute_in / slot_in / accum_in) of the current
-// cycle; *_out is a registered copy that downstream cells read next cycle, so
-// the per-cell propagation delay is 1.
+// Phase 7i-6: systolic drain (drain flows north through the array).
+//
+// The five-signal compute packet (a, b, compute, slot, accum) flows from
+// west/north neighbors through a single pipeline register per cell and out
+// to east/south neighbors. compute_array's cmd_unit feeds the west + north
+// edges; mac_tmem_cell's east + south outputs feed neighbors.
+//
+// Drain port: drain_in (32 bits, from south neighbor) and drain_out (32
+// bits, to north neighbor) form a per-column drain chain. When drain_en
+// pulses for one cycle (broadcast to all cells with drain_slot), every
+// cell injects storage[drain_slot] into drain_out at the next edge. On
+// subsequent cycles (drain_en=0), drain_out registers the drain_in from
+// south. Thus stored values shift north one cell per cycle, exiting the
+// chip at row 0's drain_out. Drain takes M cycles total — no centralised
+// drain mux required.
 //
 // Latency to the (M-1, N-1) corner for a K-loop fed at cycle 0:
-//     K + M + N - 2 cycles
+//     K + M + N - 2 cycles.
 //
-// drain / init / scrub remain broadcast inputs (per-cell, NOT systolic).
-// drain is only used between MMA bursts so its wires can be slow paths;
-// scrub is a one-shot from reset_seq; init is unused in v1.
-//
-// Datapath:
-//   - Two fp8_decode (combinational) for a/b -> fp32.
-//   - One fp32_fma (combinational, NumPipeRegs=0): a*b + addend, registered
-//     into storage on the next clock edge.
-//   - storage[N_SLOTS] register file. Small enough to map to FFs.
-//
-// Storage priority (only one of the three may fire per cycle; pymodel asserts
-// the mutex):
+// Storage priority (only one of the three may fire per cycle; pymodel
+// asserts the mutex):
 //   1. scrub_en    : storage[*] <= 0
 //   2. init_en     : storage[init_slot] <= init_data
 //   3. compute_in  : storage[slot_in]   <= a*b + (accum_in ? storage[slot_in] : 0)
 //
-// Drain: registered with 1-cycle latency. drain_en at cycle T captures slot;
-// drain_data at cycle T+1 reflects the stored value, INCLUDING any same-cycle
-// commit by scrub/init/compute (write-then-drain ordering).
+// drain_en + drain_slot can coexist with compute (slot-disjoint guarantee).
+// Same-slot compute/drain reads PRE-WRITE storage at the edge.
 
 module mac_tmem_cell #(
     parameter int N_SLOTS = 4
@@ -36,34 +34,32 @@ module mac_tmem_cell #(
     input  logic                       clk,
     input  logic                       reset,
 
-    // ---- Systolic compute packet (west/north -> east/south) -----------
-    // The five-signal "wave" that flows through the array. compute_in says
-    // "this cycle's (a_in, b_in, slot_in, accum_in) is a valid MAC."
+    // ---- Systolic compute packet ---------------------------------------
     input  logic                       compute_in,
     input  logic [7:0]                 a_in,
     input  logic [7:0]                 b_in,
     input  logic [$clog2(N_SLOTS)-1:0] slot_in,
     input  logic                       accum_in,
-
-    // Registered pass-through to next cell. Combinational from internal
-    // pipe regs (which update at clk edge from *_in).
     output logic                       compute_out,
     output logic [7:0]                 a_out,
     output logic [7:0]                 b_out,
     output logic [$clog2(N_SLOTS)-1:0] slot_out,
     output logic                       accum_out,
 
-    // ---- Drain (broadcast, registered, 1-cycle latency) ---------------
+    // ---- Systolic drain (south -> north) --------------------------------
+    input  logic [31:0]                drain_in,
+    output logic [31:0]                drain_out,
+
+    // ---- Drain control (broadcast, registered, 1-cycle latency) --------
     input  logic                       drain_en,
     input  logic [$clog2(N_SLOTS)-1:0] drain_slot,
-    output logic [31:0]                drain_data,
 
-    // ---- Init (broadcast; tcgen05.cp-style; stable port for v1) -------
+    // ---- Init (broadcast; tcgen05.cp-style; stable port for v1) --------
     input  logic                       init_en,
     input  logic [$clog2(N_SLOTS)-1:0] init_slot,
     input  logic [31:0]                init_data,
 
-    // ---- Scrub (broadcast, one-shot from reset_seq) -------------------
+    // ---- Scrub (broadcast, one-shot from reset_seq) --------------------
     input  logic                       scrub_en
 );
 
@@ -71,8 +67,6 @@ module mac_tmem_cell #(
     logic [31:0] storage [N_SLOTS];
 
     // ---- Pipeline registers for the compute packet --------------------
-    // *_out is the registered copy of *_in. Downstream cell reads *_out
-    // one cycle after we receive *_in -- this is the per-cell hop delay.
     logic                       compute_pipe;
     logic [7:0]                 a_pipe;
     logic [7:0]                 b_pipe;
@@ -84,14 +78,7 @@ module mac_tmem_cell #(
     assign slot_out    = slot_pipe;
     assign accum_out   = accum_pipe;
 
-    // ---- Pending drain (captured cycle T-1, drained cycle T) ----------
-    logic                            drain_pending_valid;
-    logic [$clog2(N_SLOTS)-1:0]      drain_pending_slot;
-
-    // ---- Combinational decode + FMA datapath --------------------------
-    // FMA fires on the FRESH packet (*_in), not the pipe regs. This keeps
-    // the per-cell latency at 1 (delay is in the propagation, not the
-    // compute) and matches the K + M + N - 2 total.
+    // ---- Combinational decode + FMA datapath -------------------------
     logic [31:0] a_fp32;
     logic [31:0] b_fp32;
 
@@ -104,7 +91,6 @@ module mac_tmem_cell #(
         .fp32 (b_fp32)
     );
 
-    // FMA addend: storage[slot_in] when accum_in=1, else 0.
     logic [31:0] fma_addend;
     logic [31:0] fma_result;
     assign fma_addend = accum_in ? storage[slot_in] : 32'd0;
@@ -116,31 +102,16 @@ module mac_tmem_cell #(
         .result (fma_result)
     );
 
-    // ---- Drain write-forwarding (same-cycle commit visible at drain) --
-    logic [31:0] drain_forwarded;
-    always_comb begin
-        drain_forwarded = storage[drain_pending_slot];
-        if (scrub_en) begin
-            drain_forwarded = 32'd0;
-        end else if (init_en && (init_slot == drain_pending_slot)) begin
-            drain_forwarded = init_data;
-        end else if (compute_in && (slot_in == drain_pending_slot)) begin
-            drain_forwarded = fma_result;
-        end
-    end
-
     // ---- Sequential ---------------------------------------------------
     integer s;
     always_ff @(posedge clk) begin
         if (reset) begin
-            drain_data          <= 32'd0;
-            drain_pending_valid <= 1'b0;
-            drain_pending_slot  <= '0;
-            compute_pipe        <= 1'b0;
-            a_pipe              <= 8'd0;
-            b_pipe              <= 8'd0;
-            slot_pipe           <= '0;
-            accum_pipe          <= 1'b0;
+            drain_out    <= 32'd0;
+            compute_pipe <= 1'b0;
+            a_pipe       <= 8'd0;
+            b_pipe       <= 8'd0;
+            slot_pipe    <= '0;
+            accum_pipe   <= 1'b0;
             // Storage contents preserved across `reset`; zero via scrub_en.
         end else begin
             // 1. Storage commit (mutex via spec).
@@ -161,19 +132,11 @@ module mac_tmem_cell #(
             slot_pipe    <= slot_in;
             accum_pipe   <= accum_in;
 
-            // 3. Drain the previous-cycle pending read with write-forwarding.
-            if (drain_pending_valid) begin
-                drain_data <= drain_forwarded;
-            end else begin
-                drain_data <= 32'd0;
-            end
-
-            // 4. Capture new pending drain.
+            // 3. Drain: either inject storage[drain_slot] OR forward south.
             if (drain_en) begin
-                drain_pending_valid <= 1'b1;
-                drain_pending_slot  <= drain_slot;
+                drain_out <= storage[drain_slot];
             end else begin
-                drain_pending_valid <= 1'b0;
+                drain_out <= drain_in;
             end
         end
     end

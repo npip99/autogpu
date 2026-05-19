@@ -23,6 +23,9 @@ SV_SOURCES := \
     $(REPO_ROOT)/barrier/barrier.sv \
     $(REPO_ROOT)/mac_tmem_cell/mac_tmem_cell.sv \
     $(REPO_ROOT)/mac_array_small/mac_array_small.sv \
+    $(REPO_ROOT)/tile_buf_8row/tile_buf_8row.sv \
+    $(REPO_ROOT)/cmd_unit/cmd_unit.sv \
+    $(REPO_ROOT)/skew_lane/skew_lane.sv \
     $(REPO_ROOT)/compute_array/compute_array.sv \
     $(REPO_ROOT)/load/load.sv \
     $(REPO_ROOT)/store/store.sv \
@@ -31,7 +34,7 @@ SV_SOURCES := \
 
 .PHONY: sv2v synth clean
 
-sv2v: $(BUILD_DIR)/chip_top.v $(BUILD_DIR)/mac_array_small.v
+sv2v: $(BUILD_DIR)/chip_top.v $(BUILD_DIR)/mac_array_small.v $(BUILD_DIR)/tile_buf_8row.v $(BUILD_DIR)/cmd_unit.v $(BUILD_DIR)/skew_lane.v
 
 $(BUILD_DIR)/chip_top.v: $(SV_SOURCES)
 	@mkdir -p $(BUILD_DIR)
@@ -41,6 +44,24 @@ $(BUILD_DIR)/chip_top.v: $(SV_SOURCES)
 	# -D USE_SKY130_MACRO makes sram_1rw instantiate the sky130 SRAM macro
 	# instead of the FF behavioral fallback (validated in smem cocotb).
 	sv2v -I $(REPO_ROOT)/common/fpnew -D USE_SKY130_MACRO --exclude=Always $(SV_SOURCES) --top=chip_top -w $@
+
+# Standalone sv2v output for tile_buf_8row — the 8-row × 1024-bit banked
+# storage submodule. Hardens once as a leaf macro; store.sv will later
+# instantiate 4 of these as hardened children.
+$(BUILD_DIR)/tile_buf_8row.v: $(REPO_ROOT)/tile_buf_8row/tile_buf_8row.sv
+	@mkdir -p $(BUILD_DIR)
+	sv2v --exclude=Always $^ --top=tile_buf_8row -w $@
+
+# Standalone sv2v outputs for the compute_array submodules (Phase 7i-5).
+# cmd_unit hardens as one big control block; row_unit hardens once and
+# is instantiated 32× by compute_array.
+$(BUILD_DIR)/cmd_unit.v: $(REPO_ROOT)/cmd_unit/cmd_unit.sv
+	@mkdir -p $(BUILD_DIR)
+	sv2v --exclude=Always $^ --top=cmd_unit -w $@
+
+$(BUILD_DIR)/skew_lane.v: $(REPO_ROOT)/skew_lane/skew_lane.sv
+	@mkdir -p $(BUILD_DIR)
+	sv2v --exclude=Always $^ --top=skew_lane -w $@
 
 # Separate sv2v output for the small systolic synth-proof wrapper (it's
 # not reachable from chip_top, so the main run drops it).

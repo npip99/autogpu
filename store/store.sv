@@ -1,53 +1,53 @@
 // store.sv -- STORE engine: drains a compute_array slot to GMEM.
 //
-// SV implementation of pymodel.store.Store. See pymodel/store.py for the
-// canonical spec; this module must match it cycle-by-cycle.
+// SV implementation of pymodel.store.Store. The pymodel uses back-door
+// access (compute_array.get_tile + byte-by-byte beat emit); this RTL is
+// cycle-accurate against the drain-stream interface and emits identical
+// gmem bytes.
 //
 // SYNC MODEL
 //   STORE is synchronous in v1: cmdproc holds issue_en until done pulses.
-//   We ignore re-issues while busy. (Cmdproc is responsible for not issuing
-//   another STORE while this one is busy, but we defensively ignore.)
+//   We ignore re-issues while busy.
 //
-// INTERFACE (Phase 7h-3 — drain-stream)
-//   STORE no longer reads a 32k-bit tile from TMEM in one shot. Instead it
-//   asks compute_array to drain a slot row-by-row:
+// INTERFACE
+//   STORE asks compute_array to drain a slot row-by-row:
 //     - drives drain_issue + drain_slot,
-//     - receives one row of MMA_N * 32 bits per cycle (1 row/cycle for
-//       MMA_M cycles) on drain_row_valid + drain_row_data + drain_row_idx,
+//     - receives MMA_N*32 bits/cycle on
+//       drain_row_valid + drain_row_data + drain_row_idx for MMA_M cycles,
 //       with drain_last marking the final row.
-//   Internally we accumulate the rows into a packed tile buffer, then drain
-//   to GMEM at BEAT_BYTES per cycle. Simple v1: gather all rows, then drain
-//   serially. The MMA_M-cycle gather phase + the K-beat drain phase do not
-//   pipeline against each other in this version (the task description
-//   permits this).
+//   Rows land in 4 × tile_buf_8row banks (drain_row_idx[4:3] selects bank,
+//   drain_row_idx[2:0] selects row within bank).
+//
+//   STORE then streams the tile out to GMEM at BEAT_BYTES per cycle,
+//   reading one row at a time from the banks (registered 1-cycle read),
+//   optionally fp8-encoding inline, and slicing the row into BEAT-sized
+//   beats. No intermediate bytes_buf — encoding happens on-the-fly.
 //
 // PIPELINE
-//   Cycle 0 (busy=0, issue_en=1):
-//     - latch saved (slot, gmem_ptr, dtype)
-//     - drive compute_array.drain_issue + drain_slot
-//     - busy <= 1, state <= GATHER
-//   Cycles 1..M+latency (state=GATHER):
-//     - Every cycle drain_row_valid is high, write that row's MMA_N*32 bits
-//       into tile_buf at slot drain_row_idx.
-//     - When drain_last fires (last row valid), capture it and on the next
-//       cycle enter FORMAT.
-//   Cycle FORMAT (state=FORMAT):
-//     - Pack tile_buf into bytes_buf per dtype:
-//         dtype==0 (fp32): bytes_buf bits = tile_buf bits verbatim
-//         dtype==1 (fp8):  one fp8_encode per element → bytes_buf low N*8 bits
-//     - bytes_written <= 0, state <= DRAIN
-//   Cycles 0..K-1 (state=DRAIN, K = total_bytes / BEAT_BYTES):
-//     - gmem.wr_en = 1, wr_addr = gmem_ptr + bytes_written
-//     - wr_data = bytes_buf[bytes_written*8 +: BEAT_BYTES*8]
-//     - bytes_written <= bytes_written + BEAT_BYTES
-//     - when bytes_written + BEAT_BYTES == total_bytes:
-//         done <= 1, busy <= 0, state <= IDLE
+//   S_IDLE → (issue_en) → S_GATHER → (drain_last) → S_DRAIN → S_IDLE
 //
-// FP8 ENCODE (dtype=1):
-//   Combinational: see common/fp8_encode.sv. The MMA_M*MMA_N encoders run
-//   in parallel on tile_buf bits during the FORMAT cycle. (Same fan-out as
-//   before; only the source signal changed from t_store_rd_tile to the
-//   internal tile_buf.)
+//   S_GATHER (MMA_M cycles + 1):
+//     - On each drain_row_valid, write the row to the addressed bank.
+//     - When drain_last seen, latch gather_done.
+//     - In the cycle after gather_done is latched, pre-issue rd_en for
+//       row 0 (bank 0). State transitions to S_DRAIN the same cycle so
+//       rd_data is registered to row-0 contents one cycle into S_DRAIN.
+//
+//   S_DRAIN (total_beats cycles):
+//     - Each cycle emits one BEAT_BYTES write to GMEM.
+//     - Combinational 4:1 mux on bank rd_data picks the active row.
+//     - For fp8 dtype, 32 fp8_encode units convert the active row to a
+//       256-bit byte stream; otherwise the raw 1024-bit row is used.
+//     - Beat slice = data[beat_in_row*128 +: 128].
+//     - On the LAST beat of the current row (and not the last row),
+//       pre-issue rd_en for the next row so its rd_data is ready when
+//       beat_in_row wraps to 0.
+//     - On the very last beat: pulse done, state → S_IDLE.
+//
+// FP8 ENCODE (dtype=1)
+//   Combinational: 32 instances of fp8_encode (one per column), down from
+//   1024 in the old monolithic implementation. The encoders fan in from
+//   the muxed row read, not from a 32k-bit packed buffer.
 
 module store #(
     parameter int MMA_M      = 32,
@@ -68,9 +68,6 @@ module store #(
     output logic [31:0]                   drain_slot,
 
     // Drain row stream from compute_array (response side).
-    // `drain_done` is an info pulse one cycle after drain_last; store uses
-    // drain_last instead (when the final row's data is on the bus) to
-    // gate the transition into S_FORMAT, so we silence the unused-input lint.
     input  logic                          drain_row_valid,
     input  logic [MMA_N*32-1:0]           drain_row_data,
     input  logic [$clog2(MMA_M)-1:0]      drain_row_idx,
@@ -93,9 +90,19 @@ module store #(
     // Derived sizes
     // ------------------------------------------------------------------
     localparam int NUM_ELEMS    = MMA_M * MMA_N;
-    localparam int TILE_BYTES   = NUM_ELEMS * 4;  // fp32 path
-    localparam int FP8_BYTES    = NUM_ELEMS;      // fp8 path
-    localparam int MAX_BYTES    = TILE_BYTES;     // buf sized to fp32
+    localparam int TILE_BYTES   = NUM_ELEMS * 4;             // fp32 path
+    localparam int FP8_BYTES    = NUM_ELEMS;                 // fp8 path
+    localparam int ROW_W        = MMA_N * 32;                // 1024
+    localparam int BANKS        = 4;
+    localparam int ROWS_PER_BANK = MMA_M / BANKS;            // 8
+    localparam int BANK_SEL_BITS = $clog2(BANKS);            // 2
+    localparam int BANK_ROW_BITS = $clog2(ROWS_PER_BANK);    // 3
+    localparam int ROW_IDX_BITS  = $clog2(MMA_M);            // 5
+    localparam int BEAT_BITS     = BEAT_BYTES * 8;           // 128
+    localparam int FP32_BEATS_PER_ROW = ROW_W / BEAT_BITS;   // 8
+    localparam int FP8_BEATS_PER_ROW  = (MMA_N * 8) / BEAT_BITS; // 2
+    localparam int MAX_BEATS_PER_ROW  = FP32_BEATS_PER_ROW;  // 8
+    localparam int BEAT_IDX_BITS = $clog2(MAX_BEATS_PER_ROW); // 3
 
     // ------------------------------------------------------------------
     // FSM
@@ -103,8 +110,7 @@ module store #(
     typedef enum logic [1:0] {
         S_IDLE   = 2'd0,
         S_GATHER = 2'd1,
-        S_FORMAT = 2'd2,
-        S_DRAIN  = 2'd3
+        S_DRAIN  = 2'd2
     } state_t;
 
     state_t state;
@@ -113,163 +119,236 @@ module store #(
     logic [31:0] saved_gmem_ptr;
     logic        saved_dtype;
 
-    // Gathered tile buffer (MMA_M rows of MMA_N fp32 words = 32k bits).
-    // Filled row-by-row from drain_row_data; element [i][j] at bit
-    // (i*MMA_N + j)*32 — same convention as the old TMEM tile packing.
-    /* verilator lint_off WIDTHCONCAT */
-    logic [MMA_M*MMA_N*32-1:0] tile_buf;
-    /* verilator lint_on WIDTHCONCAT */
+    // Counters
+    logic [ROW_IDX_BITS-1:0]  cur_row;
+    logic [BEAT_IDX_BITS-1:0] beat_in_row;
+    logic [31:0]              bytes_written;
+    logic [31:0]              total_bytes;
+    logic [BEAT_IDX_BITS-1:0] beats_per_row_m1;  // beats_per_row - 1
 
-    // Drain buffer (sized to max output: TILE_BYTES bytes).
-    /* verilator lint_off WIDTHCONCAT */
-    logic [MAX_BYTES*8-1:0] bytes_buf;
-    /* verilator lint_on WIDTHCONCAT */
-
-    logic [31:0] total_bytes;
-    logic [31:0] bytes_written;
-
-    // Track that drain_last was seen — gather completes once the final
-    // row has been latched into tile_buf.
+    // Gather completion latch
     logic gather_done;
 
     // ------------------------------------------------------------------
-    // Combinational fp8-encode array. Inputs are the tile bits from
-    // tile_buf, one fp32 word per element. Outputs are concatenated into
-    // `fp8_bytes` (LSB-first, one byte per element).
+    // 4 × tile_buf_8row banks
     // ------------------------------------------------------------------
-    logic [FP8_BYTES*8-1:0] fp8_bytes;
+    logic [BANKS-1:0]              bank_wr_en;
+    logic [BANK_ROW_BITS-1:0]      bank_wr_row;
+    logic [ROW_W-1:0]              bank_wr_data;
 
-    genvar gi;
+    logic [BANKS-1:0]              bank_rd_en;
+    logic [BANK_ROW_BITS-1:0]      bank_rd_row;
+    logic [ROW_W-1:0]              bank_rd_data [BANKS];
+
+    genvar gb;
     generate
-        for (gi = 0; gi < NUM_ELEMS; gi++) begin : gen_enc
-            fp8_encode u_enc (
-                .fp32 (tile_buf[gi*32 +: 32]),
-                .fp8  (fp8_bytes[gi*8 +: 8])
+        for (gb = 0; gb < BANKS; gb++) begin : gen_banks
+            tile_buf_8row #(
+                .N_ROWS (ROWS_PER_BANK),
+                .ROW_W  (ROW_W)
+            ) u_bank (
+                .clk     (clk),
+                .reset   (reset),
+                .wr_en   (bank_wr_en[gb]),
+                .wr_row  (bank_wr_row),
+                .wr_data (bank_wr_data),
+                .rd_en   (bank_rd_en[gb]),
+                .rd_row  (bank_rd_row),
+                .rd_data (bank_rd_data[gb])
             );
         end
     endgenerate
 
     // ------------------------------------------------------------------
-    // Pack bytes_buf at S_FORMAT based on dtype.
-    //   fp32 path: copy tile_buf into bytes_buf verbatim (LE).
-    //   fp8  path: copy fp8_bytes into the low NUM_ELEMS*8 bits of bytes_buf.
+    // Bank port driving
     // ------------------------------------------------------------------
-    function automatic logic [MAX_BYTES*8-1:0] pack_bytes(
-        input logic [MMA_M*MMA_N*32-1:0] tile,
-        input logic [FP8_BYTES*8-1:0]    encoded,
-        input logic                       d
-    );
-        logic [MAX_BYTES*8-1:0] out;
-        int idx;
-        begin
-            /* verilator lint_off WIDTHCONCAT */
-            out = '0;
-            /* verilator lint_on WIDTHCONCAT */
-            if (d == 1'b0) begin
-                // fp32: low NUM_ELEMS*32 bits copy the tile verbatim.
-                for (idx = 0; idx < NUM_ELEMS; idx++) begin
-                    out[idx*32 +: 32] = tile[idx*32 +: 32];
-                end
-            end else begin
-                // fp8: low NUM_ELEMS*8 bits = encoded[*].
-                for (idx = 0; idx < NUM_ELEMS; idx++) begin
-                    out[idx*8 +: 8] = encoded[idx*8 +: 8];
-                end
-            end
-            return out;
+    // Write side: drain_row_idx top 2 bits select bank, bottom 3 bits
+    // select row within bank. Only the selected bank's wr_en pulses.
+    logic [BANK_SEL_BITS-1:0]   wr_bank_sel;
+    assign wr_bank_sel  = drain_row_idx[ROW_IDX_BITS-1 -: BANK_SEL_BITS];
+    assign bank_wr_row  = drain_row_idx[BANK_ROW_BITS-1:0];
+    assign bank_wr_data = drain_row_data;
+
+    // Read side: the "next row to fetch" — pre-issued so its data is on
+    // bank_rd_data the following cycle.
+    logic [ROW_IDX_BITS-1:0]    next_rd_row;
+    logic                       next_rd_en;
+    logic [BANK_SEL_BITS-1:0]   next_rd_bank;
+
+    assign next_rd_bank = next_rd_row[ROW_IDX_BITS-1 -: BANK_SEL_BITS];
+    assign bank_rd_row  = next_rd_row[BANK_ROW_BITS-1:0];
+
+    integer wbi;
+    integer rbi;
+    always_comb begin
+        // Defaults
+        for (wbi = 0; wbi < BANKS; wbi++) begin
+            bank_wr_en[wbi] = 1'b0;
         end
-    endfunction
+        for (rbi = 0; rbi < BANKS; rbi++) begin
+            bank_rd_en[rbi] = 1'b0;
+        end
+
+        // GATHER: route incoming row to the addressed bank.
+        if (state == S_GATHER && drain_row_valid) begin
+            bank_wr_en[wr_bank_sel] = 1'b1;
+        end
+
+        // Pre-issued read goes to one bank.
+        if (next_rd_en) begin
+            bank_rd_en[next_rd_bank] = 1'b1;
+        end
+    end
 
     // ------------------------------------------------------------------
-    // Sequential logic.
+    // Combinational pre-issue read scheduling
     // ------------------------------------------------------------------
-    integer rj;
+    // We pre-issue the NEXT row's read one cycle before its data is
+    // needed, so that the registered read latency is hidden.
+    //
+    //   - Entering S_DRAIN: pre-issue row 0.
+    //   - In S_DRAIN on the LAST beat of cur_row (and not the last row
+    //     of the tile): pre-issue cur_row+1.
+    always_comb begin
+        next_rd_en  = 1'b0;
+        next_rd_row = '0;
+
+        if (state == S_GATHER && gather_done) begin
+            // This cycle is the GATHER→DRAIN handoff. Pre-issue row 0.
+            next_rd_en  = 1'b1;
+            next_rd_row = '0;
+        end else if (state == S_DRAIN) begin
+            // Last beat of current row → pre-issue next row.
+            if (beat_in_row == beats_per_row_m1 &&
+                cur_row != ROW_IDX_BITS'(MMA_M - 1)) begin
+                next_rd_en  = 1'b1;
+                next_rd_row = cur_row + ROW_IDX_BITS'(1);
+            end
+        end
+    end
+
+    // ------------------------------------------------------------------
+    // Combinational row select for emit + fp8 encode
+    // ------------------------------------------------------------------
+    logic [BANK_SEL_BITS-1:0] cur_row_bank;
+    logic [ROW_W-1:0]         cur_row_data;
+    logic [FP8_BYTES*8-1:0]   fp8_row_bytes_unused;  // wide alias not used
+    logic [MMA_N*8-1:0]       fp8_row_data;
+    /* verilator lint_off UNUSEDSIGNAL */
+    logic [ROW_W-1:0]         emit_data_wide;
+    /* verilator lint_on UNUSEDSIGNAL */
+
+    assign cur_row_bank = cur_row[ROW_IDX_BITS-1 -: BANK_SEL_BITS];
+    assign cur_row_data = bank_rd_data[cur_row_bank];
+
+    // fp8 encode array — MMA_N (=32) instances, one per column.
+    genvar ge;
+    generate
+        for (ge = 0; ge < MMA_N; ge++) begin : gen_enc
+            fp8_encode u_enc (
+                .fp32 (cur_row_data[ge*32 +: 32]),
+                .fp8  (fp8_row_data[ge*8 +: 8])
+            );
+        end
+    endgenerate
+
+    // Emit data is either the raw fp32 row (1024b) or the fp8-encoded
+    // row sign-extended to 1024b (only the low 256b is meaningful for
+    // fp8; beats > beats_per_row_m1 are never sliced).
+    always_comb begin
+        if (saved_dtype == 1'b0) begin
+            emit_data_wide = cur_row_data;
+        end else begin
+            emit_data_wide = {{(ROW_W - MMA_N*8){1'b0}}, fp8_row_data};
+        end
+    end
+
+    // ------------------------------------------------------------------
+    // Sequential logic
+    // ------------------------------------------------------------------
     always_ff @(posedge clk) begin
         if (reset) begin
-            state          <= S_IDLE;
-            busy           <= 1'b0;
-            done           <= 1'b0;
-            drain_issue    <= 1'b0;
-            drain_slot     <= 32'd0;
-            wr_en          <= 1'b0;
-            wr_addr        <= 32'd0;
-            wr_data        <= '0;
-            saved_gmem_ptr <= 32'd0;
-            saved_dtype    <= 1'b0;
-            /* verilator lint_off WIDTHCONCAT */
-            tile_buf       <= '0;
-            bytes_buf      <= '0;
-            /* verilator lint_on WIDTHCONCAT */
-            total_bytes    <= 32'd0;
-            bytes_written  <= 32'd0;
-            gather_done    <= 1'b0;
+            state            <= S_IDLE;
+            busy             <= 1'b0;
+            done             <= 1'b0;
+            drain_issue      <= 1'b0;
+            drain_slot       <= 32'd0;
+            wr_en            <= 1'b0;
+            wr_addr          <= 32'd0;
+            wr_data          <= '0;
+            saved_gmem_ptr   <= 32'd0;
+            saved_dtype      <= 1'b0;
+            cur_row          <= '0;
+            beat_in_row      <= '0;
+            bytes_written    <= 32'd0;
+            total_bytes      <= 32'd0;
+            beats_per_row_m1 <= '0;
+            gather_done      <= 1'b0;
         end else begin
-            done          <= 1'b0;
-            drain_issue   <= 1'b0;
-            drain_slot    <= 32'd0;
-            wr_en         <= 1'b0;
-            wr_addr       <= 32'd0;
-            wr_data       <= '0;
+            // Defaults
+            done        <= 1'b0;
+            drain_issue <= 1'b0;
+            drain_slot  <= 32'd0;
+            wr_en       <= 1'b0;
+            wr_addr     <= 32'd0;
+            wr_data     <= '0;
 
             unique case (state)
                 S_IDLE: begin
                     if (issue_en) begin
-                        saved_gmem_ptr <= gmem_ptr;
-                        saved_dtype    <= dtype;
-                        drain_issue    <= 1'b1;
-                        drain_slot     <= tmem_slot;
-                        total_bytes    <= dtype ? FP8_BYTES : TILE_BYTES;
-                        bytes_written  <= 32'd0;
-                        gather_done    <= 1'b0;
-                        busy           <= 1'b1;
-                        state          <= S_GATHER;
+                        saved_gmem_ptr   <= gmem_ptr;
+                        saved_dtype      <= dtype;
+                        drain_issue      <= 1'b1;
+                        drain_slot       <= tmem_slot;
+                        total_bytes      <= dtype ? FP8_BYTES : TILE_BYTES;
+                        beats_per_row_m1 <= dtype
+                            ? BEAT_IDX_BITS'(FP8_BEATS_PER_ROW - 1)
+                            : BEAT_IDX_BITS'(FP32_BEATS_PER_ROW - 1);
+                        cur_row          <= '0;
+                        beat_in_row      <= '0;
+                        bytes_written    <= 32'd0;
+                        gather_done      <= 1'b0;
+                        busy             <= 1'b1;
+                        state            <= S_GATHER;
                     end
                 end
 
                 S_GATHER: begin
-                    // Gather rows as they arrive. compute_array drives
-                    // drain_row_valid for MMA_M consecutive cycles after
-                    // the issue (starting at issue+2).
-                    if (drain_row_valid) begin
-                        // Write the row into tile_buf at the indicated row.
-                        // Element [i][j] sits at bit (i*MMA_N+j)*32; one row
-                        // is MMA_N*32 contiguous bits starting at
-                        // (row_idx*MMA_N)*32.
-                        for (rj = 0; rj < MMA_N; rj++) begin
-                            tile_buf[(drain_row_idx*MMA_N + rj)*32 +: 32]
-                                <= drain_row_data[rj*32 +: 32];
-                        end
-                        if (drain_last) begin
-                            gather_done <= 1'b1;
-                        end
+                    // Bank writes are driven combinationally above.
+                    if (drain_row_valid && drain_last) begin
+                        gather_done <= 1'b1;
                     end
-                    // Transition out of GATHER once the final row's NBA has
-                    // committed. drain_last is registered with the same
-                    // edge as the final row data, so we move to FORMAT one
-                    // cycle later (when gather_done has been latched high).
+                    // Once we've latched gather_done, transition. The
+                    // pre-issue read for row 0 fires combinationally this
+                    // same cycle, so rd_data is row-0 contents next cycle.
                     if (gather_done) begin
-                        state <= S_FORMAT;
+                        state       <= S_DRAIN;
+                        gather_done <= 1'b0;
                     end
-                end
-
-                S_FORMAT: begin
-                    // One-cycle re-pack: tile_buf -> bytes_buf per dtype.
-                    bytes_buf <= pack_bytes(tile_buf, fp8_bytes, saved_dtype);
-                    state     <= S_DRAIN;
                 end
 
                 S_DRAIN: begin
+                    // Emit one beat per cycle.
                     wr_en   <= 1'b1;
                     wr_addr <= saved_gmem_ptr + bytes_written;
-                    wr_data <= bytes_buf[bytes_written*8 +: BEAT_BYTES*8];
+                    wr_data <= emit_data_wide[beat_in_row * BEAT_BITS +: BEAT_BITS];
 
-                    if (bytes_written + BEAT_BYTES >= total_bytes) begin
-                        done          <= 1'b1;
-                        busy          <= 1'b0;
-                        state         <= S_IDLE;
-                        bytes_written <= 32'd0;
-                        gather_done   <= 1'b0;
+                    if (beat_in_row == beats_per_row_m1) begin
+                        // End of current row.
+                        beat_in_row <= '0;
+                        if (cur_row == ROW_IDX_BITS'(MMA_M - 1)) begin
+                            // End of tile.
+                            done          <= 1'b1;
+                            busy          <= 1'b0;
+                            state         <= S_IDLE;
+                            bytes_written <= 32'd0;
+                            cur_row       <= '0;
+                        end else begin
+                            cur_row       <= cur_row + ROW_IDX_BITS'(1);
+                            bytes_written <= bytes_written + BEAT_BYTES;
+                        end
                     end else begin
+                        beat_in_row   <= beat_in_row + BEAT_IDX_BITS'(1);
                         bytes_written <= bytes_written + BEAT_BYTES;
                     end
                 end

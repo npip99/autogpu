@@ -57,3 +57,68 @@ submodules/
     ├── config.yaml <- OpenLane config; differs only on DESIGN_NAME + macros
     └── runs/       <- per-attempt outputs (gitignored)
 ```
+
+## Sizing & config tips
+
+Lessons learned hardening modules. Apply when writing or tuning a new
+`config.yaml`:
+
+### Pin layers — keep met5 PDN-only
+Default `FP_IO_HLAYER: met3 met5` puts IO pins on met5, but chip-level PDN
+also uses met5 for power straps. The two clash and produce hundreds of
+*Metal5 spacing* DRC errors at the die edge. Set:
+```yaml
+FP_IO_HLAYER: met3
+FP_IO_VLAYER: met2 met4
+RT_MAX_LAYER: met4
+```
+This is true for every submodule we've hardened (barrier, load, store,
+mac_array_small all needed this).
+
+### Die size — proportional to actual cells
+A massively oversized die makes the resizer insert huge buffer trees to
+drive nets across long wires, which makes synth slow, blows up the GDS
+size, and makes magic-writelef take hours. Target 30–50% utilization:
+```
+core_area ≈ instance_area / target_util
+die_side  ≈ sqrt(core_area) + 100   # +50 µm border on each side
+```
+Get `instance_area` from any stage's `or_metrics_out.json` after global
+placement (`design__instance__area`). At too-low util the resizer
+inserts ~10× more buffers than necessary; at too-high util DR wedges on
+routing congestion.
+
+### Routing congestion on perimeter-heavy modules
+Modules with hundreds of debug/observability pins (like `barrier` with
+its bars_pending/expected/tx_pending output buses) need lower util so
+pins have room to fan out. `FP_CORE_UTIL: 15` worked for barrier where
+`30` failed in global routing.
+
+### Hardened-macro children — PDN alignment
+If your module instantiates hardened macros (like `compute_array`
+contains 1024 `mac_tmem_cell` macros), the chip-level PDN strap pitch
++ offset must match the macro's internal pin pitch + offset, or you
+get unconnected VPWR/VGND nodes (PSM-0069). For sky130 default PDN
+(`FP_PDN_VPITCH=153.6`, `FP_PDN_VOFFSET=16.32`), place macro origins
+at `(−4.72 + k·153.6, −10.08 + k·153.18)` and use a pitch that is a
+multiple of 153.6 / 153.18.
+
+### Standalone parameter overrides
+If the module's SV default parameters don't match what `chip_top.sv`
+passes (e.g. `INSTR_FIFO_DEPTH=8` for load vs 256 default), override
+in the submodule config:
+```yaml
+SYNTH_PARAMETERS:
+- "INSTR_FIFO_DEPTH=8"
+```
+Otherwise standalone synth uses the SV default — which can be wildly
+different from the chip-top instantiation.
+
+### When the IR-drop check blocks you
+For dev runs where PDN connectivity is imperfect (e.g. macro-pin/strap
+alignment hasn't been tuned yet), skip the check to get a viewable GDS:
+```bash
+EXTRA_OPENLANE_ARGS="--skip OpenROAD.IRDropReport" ./run.sh <module>
+```
+NOT safe for tape-out — only for getting through the flow to see the
+GDS for inspection.

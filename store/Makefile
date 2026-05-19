@@ -21,7 +21,10 @@ BUILD_ARGS     += OBJCACHE=$(shell command -v ccache 2>/dev/null)
 TOPLEVEL_LANG  ?= verilog
 VERILOG_SOURCES = $(PWD)/store.sv \
                   $(PWD)/store_tb_top.sv \
+                  $(PWD)/../tile_buf_8row/tile_buf_8row.sv \
                   $(PWD)/../mac_tmem_cell/mac_tmem_cell.sv \
+                  $(PWD)/../cmd_unit/cmd_unit.sv \
+                  $(PWD)/../skew_lane/skew_lane.sv \
                   $(PWD)/../compute_array/compute_array.sv \
                   $(PWD)/../gmem/gmem.sv \
                   $(PWD)/../common/fpnew/cf_math_pkg.sv \

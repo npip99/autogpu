@@ -11,8 +11,9 @@ SYNTH_SHARE_RESOURCES: false
 SYNTH_ABC_BUFFERING: false
 SYNTH_HIERARCHY_MODE: keep
 PL_TIME_DRIVEN: false
-FP_IO_HLAYER: met3 met5
-FP_IO_VLAYER: met2 met4
+FP_IO_HLAYER: met3
+FP_IO_VLAYER: met2
+FP_PIN_ORDER_CFG: dir::mac_tmem_cell.pin_order.cfg
 FP_SIZING: relative
 FP_CORE_UTIL: 50
 # Denser internal PDN so chip-level PDN finds a macro PIN to land on
