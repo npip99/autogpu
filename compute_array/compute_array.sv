@@ -1,26 +1,35 @@
-// compute_array.sv -- MMA_M x MMA_N grid of mac_tmem_cell with K-loop sequencer
-//                     and row-by-row drain mux.
+// compute_array.sv -- MMA_M x MMA_N systolic grid of mac_tmem_cell.
 //
-// Phase 7h-2 integration target. See pymodel/compute_array.py for the
-// canonical spec; this module must match it cycle-by-cycle.
+// Phase 7i-4: full systolic refactor.
+//
+//   Old (Phase 7h): broadcast network. On accumulate_now the K-loop FSM
+//   drove the SAME a/b bytes to all 1024 cells in the SAME cycle. Routes
+//   were 16 mm long on sky130 — unbuildable. mac_array_small (the 4×4
+//   synth proof) is now hardened with cell-to-cell systolic wiring;
+//   compute_array follows the same pattern, scaled to MMA_M × MMA_N.
 //
 // Structure:
-//   - 1024 (MMA_M x MMA_N) mac_tmem_cell leaves on a broadcast network.
-//   - K-loop FSM: lifts the pa/pb cross-stall protocol from mma.sv. Issues
-//     SMEM rd_a / rd_b reads and drives `compute` on the cell array when
-//     both halves of column k have arrived.
-//   - Drain mux: one row per cycle. drain_en is fanned out only to row R
-//     of cells; drain_data on those cells appears one cycle later and is
-//     packed into drain_row_data. drain_last pulses on the final row;
-//     drain_done pulses one cycle after drain_last.
+//   - Triangular row-skew buffer at the WEST edge: row i's a-byte is
+//     delayed by i cycles, so a[i, k] enters cell (i, 0) at cycle k+i.
+//   - Triangular col-skew buffer at the NORTH edge: col j's b-byte is
+//     delayed by j cycles, so b[k, j] enters cell (0, j) at cycle k+j.
+//   - (compute, slot, accum) packet travels east WITH a — also skewed
+//     row-by-row.
+//   - mac_tmem_cell mesh: a flows east, b flows south, both registered
+//     per-cell. 1-cycle hop delay; cell (i, j) computes at cycle k+i+j.
+//   - K-loop FSM: same SMEM cross-stall protocol as broadcast version,
+//     but instead of broadcasting on accumulate_now, it PUSHES into the
+//     skew buffers.
+//   - Wave-drain counter: after the K-th push, hold pending_done for
+//     M+N-2 cycles so the last K-element propagates to cell (M-1, N-1)
+//     before mma_done pulses.
+//   - Drain mux: unchanged. drain_en is fanned to row R's cells, drain
+//     pipeline samples 2 cycles later.
 //
 // Per-cell `accum`: on the FIRST compute of a matmul, drives saved_accum
 // (so accum=0 zero-initializes, accum=1 reads prior storage); thereafter
-// always 1.
-//
-// `mma_done` pulses ONE CYCLE AFTER the last compute fires (no separate
-// writeback step, since storage commits per-cell on the compute cycle).
-// This matches the pymodel's pulse latency.
+// always 1. The accum packet rides the skew with a, so each cell sees
+// the right value at the right cycle.
 
 module compute_array #(
     parameter int MMA_M   = 32,
@@ -57,7 +66,7 @@ module compute_array #(
     input  logic                          rd_b_valid,
     input  logic                          rd_b_stall_in,
 
-    // ---- Drain issue (= old STORE-from-TMEM) ----
+    // ---- Drain issue ----
     input  logic                          drain_issue,
     input  logic [$clog2(N_SLOTS)-1:0]    drain_slot,
     output logic                          drain_busy,
@@ -73,26 +82,32 @@ module compute_array #(
     input  logic                          scrub_en
 );
 
+    localparam int SLOT_W   = $clog2(N_SLOTS);
+    localparam int WAVE_DRAIN_CYCLES = MMA_M + MMA_N - 2;
+    // Sized just big enough for WAVE_DRAIN_CYCLES (max 94 for 32×32×32 →
+    // 7 bits). Use 32-bit to be safe and parameter-agnostic.
+    localparam int WAVE_CNT_W = 32;
+
     // ------------------------------------------------------------------
-    // K-loop FSM
+    // K-loop FSM state
     // ------------------------------------------------------------------
-    typedef enum logic [0:0] {
-        S_IDLE    = 1'b0,
-        S_COMPUTE = 1'b1
+    typedef enum logic [1:0] {
+        S_IDLE       = 2'd0,
+        S_COMPUTE    = 2'd1,
+        S_WAVE_DRAIN = 2'd2   // K pushes done, waiting wave to reach (M-1, N-1)
     } mma_state_t;
 
     mma_state_t state;
 
-    // Latched issue operands.
     logic [31:0] saved_a_off;
     logic [31:0] saved_b_off;
     logic [31:0] saved_a_stride;
     logic [31:0] saved_b_stride;
-    logic [$clog2(N_SLOTS)-1:0] saved_slot;
+    logic [SLOT_W-1:0] saved_slot;
     logic        saved_accum;
     logic [31:0] saved_bar_id;
 
-    // Pending-arrival cross-stall stash (from mma.sv).
+    // Cross-stall stash (unchanged from broadcast version).
     logic                 pa_valid;
     logic [MMA_M*8-1:0]   pa_data;
     logic                 pb_valid;
@@ -102,6 +117,7 @@ module compute_array #(
     logic [31:0]          cur_collect_k;
     logic                 accum_done;
     logic                 pending_done;
+    logic [WAVE_CNT_W-1:0] wave_cnt;
 
     // ------------------------------------------------------------------
     // Drain FSM
@@ -114,27 +130,9 @@ module compute_array #(
 
     drain_state_t drain_state;
 
-    logic [$clog2(N_SLOTS)-1:0] drain_saved_slot;
-    // drain_next_row sized to MMA_M+1 so it can hold the "done" value
-    // (== MMA_M) without overflow.
+    logic [SLOT_W-1:0] drain_saved_slot;
     logic [$clog2(MMA_M+1)-1:0] drain_next_row;
 
-    // ---- Drain pipeline ----
-    // Two registered stages tracking row R after its drain_en was driven:
-    //   stage_a (s1)  : drain_en was asserted on row R LAST cycle. The cell
-    //                   has captured its drain_pending, but cell.drain_data
-    //                   is still 0 (the cell commits storage[slot] only on
-    //                   the NEXT posedge).
-    //   stage_b (s2)  : drain_en was asserted on row R TWO cycles ago. The
-    //                   cell has committed drain_data <= storage[slot] at
-    //                   the previous posedge, so cell.drain_data is the
-    //                   correct value during THIS cycle. We sample it and
-    //                   register drain_row_* on the NEXT posedge.
-    // The mac_tmem_cell has a 1-cycle drain latency (drain_en at T →
-    // drain_data valid at T+1's edge → readable during cycle T+1). To
-    // pack and register the row, we need a second cycle (the cell.drain_data
-    // is a registered output, not combinational), so total latency from
-    // drain_en assertion to drain_row_valid pulse is 2 cycles.
     logic                       s1_valid;
     logic [$clog2(MMA_M)-1:0]   s1_row;
     logic                       s1_last;
@@ -143,21 +141,22 @@ module compute_array #(
     logic                       s2_last;
 
     // ------------------------------------------------------------------
-    // Broadcast inputs (combinational, fed to all cells).
+    // Push-into-skew control (drives the systolic edge each cycle)
     // ------------------------------------------------------------------
-    logic                       bcast_compute;
-    logic [MMA_M*8-1:0]         bcast_a_bytes;
-    logic [MMA_N*8-1:0]         bcast_b_bytes;
-    logic [$clog2(N_SLOTS)-1:0] bcast_slot;
-    logic                       bcast_accum;
-
-    // Drain broadcast: drain_en is asserted only on cells in row R.
-    logic                       drain_issue_now;
-    logic [$clog2(MMA_M)-1:0]   drain_issue_row;
-    logic [$clog2(N_SLOTS)-1:0] bcast_drain_slot;
+    // `push_now` fires the cycle a fresh K-element enters the array's
+    // west/north edges. The associated payload:
+    //   push_a_bytes : MMA_M a-bytes (one per row)
+    //   push_b_bytes : MMA_N b-bytes (one per col)
+    //   push_slot    : slot to write
+    //   push_accum   : accum bit for this push (saved_accum on first, 1 after)
+    logic                       push_now;
+    logic [MMA_M*8-1:0]         push_a_bytes;
+    logic [MMA_N*8-1:0]         push_b_bytes;
+    logic [SLOT_W-1:0]          push_slot;
+    logic                       push_accum;
 
     // ------------------------------------------------------------------
-    // SMEM read issue computation (combinational; goes to next-cycle reg).
+    // SMEM next-cycle issue (combinational)
     // ------------------------------------------------------------------
     logic                next_rd_a_en;
     logic [31:0]         next_rd_a_addr;
@@ -165,56 +164,9 @@ module compute_array #(
     logic [31:0]         next_rd_b_addr;
 
     // ------------------------------------------------------------------
-    // FMA / decode helper wires from the broadcast network into cells.
+    // Combinational K-loop intermediates (declared module-scope so Yosys
+    // doesn't infer latches when only set inside case arms).
     // ------------------------------------------------------------------
-    logic [31:0]                drain_data [MMA_M][MMA_N];
-
-    genvar gi, gj;
-    generate
-        for (gi = 0; gi < MMA_M; gi++) begin : gen_row
-            for (gj = 0; gj < MMA_N; gj++) begin : gen_col
-                logic        cell_drain_en;
-                assign cell_drain_en = drain_issue_now &&
-                                       (drain_issue_row == gi[$clog2(MMA_M)-1:0]);
-
-                // N_SLOTS not overridden: when hardened as a sky130 macro
-                // (no parameter pins), the leaf's default must match.
-                //
-                // Phase 7i-2 STUB: leaf is now systolic (a_in/_out, etc.). This
-                // parent still wires the OLD broadcast pattern by feeding the
-                // same byte into every cell's _in and leaving _out unbound, so
-                // the design parses and the leaf can be hardened. The proper
-                // systolic neighbor wiring lands in Phase 7i-3.
-                mac_tmem_cell u_cell (
-                    .clk         (clk),
-                    .reset       (reset),
-                    .compute_in  (bcast_compute),
-                    .a_in        (bcast_a_bytes[gi*8 +: 8]),
-                    .b_in        (bcast_b_bytes[gj*8 +: 8]),
-                    .slot_in     (bcast_slot),
-                    .accum_in    (bcast_accum),
-                    .compute_out (),
-                    .a_out       (),
-                    .b_out       (),
-                    .slot_out    (),
-                    .accum_out   (),
-                    .drain_en    (cell_drain_en),
-                    .drain_slot  (bcast_drain_slot),
-                    .drain_data  (drain_data[gi][gj]),
-                    // Init port unused for now; pymodel uses backdoor only.
-                    .init_en     (1'b0),
-                    .init_slot   ('0),
-                    .init_data   (32'd0),
-                    .scrub_en    (scrub_en)
-                );
-            end
-        end
-    endgenerate
-
-    // ------------------------------------------------------------------
-    // Combinational logic for K-loop next-state and broadcast outputs.
-    // ------------------------------------------------------------------
-    // Locals declared at module scope so Yosys doesn't infer latches.
     logic a_arrives;
     logic b_arrives;
     logic next_pa;
@@ -233,12 +185,13 @@ module compute_array #(
     logic b_inflight_after2;
 
     always_comb begin
-        // Defaults.
-        bcast_compute = 1'b0;
-        bcast_a_bytes = '0;
-        bcast_b_bytes = '0;
-        bcast_slot    = '0;
-        bcast_accum   = 1'b0;
+        bcast_compute = 1'b0;  // not used — keep declared name out of here
+        push_now      = 1'b0;
+        push_a_bytes  = '0;
+        push_b_bytes  = '0;
+        push_slot     = '0;
+        push_accum    = 1'b0;
+
         next_rd_a_en   = 1'b0;
         next_rd_a_addr = 32'd0;
         next_rd_b_en   = 1'b0;
@@ -306,23 +259,36 @@ module compute_array #(
                 end
 
                 if (accumulate_now) begin
-                    bcast_compute = 1'b1;
-                    bcast_a_bytes = a_data_now;
-                    bcast_b_bytes = b_data_now;
-                    bcast_slot    = saved_slot;
-                    bcast_accum   = accum_done ? 1'b1 : saved_accum;
+                    push_now     = 1'b1;
+                    push_a_bytes = a_data_now;
+                    push_b_bytes = b_data_now;
+                    push_slot    = saved_slot;
+                    push_accum   = accum_done ? 1'b1 : saved_accum;
                 end
             end
+
+            S_WAVE_DRAIN: begin
+                // No SMEM reads, no pushes — just waiting for the wave
+                // to propagate through (M-1) + (N-1) cells.
+            end
+
             default: ;
         endcase
     end
 
+    // Defensive declaration (not used after refactor; left as placeholder
+    // so the always_comb assignment above is to a real net).
+    logic bcast_compute;
+
     // ------------------------------------------------------------------
     // Drain FSM combinational outputs (this cycle's drain_en row).
     // ------------------------------------------------------------------
+    logic                       drain_issue_now;
+    logic [$clog2(MMA_M)-1:0]   drain_issue_row;
+    logic [SLOT_W-1:0]          bcast_drain_slot;
     always_comb begin
-        drain_issue_now = 1'b0;
-        drain_issue_row = '0;
+        drain_issue_now  = 1'b0;
+        drain_issue_row  = '0;
         bcast_drain_slot = drain_saved_slot;
 
         if (drain_state == D_ISSUE) begin
@@ -334,31 +300,152 @@ module compute_array #(
     end
 
     // ------------------------------------------------------------------
+    // Systolic west/north edge sources.
+    //
+    // Each row i has a depth-i shift register for {a, compute, slot,
+    // accum}. New entries arrive on push_now=1; otherwise the head is
+    // a "no-op" entry (compute=0). Each cycle, the buffer advances by
+    // one step. Row i's edge inputs come from the i-th-from-front position
+    // of its shift register (so row 0 = front = freshly pushed; row M-1 =
+    // depth M-1).
+    //
+    // Same for cols on b.
+    //
+    // The shift register also runs in S_WAVE_DRAIN so the wave propagates
+    // out to (M-1, N-1); during drain pushes are zero so older entries
+    // get NOP'd as they reach the head.
+    //
+    // Implementation: a single rectangular packed-array buffer for each
+    // axis, shift the whole thing one position per cycle. Concretely we
+    // model the buffer as `skew_a[M-1]` slots holding {byte} (max-depth
+    // is M-1; row 0 reads at position [0] which is "this-cycle push";
+    // row i reads at position [i-1]).
+    // ------------------------------------------------------------------
+
+    // For row-skew: rows that need delay >0 read out of skew_*.
+    // skew_a_pos[k] holds the byte that was pushed k+1 cycles ago.
+    // Width = M-1 entries.
+    localparam int A_SKEW_DEPTH = (MMA_M > 1) ? (MMA_M - 1) : 1;
+    localparam int B_SKEW_DEPTH = (MMA_N > 1) ? (MMA_N - 1) : 1;
+
+    logic [7:0]              skew_a_byte  [MMA_M-1:0][A_SKEW_DEPTH-1:0];
+    logic                    skew_a_valid [MMA_M-1:0][A_SKEW_DEPTH-1:0];
+    logic [SLOT_W-1:0]       skew_a_slot  [MMA_M-1:0][A_SKEW_DEPTH-1:0];
+    logic                    skew_a_accum [MMA_M-1:0][A_SKEW_DEPTH-1:0];
+
+    logic [7:0]              skew_b_byte  [MMA_N-1:0][B_SKEW_DEPTH-1:0];
+    logic                    skew_b_valid [MMA_N-1:0][B_SKEW_DEPTH-1:0];
+
+    // Edge inputs into the cell mesh.
+    // edge_a[i] / edge_compute[i] / edge_slot[i] / edge_accum[i] feed
+    // cell (i, 0). edge_b[j] / edge_b_compute[j] feed cell (0, j).
+    logic [7:0]              edge_a       [MMA_M-1:0];
+    logic                    edge_compute [MMA_M-1:0];
+    logic [SLOT_W-1:0]       edge_slot    [MMA_M-1:0];
+    logic                    edge_accum   [MMA_M-1:0];
+    logic [7:0]              edge_b       [MMA_N-1:0];
+
+    // Row 0 / col 0 are the "fresh push" path (depth 0):
+    //   edge_a[0]    = push_a_bytes[0]    if push_now else 0
+    //   edge_compute[0] = push_now
+    // Rows >0 read from skew register:
+    //   edge_a[i]    = skew_a_byte[i][i-1]
+    //   edge_compute[i] = skew_a_valid[i][i-1]
+    genvar gi_edge;
+    generate
+        for (gi_edge = 0; gi_edge < MMA_M; gi_edge++) begin : gen_edge_a
+            if (gi_edge == 0) begin : g_first_row
+                assign edge_a[0]       = push_now ? push_a_bytes[0*8 +: 8] : 8'd0;
+                assign edge_compute[0] = push_now;
+                assign edge_slot[0]    = push_slot;
+                assign edge_accum[0]   = push_accum;
+            end else begin : g_other_rows
+                assign edge_a[gi_edge]       = skew_a_byte [gi_edge][gi_edge-1];
+                assign edge_compute[gi_edge] = skew_a_valid[gi_edge][gi_edge-1];
+                assign edge_slot[gi_edge]    = skew_a_slot [gi_edge][gi_edge-1];
+                assign edge_accum[gi_edge]   = skew_a_accum[gi_edge][gi_edge-1];
+            end
+        end
+    endgenerate
+
+    genvar gj_edge;
+    generate
+        for (gj_edge = 0; gj_edge < MMA_N; gj_edge++) begin : gen_edge_b
+            if (gj_edge == 0) begin : g_first_col
+                assign edge_b[0] = push_now ? push_b_bytes[0*8 +: 8] : 8'd0;
+            end else begin : g_other_cols
+                assign edge_b[gj_edge] = skew_b_byte[gj_edge][gj_edge-1];
+            end
+        end
+    endgenerate
+
+    // ------------------------------------------------------------------
+    // Cell mesh — cell-to-cell systolic wiring.
+    // ------------------------------------------------------------------
+    logic [7:0]              a_pipe       [MMA_M-1:0][MMA_N-1:0];
+    logic [7:0]              b_pipe       [MMA_M-1:0][MMA_N-1:0];
+    logic                    compute_pipe [MMA_M-1:0][MMA_N-1:0];
+    logic [SLOT_W-1:0]       slot_pipe    [MMA_M-1:0][MMA_N-1:0];
+    logic                    accum_pipe   [MMA_M-1:0][MMA_N-1:0];
+    logic [31:0]             drain_data   [MMA_M-1:0][MMA_N-1:0];
+
+    genvar gi, gj;
+    generate
+        for (gi = 0; gi < MMA_M; gi++) begin : gen_row
+            for (gj = 0; gj < MMA_N; gj++) begin : gen_col
+                logic        cell_drain_en;
+                logic [7:0]  a_in_w;
+                logic [7:0]  b_in_w;
+                logic        c_in_w;
+                logic [SLOT_W-1:0] s_in_w;
+                logic        acc_in_w;
+
+                // a, compute, slot, accum from west neighbor; col 0 from edge.
+                assign a_in_w   = (gj == 0) ? edge_a[gi]       : a_pipe      [gi][gj-1];
+                assign c_in_w   = (gj == 0) ? edge_compute[gi] : compute_pipe[gi][gj-1];
+                assign s_in_w   = (gj == 0) ? edge_slot[gi]    : slot_pipe   [gi][gj-1];
+                assign acc_in_w = (gj == 0) ? edge_accum[gi]   : accum_pipe  [gi][gj-1];
+
+                // b from north neighbor; row 0 from edge.
+                assign b_in_w   = (gi == 0) ? edge_b[gj]       : b_pipe      [gi-1][gj];
+
+                // Drain_en only fired on the chosen row.
+                assign cell_drain_en =
+                    drain_issue_now &&
+                    (drain_issue_row == gi[$clog2(MMA_M)-1:0]);
+
+                mac_tmem_cell u_cell (
+                    .clk         (clk),
+                    .reset       (reset),
+                    .compute_in  (c_in_w),
+                    .a_in        (a_in_w),
+                    .b_in        (b_in_w),
+                    .slot_in     (s_in_w),
+                    .accum_in    (acc_in_w),
+                    .compute_out (compute_pipe[gi][gj]),
+                    .a_out       (a_pipe      [gi][gj]),
+                    .b_out       (b_pipe      [gi][gj]),
+                    .slot_out    (slot_pipe   [gi][gj]),
+                    .accum_out   (accum_pipe  [gi][gj]),
+                    .drain_en    (cell_drain_en),
+                    .drain_slot  (bcast_drain_slot),
+                    .drain_data  (drain_data  [gi][gj]),
+                    .init_en     (1'b0),
+                    .init_slot   ('0),
+                    .init_data   (32'd0),
+                    .scrub_en    (scrub_en)
+                );
+            end
+        end
+    endgenerate
+
+    // ------------------------------------------------------------------
     // Drain row outputs (combinational from stage-2 of the drain pipeline).
-    //
-    // Drain pipeline stages and timing:
-    //   Cycle C   : compute_array drives drain_en=1 on row R (combinational
-    //               from drain_state == D_ISSUE && drain_next_row < MMA_M).
-    //   Cycle C+1 : cell.drain_pending_valid is now 1, but cell.drain_data
-    //               is still the old value (commit happens at next edge).
-    //               compute_array's s1_valid is high this cycle, marking
-    //               "row R was issued last cycle". We don't sample yet.
-    //   Cycle C+2 : cell.drain_data has committed storage[slot] during the
-    //               edge entering this cycle, so it is now visible
-    //               combinationally. s2_valid (= prior s1_valid) is high.
-    //               drain_row_* are driven combinationally from s2_* and
-    //               cell.drain_data[s2_row][*].
-    //
-    // Driving drain_row_* combinationally from s2_* matches the
-    // pymodel's read-cell-after-tick semantics — registering them would
-    // sample cell.drain_data one edge too early (when it's still 0).
     // ------------------------------------------------------------------
     assign drain_row_valid = s2_valid;
     assign drain_row_idx   = s2_row;
     assign drain_last      = s2_valid && s2_last;
 
-    // Generate-form (not always_comb + for-int) so sv2v's named-block
-    // expansion doesn't trip yosys into inferring a latch on the loop var.
     genvar gj_drain;
     generate
         for (gj_drain = 0; gj_drain < MMA_N; gj_drain++) begin : g_drain_pack
@@ -368,8 +455,10 @@ module compute_array #(
     endgenerate
 
     // ------------------------------------------------------------------
-    // Sequential logic
+    // Sequential
     // ------------------------------------------------------------------
+    integer i_r;
+    integer i_d;
     always_ff @(posedge clk) begin
         if (reset) begin
             state           <= S_IDLE;
@@ -397,6 +486,7 @@ module compute_array #(
             cur_collect_k   <= 32'd0;
             accum_done      <= 1'b0;
             pending_done    <= 1'b0;
+            wave_cnt        <= '0;
 
             drain_state        <= D_IDLE;
             drain_busy         <= 1'b0;
@@ -409,19 +499,79 @@ module compute_array #(
             s2_valid           <= 1'b0;
             s2_row             <= '0;
             s2_last            <= 1'b0;
+
+            // Clear skew buffers.
+            for (i_r = 0; i_r < MMA_M; i_r++) begin
+                for (i_d = 0; i_d < A_SKEW_DEPTH; i_d++) begin
+                    skew_a_byte [i_r][i_d] <= 8'd0;
+                    skew_a_valid[i_r][i_d] <= 1'b0;
+                    skew_a_slot [i_r][i_d] <= '0;
+                    skew_a_accum[i_r][i_d] <= 1'b0;
+                end
+            end
+            for (i_r = 0; i_r < MMA_N; i_r++) begin
+                for (i_d = 0; i_d < B_SKEW_DEPTH; i_d++) begin
+                    skew_b_byte [i_r][i_d] <= 8'd0;
+                    skew_b_valid[i_r][i_d] <= 1'b0;
+                end
+            end
         end else begin
-            // Default per-cycle pulse outputs (clear; conditionally set below).
+            // Default per-cycle pulse outputs.
             mma_done      <= 1'b0;
             arrive_en     <= 1'b0;
             arrive_bar_id <= 32'd0;
             drain_done    <= 1'b0;
 
-            // ---- K-loop sequential ----
             rd_a_en   <= next_rd_a_en;
             rd_a_addr <= next_rd_a_addr;
             rd_b_en   <= next_rd_b_en;
             rd_b_addr <= next_rd_b_addr;
 
+            // ---- Skew buffer advance ----
+            // EVERY cycle (regardless of push_now), the skew shifts. Head
+            // gets either the push payload (push_now=1) or a no-op
+            // (compute_in=0 propagates as "wave hole"). Row 0 / col 0
+            // don't have skew entries — they read directly from push.
+            //
+            // For row i (i >= 1):
+            //   skew_a_*[i][0] = push payload's row-i byte if push_now
+            //   skew_a_*[i][k] = skew_a_*[i][k-1]  for k=1..A_SKEW_DEPTH-1
+            for (i_r = 1; i_r < MMA_M; i_r++) begin
+                // Shift down (older entries move to higher index).
+                for (i_d = A_SKEW_DEPTH-1; i_d > 0; i_d--) begin
+                    skew_a_byte [i_r][i_d] <= skew_a_byte [i_r][i_d-1];
+                    skew_a_valid[i_r][i_d] <= skew_a_valid[i_r][i_d-1];
+                    skew_a_slot [i_r][i_d] <= skew_a_slot [i_r][i_d-1];
+                    skew_a_accum[i_r][i_d] <= skew_a_accum[i_r][i_d-1];
+                end
+                // New head: push payload (or zero on idle).
+                if (push_now) begin
+                    skew_a_byte [i_r][0] <= push_a_bytes[i_r*8 +: 8];
+                    skew_a_valid[i_r][0] <= 1'b1;
+                    skew_a_slot [i_r][0] <= push_slot;
+                    skew_a_accum[i_r][0] <= push_accum;
+                end else begin
+                    skew_a_byte [i_r][0] <= 8'd0;
+                    skew_a_valid[i_r][0] <= 1'b0;
+                    skew_a_slot [i_r][0] <= '0;
+                    skew_a_accum[i_r][0] <= 1'b0;
+                end
+            end
+            for (i_r = 1; i_r < MMA_N; i_r++) begin
+                for (i_d = B_SKEW_DEPTH-1; i_d > 0; i_d--) begin
+                    skew_b_byte [i_r][i_d] <= skew_b_byte [i_r][i_d-1];
+                    skew_b_valid[i_r][i_d] <= skew_b_valid[i_r][i_d-1];
+                end
+                if (push_now) begin
+                    skew_b_byte [i_r][0] <= push_b_bytes[i_r*8 +: 8];
+                    skew_b_valid[i_r][0] <= 1'b1;
+                end else begin
+                    skew_b_byte [i_r][0] <= 8'd0;
+                    skew_b_valid[i_r][0] <= 1'b0;
+                end
+            end
+
+            // ---- K-loop FSM ----
             unique case (state)
                 S_IDLE: begin
                     if (mma_issue) begin
@@ -456,7 +606,9 @@ module compute_array #(
                         cur_collect_k  <= next_collect_k_comb;
                         accum_done     <= 1'b1;
                         if (next_collect_k_comb == MMA_K) begin
-                            pending_done <= 1'b1;
+                            // Last K element just pushed. Start wave drain.
+                            state    <= S_WAVE_DRAIN;
+                            wave_cnt <= WAVE_DRAIN_CYCLES[WAVE_CNT_W-1:0];
                         end
                     end else begin
                         if (a_arrives && !pa_valid) begin
@@ -471,40 +623,32 @@ module compute_array #(
                         b_inflight <= b_inflight_after;
                     end
                 end
+
+                S_WAVE_DRAIN: begin
+                    // Wait WAVE_DRAIN_CYCLES so the last K-element
+                    // propagates from (0, 0) to (M-1, N-1).
+                    if (wave_cnt == 0) begin
+                        pending_done <= 1'b1;
+                        state        <= S_IDLE;
+                    end else begin
+                        wave_cnt <= wave_cnt - 1;
+                    end
+                end
+
                 default: ;
             endcase
 
-            // ---- Done pulse latency: pulse one cycle after pending_done set ----
+            // ---- Done pulse latency: pulse one cycle after pending_done ----
             if (pending_done) begin
                 mma_done      <= 1'b1;
                 arrive_en     <= 1'b1;
                 arrive_bar_id <= saved_bar_id;
                 pending_done  <= 1'b0;
-                state         <= S_IDLE;
                 mma_busy      <= 1'b0;
                 accum_done    <= 1'b0;
             end
 
             // ---- Drain FSM ----
-            //
-            // Pipeline:
-            //   stage 1 (s1_valid) : drain_en was driven on row R this cycle;
-            //                        cell will commit drain_pending at next edge.
-            //   stage 2 (s2_valid) : cell.drain_data is being committed at the
-            //                        edge ENTERING this cycle, so during this
-            //                        cycle drain_data is valid and ready to
-            //                        sample combinationally.
-            //   commit             : at this edge we register drain_row_*
-            //                        from s2.
-            //
-            // Total: 2 cycles from drain_en assertion to drain_row_valid pulse.
-            //
-            // (mac_tmem_cell has 1 cycle of drain latency by itself; the second
-            // cycle is needed because cell.drain_data is a registered output,
-            // not combinational, so we can't sample it on the same edge it
-            // commits — we must wait one more cycle.)
-
-            // Default stage 1/2: clear them so they only stay high when fresh.
             s1_valid <= 1'b0;
             s2_valid <= 1'b0;
 
@@ -519,14 +663,9 @@ module compute_array #(
                 end
 
                 D_ISSUE: begin
-                    // Advance pipeline: this cycle's issued row enters
-                    // stage 1; last cycle's stage 1 enters stage 2.
                     if (drain_issue_now) begin
                         s1_valid <= 1'b1;
                         s1_row   <= drain_issue_row;
-                        // Use full-width comparison to avoid bit-truncation
-                        // surprises with `MMA_M - 1` when MMA_M is a power
-                        // of two (MMA_M[clog2(MMA_M)-1:0] = 0).
                         s1_last  <= (drain_next_row == MMA_M - 1);
                         drain_next_row <= drain_next_row + 1;
                     end
@@ -534,14 +673,8 @@ module compute_array #(
                     s2_row   <= s1_row;
                     s2_last  <= s1_last;
 
-                    // drain_done pulses the cycle AFTER drain_last (combinational
-                    // drain_last fires during the cycle when s2_valid && s2_last
-                    // are both registered high).
                     drain_done <= (s2_valid && s2_last);
 
-                    // Transition out when all rows issued AND pipeline drained.
-                    // The cycle after the final s2_valid && s2_last fires,
-                    // s1/s2 are both zero and we can leave ISSUE.
                     if (drain_next_row >= MMA_M[$clog2(MMA_M+1)-1:0]
                         && !drain_issue_now
                         && !s1_valid

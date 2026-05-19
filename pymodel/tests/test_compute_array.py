@@ -22,7 +22,7 @@ def _run_matmul(
     slot: int,
     accum: int,
     bar_id: int = 0,
-    max_cycles: int = MMA_K + 50,
+    max_cycles: int = MMA_K + MMA_M + MMA_N + 50,
 ) -> int:
     """Drive a matmul with a synthetic SMEM model. A is column-major in SMEM;
     B is row-major. We deliver one column of A and one row of B per K cycle,

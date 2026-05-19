@@ -1,137 +1,36 @@
 """
-compute_array — MMA_M x MMA_N grid of MacTmemCell with K-loop sequencer and drain mux.
+compute_array — MMA_M x MMA_N systolic grid of MacTmemCell.
 
-PURPOSE
-    Phase 7h-2 integration target. Wraps 1024 MacTmemCell leaves (Phase 7h-1)
-    with:
-      - a broadcast network: one A column (MMA_M fp8 bytes) + one B row
-        (MMA_N fp8 bytes) per K cycle, fanned out to all (i, j) cells;
-      - a K-loop sequencer that issues SMEM reads for A and B operand
-        rows and drives `compute` on the cells for MMA_K cycles;
-      - a row-by-row drain mux that streams an MMA_M×MMA_N tile out one
-        row at a time after a `drain_issue`.
+PURPOSE (Phase 7i-4 refactor)
+    Replaces the broadcast network with a systolic mesh. Wraps 1024
+    MacTmemCell leaves (Phase 7i-1) with:
+      - A triangular row-skew buffer at the WEST edge: row i's a-byte is
+        delayed by i cycles, so a[i, k] enters cell (i, 0) at cycle k+i.
+      - A triangular col-skew buffer at the NORTH edge: col j's b-byte is
+        delayed by j cycles, so b[k, j] enters cell (0, j) at cycle k+j.
+      - The (compute, slot, accum) packet rides the row-skew with a.
+      - A K-loop sequencer that issues SMEM rd_a / rd_b and PUSHES into the
+        skew buffers each cycle a valid K-stripe arrives. Same cross-stall
+        protocol as the broadcast version.
+      - A wave-drain counter: after the K-th push, wait MMA_M + MMA_N - 2
+        more cycles for the last K-element's wave to reach cell (M-1, N-1).
+      - A row-by-row drain mux: identical to the broadcast version.
 
-    This is the integration logic that used to be split between mma.sv
-    (K-loop, SMEM addressing) and tmem.sv (slot storage). chip_top (7h-3)
-    will swap out the old monolithic mma + tmem pair for this module +
-    a thin shim adapter for STORE.
+    External interface (mma_issue / mma_done / drain_* / SMEM rd_*) is
+    UNCHANGED from the broadcast era — chip_top and tests need no edits.
 
-INPUTS (sampled at tick start)
-    # Issue from cmdproc — new matmul.
-    mma_issue       : 1-bit
-    mma_slot        : log2(N_SLOTS) — destination accumulator slot
-    mma_accum       : 1-bit — 1: storage[slot] += AB; 0: storage[slot] = AB
-    mma_bar_id      : 32-bit — barrier id to arrive on completion
-    issue_a_off     : 32-bit — SMEM byte address of A's first column
-    issue_b_off     : 32-bit — SMEM byte address of B's first row
-    issue_a_stride  : 32-bit — bytes per A column (typically MMA_M)
-    issue_b_stride  : 32-bit — bytes per B row    (typically MMA_N)
+CYCLE TIMING DIFF vs broadcast version
+    Old: mma_done pulses 1 cycle after the last accumulate_now.
+    New: mma_done pulses MMA_M + MMA_N - 1 cycles after the last
+         push (= 1 + WAVE_DRAIN_CYCLES). For M=N=32 that's +62 cycles.
 
-    # SMEM read response (1-cycle latency, may stall).
-    rd_a_data       : MMA_M bytes — A column for the issued read
-    rd_a_valid      : 1-bit
-    rd_a_stall_in   : 1-bit — combinational stall: re-issue this cycle's request
-    rd_b_data       : MMA_N bytes
-    rd_b_valid      : 1-bit
-    rd_b_stall_in   : 1-bit
+INPUTS / OUTPUTS / INVARIANTS: see the SV header for the canonical spec.
 
-    # Issue from cmdproc — drain a slot to STORE.
-    drain_issue     : 1-bit
-    drain_slot      : log2(N_SLOTS)
-
-    # Scrub from reset_seq.
-    scrub_en        : 1-bit
-
-OUTPUTS (registered)
-    mma_busy        : 1-bit
-    mma_done        : 1-bit — pulses on K-loop completion
-    arrive_en       : 1-bit — pulses with mma_done
-    arrive_bar_id   : 32-bit
-
-    rd_a_en         : 1-bit
-    rd_a_addr       : 32-bit
-    rd_b_en         : 1-bit
-    rd_b_addr       : 32-bit
-
-    drain_busy      : 1-bit
-    drain_done      : 1-bit — pulses on drain completion (last row out)
-    drain_row_valid : 1-bit
-    drain_row_data  : MMA_N * 32 bits — row of fp32 words (LSB-first per word)
-    drain_row_idx   : log2(MMA_M) — row index for drain_row_data
-    drain_last      : 1-bit — pulses with drain_row_valid on the final row
-
-INTERNAL STATE
-    cells           : list[list[MacTmemCell]]  (MMA_M × MMA_N)
-
-    # K-loop
-    state           : enum {IDLE, COMPUTE}
-    saved           : { a_off, b_off, a_stride, b_stride, slot, accum, bar_id }
-    pa_valid, pa_data, pb_valid, pb_data : pending-arrival stash mirroring
-                       mma.sv's cross-stall protocol
-    a_inflight, b_inflight    : whether a read driven last cycle is still in
-                       flight (accepted but no data yet)
-    cur_collect_k   : K index of the column we are CURRENTLY collecting
-                       operands for; bumped on each accumulate_now.
-    accum_done      : whether the first compute of this matmul has fired
-                       (drives per-cell accum: false on first, true after)
-    pending_done    : pulse done on the next tick (matches mma.sv's
-                       WRITEBACK cycle layout).
-
-    # Drain
-    drain_state     : enum {IDLE, ISSUE, DRAIN_LAST}
-    drain_saved_slot
-    drain_next_row  : next row to assert drain_en on (0..MMA_M)
-    s1_valid/s1_row/s1_last  : drain pipeline stage 1 (row issued LAST cycle,
-                              cell's drain_pending captured but drain_data
-                              not yet committed)
-    s2_valid/s2_row/s2_last  : drain pipeline stage 2 (row issued TWO cycles
-                              ago, cell.drain_data is valid THIS cycle and
-                              ready to be combinationally assembled into
-                              drain_row_data)
-
-BEHAVIOR (per tick, two-phase)
-    sample:
-        - mma_issue while busy: assert.
-        - drain_issue while drain_busy: assert.
-        - scrub_en concurrent with mma_issue/drain_issue: assert
-          (chip_in_reset gates upstream).
-
-    commit (one pass per tick, in order):
-        1. Build per-cell broadcast inputs for this tick from K-loop FSM
-           (`compute`, `a_row`, `b_col`, `slot`, `accum`) and drain FSM
-           (`drain_en` on row R, `drain_slot`).
-        2. tick() each cell with those inputs.
-        3. Advance drain pipeline (s1, s2) and FSM state, matching the SV's
-           registered-pipeline semantics (transitions use ENTERING values).
-        4. drain_row_* are derived combinationally from the NEWLY-committed
-           s2_* and cell.drain_data.
-        5. drain_done is high when ENTERING (pre-edge) s2_valid && s2_last
-           were both true — i.e. the cycle AFTER drain_last fires.
-        6. mma_done / arrive_en pulse from prior tick's `_pending_done`.
-
-INVARIANTS
-    - At most one matmul and at most one drain in flight at a time.
-    - mma + drain may overlap (slot-disjoint guarantees no per-cell
-      compute/drain mutex violation).
-    - scrub_en mutually exclusive with all other compute/drain activity
-      (gated by chip_in_reset upstream).
-
-HANDSHAKE
-    Issue: mma_issue=1 at cycle T → mma_busy from cycle T+1 → done one
-           cycle after the last compute fires.
-    Drain: drain_issue=1 at cycle T → drain_busy from cycle T+1.
-           drain_row_valid pulses for MMA_M consecutive cycles (one per
-           row, first at T+2). On the final pulse, drain_last=1. The
-           cycle AFTER, drain_done=1 and drain_busy=0.
-
-TEST CASES (pymodel/tests/test_compute_array.py)
-    1. single_matmul_no_accum: drive A,B operand bytes synthetically; issue
-       MMA; tick until done; drain slot; verify rows match A @ B.
-    2. matmul_accum: pre-seed slot via cells; issue MMA accum=1; verify
-       result is prior + A @ B.
-    3. drain_outputs_correct_rows.
-    4. scrub_clears_all_slots_via_array.
-    5. back_to_back_matmuls (slot isolation).
+INTERNAL STATE (additions vs broadcast)
+    skew_a[i] : list of (byte, valid, slot, accum) of length i  (per row)
+    skew_b[j] : list of (byte, valid)                 of length j  (per col)
+    wave_cnt  : countdown after K pushes
+    state     : enum {IDLE, COMPUTE, WAVE_DRAIN}
 """
 
 from enum import IntEnum
@@ -149,6 +48,7 @@ _ZERO_B_BYTES = bytes(MMA_N)
 class _MMAState(IntEnum):
     IDLE = 0
     COMPUTE = 1
+    WAVE_DRAIN = 2
 
 
 class _DrainState(IntEnum):
@@ -169,8 +69,8 @@ class ComputeArray:
         self.mma_n = mma_n
         self.mma_k = mma_k
         self.n_slots = n_slots
+        self._wave_drain_cycles = mma_m + mma_n - 2
 
-        # Per-cell leaves.
         self.cells: list[list[MacTmemCell]] = [
             [MacTmemCell(n_slots=n_slots) for _ in range(mma_n)]
             for _ in range(mma_m)
@@ -190,11 +90,11 @@ class ComputeArray:
         self.drain_busy: int = 0
         self.drain_done: int = 0
         self.drain_row_valid: int = 0
-        self.drain_row_data: int = 0  # MMA_N * 32 bits packed
+        self.drain_row_data: int = 0
         self.drain_row_idx: int = 0
         self.drain_last: int = 0
 
-        # ---- Internal K-loop state ----
+        # ---- K-loop FSM ----
         self._state: _MMAState = _MMAState.IDLE
         self._saved: dict | None = None
         self._pa_valid: int = 0
@@ -206,21 +106,30 @@ class ComputeArray:
         self._cur_collect_k: int = 0
         self._accum_done: int = 0
         self._pending_done: int = 0
+        self._wave_cnt: int = 0
 
-        # ---- Internal drain state ----
-        # Mirrors the SV pipeline exactly so cycle counts match.
-        # state, drain_next_row, and (s1, s2) advance per posedge.
+        # ---- Skew buffers ----
+        # skew_a[i] is a list of dicts (head = index 0) of length i (rows >= 1).
+        # Each entry: {byte, valid, slot, accum}.  Row 0 reads directly from
+        # the push payload (no skew needed).
+        self._skew_a: list[list[dict]] = [
+            [{"byte": 0, "valid": 0, "slot": 0, "accum": 0} for _ in range(i)]
+            for i in range(mma_m)
+        ]
+        # skew_b[j] is a list of dicts of length j (cols >= 1).
+        # Each entry: {byte, valid}.  Col 0 reads directly from push.
+        self._skew_b: list[list[dict]] = [
+            [{"byte": 0, "valid": 0} for _ in range(j)]
+            for j in range(mma_n)
+        ]
+
+        # ---- Drain FSM ----
         self._drain_state: _DrainState = _DrainState.IDLE
         self._drain_saved_slot: int = 0
         self._drain_next_row: int = 0
-        # Stage 1: drain_en went out to a row last cycle. cell.drain_data
-        # not yet valid this cycle.
         self._s1_valid: int = 0
         self._s1_row: int = 0
         self._s1_last: int = 0
-        # Stage 2: drain_en went out two cycles ago; cell.drain_data is
-        # valid this cycle. drain_row_* are driven combinationally from
-        # s2_* and cell.drain_data.
         self._s2_valid: int = 0
         self._s2_row: int = 0
         self._s2_last: int = 0
@@ -262,26 +171,21 @@ class ComputeArray:
             assert not mma_issue, "scrub_en concurrent with mma_issue"
             assert not drain_issue, "scrub_en concurrent with drain_issue"
 
-        # ---- Snapshot pulse flags before clearing ----
         prev_pending_done = self._pending_done
 
-        # ---- Compute K-loop's broadcast outputs for THIS tick ----
-        # We must read the CURRENT (registered) rd_*_en values to determine
-        # whether last cycle's drive was accepted by SMEM (not stalled). The
-        # NEW rd_*_en we compute below becomes self.rd_*_en at the end.
         next_rd_a_en = 0
         next_rd_a_addr = 0
         next_rd_b_en = 0
         next_rd_b_addr = 0
 
-        # Per-cell compute broadcast inputs for THIS tick.
-        cell_compute = 0
-        cell_a_bytes: bytes = _ZERO_A_BYTES
-        cell_b_bytes: bytes = _ZERO_B_BYTES
-        cell_slot = 0
-        cell_accum = 0
+        # Push payload computed this tick by the K-loop FSM.
+        push_now = 0
+        push_a_bytes: bytes = _ZERO_A_BYTES
+        push_b_bytes: bytes = _ZERO_B_BYTES
+        push_slot = 0
+        push_accum = 0
 
-        # K-loop FSM logic.
+        # ---- K-loop FSM ----
         if self._state == _MMAState.IDLE:
             if mma_issue:
                 self._saved = {
@@ -303,11 +207,11 @@ class ComputeArray:
                 self._b_inflight = 0
                 self._cur_collect_k = 0
                 self._accum_done = 0
-                # Issue column 0.
                 next_rd_a_en = 1
                 next_rd_a_addr = self._saved["a_off"]
                 next_rd_b_en = 1
                 next_rd_b_addr = self._saved["b_off"]
+
         elif self._state == _MMAState.COMPUTE:
             a_arrives = int(bool(rd_a_valid))
             b_arrives = int(bool(rd_b_valid))
@@ -318,8 +222,6 @@ class ComputeArray:
             a_data_now = self._pa_data if self._pa_valid else bytes(rd_a_data)
             b_data_now = self._pb_data if self._pb_valid else bytes(rd_b_data)
 
-            # Inflight tracking: a read driven last cycle (and accepted by
-            # SMEM = not stalled) is "in flight" until rd_*_valid arrives.
             a_just_success = self.rd_a_en and not rd_a_stall_in
             b_just_success = self.rd_b_en and not rd_b_stall_in
             a_inflight_after = (self._a_inflight and not a_arrives) | a_just_success
@@ -331,7 +233,6 @@ class ComputeArray:
             a_inflight_after2 = 0 if accumulate_now else a_inflight_after
             b_inflight_after2 = 0 if accumulate_now else b_inflight_after
 
-            # Issue next reads if more K columns remain and ports free.
             if next_collect_k < self.mma_k:
                 if not pa_after and not a_inflight_after2:
                     next_rd_a_en = 1
@@ -346,7 +247,6 @@ class ComputeArray:
                         + next_collect_k * self._saved["b_stride"]
                     )
 
-            # Commit pa/pb stash state.
             if accumulate_now:
                 self._pa_valid = 0
                 self._pa_data = _ZERO_A_BYTES
@@ -354,6 +254,17 @@ class ComputeArray:
                 self._pb_data = _ZERO_B_BYTES
                 self._a_inflight = 0
                 self._b_inflight = 0
+                push_now = 1
+                push_a_bytes = a_data_now
+                push_b_bytes = b_data_now
+                push_slot = self._saved["slot"]
+                push_accum = 1 if self._accum_done else self._saved["accum"]
+                self._accum_done = 1
+                self._cur_collect_k = next_collect_k
+                if self._cur_collect_k == self.mma_k:
+                    # Last K-element just pushed. Transition to WAVE_DRAIN.
+                    self._state = _MMAState.WAVE_DRAIN
+                    self._wave_cnt = self._wave_drain_cycles
             else:
                 if a_arrives and not self._pa_valid:
                     self._pa_valid = 1
@@ -364,58 +275,101 @@ class ComputeArray:
                 self._a_inflight = a_inflight_after
                 self._b_inflight = b_inflight_after
 
-            # Drive compute broadcast this tick if both halves landed.
-            if accumulate_now:
-                cell_compute = 1
-                cell_a_bytes = a_data_now
-                cell_b_bytes = b_data_now
-                cell_slot = self._saved["slot"]
-                cell_accum = 1 if self._accum_done else self._saved["accum"]
-                self._accum_done = 1
-                self._cur_collect_k = next_collect_k
-                if self._cur_collect_k == self.mma_k:
-                    self._pending_done = 1
+        elif self._state == _MMAState.WAVE_DRAIN:
+            if self._wave_cnt == 0:
+                self._pending_done = 1
+                self._state = _MMAState.IDLE
+            else:
+                self._wave_cnt -= 1
 
-        # ---- Drain FSM: decide whether to drive drain_en on a row ----
-        # drain_issue at tick T transitions IDLE→ISSUE; the first drain_en
-        # to cells fires at tick T+1 (when state is observed as ISSUE).
+        # ---- Compute systolic edge inputs from CURRENT skew state +
+        #      push payload ----
+        # Row 0 / col 0 read fresh push directly. Rows/cols >= 1 read
+        # from the deepest position of their respective skew queue
+        # (which holds the byte pushed i cycles ago for row i).
+        edge_a = [0] * self.mma_m
+        edge_compute = [0] * self.mma_m
+        edge_slot = [0] * self.mma_m
+        edge_accum = [0] * self.mma_m
+        edge_b = [0] * self.mma_n
+
+        if push_now:
+            edge_a[0] = push_a_bytes[0]
+            edge_compute[0] = 1
+            edge_slot[0] = push_slot
+            edge_accum[0] = push_accum
+            edge_b[0] = push_b_bytes[0]
+        for i in range(1, self.mma_m):
+            tail = self._skew_a[i][-1]
+            edge_a[i] = tail["byte"]
+            edge_compute[i] = tail["valid"]
+            edge_slot[i] = tail["slot"]
+            edge_accum[i] = tail["accum"]
+        for j in range(1, self.mma_n):
+            tail = self._skew_b[j][-1]
+            edge_b[j] = tail["byte"]
+
+        # ---- Drain FSM combinational outputs ----
         cell_drain_en_row: int | None = None
         cell_drain_slot = 0
-        drain_issue_now = 0  # whether we're issuing a new row this tick
-
-        # The current (registered) state determines whether drain_en fires.
+        drain_issue_now = 0
         if self._drain_state == _DrainState.ISSUE:
             if self._drain_next_row < self.mma_m:
                 cell_drain_en_row = self._drain_next_row
                 cell_drain_slot = self._drain_saved_slot
                 drain_issue_now = 1
 
-        # ---- Tick all cells with the broadcast inputs ----
-        # The compute-bytes are broadcast: row i sees A[i], col j sees B[j].
+        # ---- Snapshot all cells' _out values BEFORE ticking ----
+        # Each cell's _in for THIS tick depends on its west/north neighbor's
+        # _out as of the START of this tick.
+        prev_a_out      = [[c.a_out      for c in row] for row in self.cells]
+        prev_b_out      = [[c.b_out      for c in row] for row in self.cells]
+        prev_compute_out= [[c.compute_out for c in row] for row in self.cells]
+        prev_slot_out   = [[c.slot_out   for c in row] for row in self.cells]
+        prev_accum_out  = [[c.accum_out  for c in row] for row in self.cells]
+
+        # ---- Tick each cell with its proper _in values ----
         for i in range(self.mma_m):
-            ai = cell_a_bytes[i] if cell_compute else 0
             for j in range(self.mma_n):
-                bj = cell_b_bytes[j] if cell_compute else 0
-                de = 1 if cell_drain_en_row == i else 0
+                a_in = edge_a[i]       if j == 0 else prev_a_out      [i][j-1]
+                c_in = edge_compute[i] if j == 0 else prev_compute_out[i][j-1]
+                s_in = edge_slot[i]    if j == 0 else prev_slot_out   [i][j-1]
+                ac_in= edge_accum[i]   if j == 0 else prev_accum_out  [i][j-1]
+                b_in = edge_b[j]       if i == 0 else prev_b_out      [i-1][j]
+                de   = 1 if cell_drain_en_row == i else 0
                 self.cells[i][j].tick(
-                    compute=cell_compute,
-                    a=ai,
-                    b=bj,
-                    slot=cell_slot,
-                    accum=cell_accum,
+                    compute_in=c_in,
+                    a_in=a_in,
+                    b_in=b_in,
+                    slot_in=s_in,
+                    accum_in=ac_in,
                     drain_en=de,
                     drain_slot=cell_drain_slot,
                     scrub_en=scrub_en,
                 )
 
-        # Note: drain row output is computed AFTER the pipeline advance
-        # below, because in SV drain_row_* are combinational from the
-        # NEWLY-committed s2_* (= post-edge values). Defer this assignment.
+        # ---- Advance skew buffers (after cells consumed this cycle's
+        #      head/tail values) ----
+        for i in range(1, self.mma_m):
+            # Shift down: position k+1 gets position k, head gets push.
+            for k in range(len(self._skew_a[i]) - 1, 0, -1):
+                self._skew_a[i][k] = self._skew_a[i][k-1]
+            self._skew_a[i][0] = (
+                {"byte": push_a_bytes[i], "valid": 1,
+                 "slot": push_slot, "accum": push_accum}
+                if push_now
+                else {"byte": 0, "valid": 0, "slot": 0, "accum": 0}
+            )
+        for j in range(1, self.mma_n):
+            for k in range(len(self._skew_b[j]) - 1, 0, -1):
+                self._skew_b[j][k] = self._skew_b[j][k-1]
+            self._skew_b[j][0] = (
+                {"byte": push_b_bytes[j], "valid": 1}
+                if push_now
+                else {"byte": 0, "valid": 0}
+            )
 
-        # ---- Compute next-state for drain pipeline (sample phase) ----
-        # All transitions below evaluate using PRE-edge values (the values
-        # observed during this tick); we commit them at the end so they're
-        # visible next tick.
+        # ---- Drain pipeline + FSM (identical to broadcast version) ----
         entering_s1_valid = self._s1_valid
         entering_s1_row = self._s1_row
         entering_s1_last = self._s1_last
@@ -435,8 +389,6 @@ class ComputeArray:
         next_s2_row = entering_s1_row
         next_s2_last = entering_s1_last
 
-        # Drain FSM state transition. Match SV: uses ENTERING (pre-edge)
-        # values for the transition condition.
         next_drain_state = self._drain_state
         next_drain_busy = self.drain_busy
         next_drain_next_row = self._drain_next_row
@@ -448,14 +400,11 @@ class ComputeArray:
                 next_drain_busy = 1
                 next_drain_saved_slot = int(drain_slot)
                 next_drain_next_row = 0
-                # Clear pipeline regs (paranoia).
                 next_s1_valid = 0
                 next_s2_valid = 0
         elif self._drain_state == _DrainState.ISSUE:
             if drain_issue_now:
                 next_drain_next_row = self._drain_next_row + 1
-            # Exit when all rows issued AND pipeline drained (using
-            # ENTERING values, mirroring SV).
             if (
                 self._drain_next_row >= self.mma_m
                 and not drain_issue_now
@@ -467,7 +416,6 @@ class ComputeArray:
             next_drain_state = _DrainState.IDLE
             next_drain_busy = 0
 
-        # Commit pipeline + state.
         self._s1_valid = next_s1_valid
         self._s1_row = next_s1_row
         self._s1_last = next_s1_last
@@ -479,10 +427,6 @@ class ComputeArray:
         self._drain_next_row = next_drain_next_row
         self._drain_saved_slot = next_drain_saved_slot
 
-        # ---- Drain row output (combinational from NEWLY-committed s2_*) ----
-        # In SV: drain_row_* are combinational from s2_* (registered) and
-        # cell.drain_data (registered). After the posedge commits s2_* to
-        # their next values, drain_row_* reflect those.
         next_drain_row_valid = 0
         next_drain_row_data = 0
         next_drain_row_idx = 0
@@ -500,12 +444,8 @@ class ComputeArray:
             if self._s2_last:
                 next_drain_last = 1
 
-        # drain_done: in SV, `drain_done <= (s2_valid && s2_last)` using
-        # ENTERING (pre-edge) values. The cycle AFTER drain_last is high,
-        # drain_done is high.
         next_drain_done = 1 if (entering_s2_valid and entering_s2_last) else 0
 
-        # ---- Done pulses (latched one cycle ago) ----
         next_mma_done = 0
         next_arrive_en = 0
         next_arrive_bar_id = 0
@@ -514,14 +454,10 @@ class ComputeArray:
             next_arrive_en = 1
             next_arrive_bar_id = self._saved["bar_id"] if self._saved else 0
             self._pending_done = 0
-            self._state = _MMAState.IDLE
             self.mma_busy = 0
             self._saved = None
             self._accum_done = 0
 
-        # next_drain_done is set above (combinational from entering s2_*).
-
-        # ---- Commit registered outputs ----
         self.mma_done = next_mma_done
         self.arrive_en = next_arrive_en
         self.arrive_bar_id = next_arrive_bar_id
@@ -537,10 +473,9 @@ class ComputeArray:
         self.drain_done = next_drain_done
 
     # ------------------------------------------------------------------
-    # Backdoor helpers (test-only)
+    # Backdoor helpers
     # ------------------------------------------------------------------
     def get_tile(self, slot: int) -> np.ndarray:
-        """Return the MMA_M×MMA_N fp32 tile stored at `slot` across all cells."""
         out = np.zeros((self.mma_m, self.mma_n), dtype=np.float32)
         for i in range(self.mma_m):
             for j in range(self.mma_n):
@@ -548,7 +483,6 @@ class ComputeArray:
         return out
 
     def set_tile(self, slot: int, tile: np.ndarray) -> None:
-        """Backdoor-write a tile into `slot`."""
         assert tile.shape == (self.mma_m, self.mma_n)
         for i in range(self.mma_m):
             for j in range(self.mma_n):
