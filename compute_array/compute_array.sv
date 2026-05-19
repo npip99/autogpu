@@ -124,7 +124,7 @@ module compute_array #(
             logic [7:0]            eb;
             logic [SLOT_W-1:0]     es;
             logic                  ea;
-            skew_lane u_a (
+            skew_lane_a u_a (
                 .clk        (clk),
                 .reset      (reset),
                 .push_now   (push_now),
@@ -157,7 +157,7 @@ module compute_array #(
             logic [7:0]            eb;
             logic [SLOT_W-1:0]     es_unused;
             logic                  ea_unused;
-            skew_lane u_b (
+            skew_lane_b u_b (
                 .clk        (clk),
                 .reset      (reset),
                 .push_now   (push_now),

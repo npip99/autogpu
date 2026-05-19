@@ -29,6 +29,8 @@ VERILOG_SOURCES = $(PWD)/../common/fpnew/cf_math_pkg.sv \
                   $(PWD)/../mac_tmem_cell/mac_tmem_cell.sv \
                   $(PWD)/../cmd_unit/cmd_unit.sv \
                   $(PWD)/../skew_lane/skew_lane.sv \
+                  $(PWD)/../skew_lane/skew_lane_a.sv \
+                  $(PWD)/../skew_lane/skew_lane_b.sv \
                   $(PWD)/compute_array.sv
 TOPLEVEL        = compute_array
 

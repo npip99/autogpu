@@ -2,7 +2,7 @@ meta:
   version: 2
 DESIGN_NAME: smem
 VERILOG_FILES:
-- dir::../../../../build/sv2v/chip_top.v
+- dir::../../../../build/sv2v/smem.v
 CLOCK_PORT: clk
 CLOCK_PERIOD: 40
 RUN_LINTER: false

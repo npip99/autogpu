@@ -1,0 +1,28 @@
+meta:
+  version: 2
+DESIGN_NAME: skew_lane_b
+VERILOG_FILES:
+- dir::../../../../build/sv2v/skew_lane_b.v
+CLOCK_PORT: clk
+CLOCK_PERIOD: 40
+RUN_LINTER: false
+SYNTH_STRATEGY: AREA 3
+SYNTH_SHARE_RESOURCES: false
+SYNTH_ABC_BUFFERING: false
+SYNTH_HIERARCHY_MODE: keep
+PL_TIME_DRIVEN: false
+FP_IO_HLAYER: met3
+FP_IO_VLAYER: met2
+# Pins on south (push_*) and north (edge_*) — see skew_lane_b.pin_order.cfg.
+# Placed at orientation N in compute_array, so b-bus flows S → N naturally
+# (input from the row below, output into the cell above).
+FP_PIN_ORDER_CFG: dir::skew_lane_b.pin_order.cfg
+FP_SIZING: absolute
+DIE_AREA: [0, 0, 250, 300]
+FP_PDN_VPITCH: 50
+FP_PDN_HPITCH: 50
+# Match parent (compute_array) PDN offsets so PG pins sit on the same
+# 50 µm chip-level grid. Both child and parent use VOFFSET=HOFFSET=0,
+# giving a uniform met4/met5 PDN tare across the die.
+FP_PDN_VOFFSET: 0
+FP_PDN_HOFFSET: 0

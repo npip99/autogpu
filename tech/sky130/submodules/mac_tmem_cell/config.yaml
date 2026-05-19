@@ -23,3 +23,8 @@ FP_CORE_UTIL: 50
 # at the cost of a bit more metal area inside the macro.
 FP_PDN_VPITCH: 50
 FP_PDN_HPITCH: 50
+# Match parent (compute_array) FP_PDN_VOFFSET=HOFFSET=0 so internal PG
+# pins land at the same met4/met5 PDK track tare as the chip-level
+# straps — uniform grid across the whole die, no via-stitching reliance.
+FP_PDN_VOFFSET: 0
+FP_PDN_HOFFSET: 0

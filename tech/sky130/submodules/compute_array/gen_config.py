@@ -1,21 +1,27 @@
 #!/usr/bin/env python3
 """Generate compute_array/config.yaml.
 
-Reads the latest hardened runs of mac_tmem_cell, skew_lane, cmd_unit;
-computes a tight floorplan with the topology:
+Reads the latest hardened runs of mac_tmem_cell, skew_lane_a, skew_lane_b,
+cmd_unit; computes a tight floorplan with the topology:
 
     +---------+--------------------------------+
-    | cmd_unit|       b-skew row (32 R270)     |
+    | cmd_unit|       b-skew row (32, N)       |
     +---------+--------------------------------+
     | a-skew  |                                |
     | col     |     32x32 mac_tmem_cell        |
-    | (32 R0) |     grid (north orientation)   |
+    | (32, N) |     grid (N orientation)       |
     +---------+--------------------------------+
 
+Every macro is placed at orientation N — skew_lane is hardened twice with
+two pin orientations (skew_lane_a: W/E, skew_lane_b: S/N) so we never
+rotate. Rotating a macro flips its PG-pin axes onto the same layer as the
+parent's straps, defeating OpenROAD's via-based PDN connect path
+(PSM-0069). Native N orient everywhere preserves orthogonal-layer crossings.
+
 Pin order discipline:
-  - mac_tmem_cell: W in, E out (a-bus). N out, S in (b-bus + drain).
-  - skew_lane     : W in, E out  (R0  -> drives a from west)
-                  : N in, S out  (R270 -> drives b from north)
+  - mac_tmem_cell : W in, E out (a-bus). N out, S in (b-bus + drain).
+  - skew_lane_a   : W in, E out  (drives a from west into cell grid)
+  - skew_lane_b   : S in, N out  (drives b from south into cell grid)
   - cmd_unit      : W=rd_a, E=rd_b+push_b, N=ctrl, S=push_a+drain
 """
 
@@ -58,13 +64,15 @@ def macro_block(final: Path, name: str) -> dict:
 
 
 def main():
-    f_cell = latest_final("mac_tmem_cell")
-    f_skew = latest_final("skew_lane")
-    f_cmd  = latest_final("cmd_unit")
+    f_cell    = latest_final("mac_tmem_cell")
+    f_skew_a  = latest_final("skew_lane_a")
+    f_skew_b  = latest_final("skew_lane_b")
+    f_cmd     = latest_final("cmd_unit")
 
-    cw, ch = die_area(f_cell, "mac_tmem_cell")
-    sw, sh = die_area(f_skew, "skew_lane")
-    uw, uh = die_area(f_cmd,  "cmd_unit")
+    cw, ch       = die_area(f_cell,   "mac_tmem_cell")
+    saw, sah     = die_area(f_skew_a, "skew_lane_a")
+    sbw, sbh     = die_area(f_skew_b, "skew_lane_b")
+    uw, uh       = die_area(f_cmd,    "cmd_unit")
 
     MMA = 32
     # Lock everything to the mac_tmem_cell internal PDN pitch so chip-level
@@ -81,19 +89,22 @@ def main():
     cw_p = snap(cw + 60.0)   # ~73 um gap for glue std cells
     ch_p = snap(ch + 60.0)
 
-    skew_a_w = sw
-    skew_b_h = sw
-
-    origin_x = snap(max(uw, skew_a_w))
-    origin_y = snap(max(uh, skew_b_h))
+    # a-skew is placed natively (N orient) — its width is its parent-x span.
+    # b-skew is placed natively (N orient) — its width is its parent-x span,
+    # height is its parent-y span. The b-skew row needs vertical room equal
+    # to sbh (not sbw); column-pitch must fit sbw across cw_p (which it does
+    # since cw_p ≈ 500 > sbw).
+    origin_x = snap(max(uw, saw))
+    origin_y = snap(max(uh, sbh))
 
     die_w = origin_x + MMA * cw_p + 50
     die_h = origin_y + MMA * ch_p + 50
 
     macros = {
-        "mac_tmem_cell": macro_block(f_cell, "mac_tmem_cell"),
-        "skew_lane":     macro_block(f_skew, "skew_lane"),
-        "cmd_unit":      macro_block(f_cmd,  "cmd_unit"),
+        "mac_tmem_cell": macro_block(f_cell,   "mac_tmem_cell"),
+        "skew_lane_a":   macro_block(f_skew_a, "skew_lane_a"),
+        "skew_lane_b":   macro_block(f_skew_b, "skew_lane_b"),
+        "cmd_unit":      macro_block(f_cmd,    "cmd_unit"),
     }
 
     # ---- cell grid (N orientation) ----
@@ -108,24 +119,27 @@ def main():
                 "orientation": "N",
             }
 
-    # ---- a-skew column (R0 = N orientation), one per row ----
-    # Sit just left of cells (W edge of grid). Snap origin to PDN grid.
-    a_x = origin_x - snap(skew_a_w)
-    skews = macros["skew_lane"]["instances"]
+    # ---- a-skew column (N orientation), one per row ----
+    # Sit just left of cells (W edge of grid). W/E pins -> a-bus flows east
+    # into cells. Snap origin to PDN grid.
+    a_x = origin_x - snap(saw)
+    skews_a = macros["skew_lane_a"]["instances"]
     for r in range(MMA):
-        skews[f"gen_a_skew[{r}].u_a"] = {
+        skews_a[f"gen_a_skew[{r}].u_a"] = {
             "location": [round(a_x, 3), round(origin_y + r * ch_p, 3)],
             "orientation": "N",
         }
 
-    # ---- b-skew row (R270 orientation), one per col ----
-    # Sit just below cells (S edge from a placement-coord perspective).
-    # R270: original (W,E,N,S) -> (N,S,E,W) after CCW270 rotation.
-    b_y = origin_y - snap(skew_b_h)
+    # ---- b-skew row (N orientation), one per col ----
+    # Sit just below cells (S edge of grid). S/N pins -> b-bus flows north
+    # into cells. No rotation: every macro stays at N orient so PDN
+    # connects via orthogonal-layer vias (same recipe as a-skew + cells).
+    b_y = origin_y - snap(sbh)
+    skews_b = macros["skew_lane_b"]["instances"]
     for c in range(MMA):
-        skews[f"gen_b_skew[{c}].u_b"] = {
+        skews_b[f"gen_b_skew[{c}].u_b"] = {
             "location": [round(origin_x + c * cw_p, 3), round(b_y, 3)],
-            "orientation": "R270",
+            "orientation": "N",
         }
 
     # ---- cmd_unit at NW corner ----
@@ -171,7 +185,8 @@ def main():
     CFG.write_text(yaml.safe_dump(cfg, sort_keys=False, default_flow_style=False))
     print(f"wrote {CFG}")
     print(f"  cell    {cw}x{ch}")
-    print(f"  skew    {sw}x{sh}")
+    print(f"  skew_a  {saw}x{sah}")
+    print(f"  skew_b  {sbw}x{sbh}")
     print(f"  cmd     {uw}x{uh}")
     print(f"  die     {die_w:.1f} x {die_h:.1f}")
     print(f"  origin  ({origin_x:.1f}, {origin_y:.1f})")

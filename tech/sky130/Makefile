@@ -26,6 +26,8 @@ SV_SOURCES := \
     $(REPO_ROOT)/tile_buf_8row/tile_buf_8row.sv \
     $(REPO_ROOT)/cmd_unit/cmd_unit.sv \
     $(REPO_ROOT)/skew_lane/skew_lane.sv \
+    $(REPO_ROOT)/skew_lane/skew_lane_a.sv \
+    $(REPO_ROOT)/skew_lane/skew_lane_b.sv \
     $(REPO_ROOT)/compute_array/compute_array.sv \
     $(REPO_ROOT)/load/load.sv \
     $(REPO_ROOT)/store/store.sv \
@@ -34,7 +36,7 @@ SV_SOURCES := \
 
 .PHONY: sv2v synth clean
 
-sv2v: $(BUILD_DIR)/chip_top.v $(BUILD_DIR)/mac_array_small.v $(BUILD_DIR)/tile_buf_8row.v $(BUILD_DIR)/cmd_unit.v $(BUILD_DIR)/skew_lane.v
+sv2v: $(BUILD_DIR)/chip_top.v $(BUILD_DIR)/mac_array_small.v $(BUILD_DIR)/tile_buf_8row.v $(BUILD_DIR)/cmd_unit.v $(BUILD_DIR)/skew_lane_a.v $(BUILD_DIR)/skew_lane_b.v $(BUILD_DIR)/smem.v
 
 $(BUILD_DIR)/chip_top.v: $(SV_SOURCES)
 	@mkdir -p $(BUILD_DIR)
@@ -59,9 +61,20 @@ $(BUILD_DIR)/cmd_unit.v: $(REPO_ROOT)/cmd_unit/cmd_unit.sv
 	@mkdir -p $(BUILD_DIR)
 	sv2v --exclude=Always $^ --top=cmd_unit -w $@
 
-$(BUILD_DIR)/skew_lane.v: $(REPO_ROOT)/skew_lane/skew_lane.sv
+$(BUILD_DIR)/skew_lane_a.v: $(REPO_ROOT)/skew_lane/skew_lane.sv $(REPO_ROOT)/skew_lane/skew_lane_a.sv
 	@mkdir -p $(BUILD_DIR)
-	sv2v --exclude=Always $^ --top=skew_lane -w $@
+	sv2v --exclude=Always $^ --top=skew_lane_a -w $@
+
+$(BUILD_DIR)/skew_lane_b.v: $(REPO_ROOT)/skew_lane/skew_lane.sv $(REPO_ROOT)/skew_lane/skew_lane_b.sv
+	@mkdir -p $(BUILD_DIR)
+	sv2v --exclude=Always $^ --top=skew_lane_b -w $@
+
+# Standalone sv2v output for smem — only depends on sram_1rw.sv.
+# Avoids parsing all of chip_top.v which makes yosys mem2reg + opt
+# passes ~10× slower (had smem stuck at stage 02 for 30+ min).
+$(BUILD_DIR)/smem.v: $(REPO_ROOT)/smem/smem.sv $(REPO_ROOT)/mem/sram_1rw.sv
+	@mkdir -p $(BUILD_DIR)
+	sv2v -D USE_SKY130_MACRO --exclude=Always $^ --top=smem -w $@
 
 # Separate sv2v output for the small systolic synth-proof wrapper (it's
 # not reachable from chip_top, so the main run drops it).
