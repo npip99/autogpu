@@ -29,9 +29,16 @@ if screen -ls 2>/dev/null | grep -q "\.$SESSION\b"; then
     exit 1
 fi
 
+# Dev-iteration skips. STAMidPNR-1 is the multi-corner STA after CTS (~10
+# min, redundant with the final-corner STA we already get). RepairAntennas
+# is ~5 min of antenna-diode insertion — warnings, not blockers, OK to skip
+# until tape-out signoff. IRDropReport requires PDN connectivity which we
+# only achieve once macro placement matches chip-level PDN; skip for dev.
+DEV_SKIPS="--skip OpenROAD.STAMidPNR-1 --skip OpenROAD.RepairAntennas --skip OpenROAD.IRDropReport"
+
 # Start the synth in a detached screen session.
 cd "$SCRIPT_DIR"
-screen -dmS "$SESSION" bash -c "sg docker -c './run.sh $MODULE'; echo '--- run.sh exited; press enter to close ---'; read"
+screen -dmS "$SESSION" bash -c "EXTRA_OPENLANE_ARGS='$DEV_SKIPS' sg docker -c './run.sh $MODULE'; echo '--- run.sh exited; press enter to close ---'; read"
 
 # Poll for the openlane-spawned docker container and rename it.
 # We look for one whose WorkingDir ends in /<module> and isn't already named luna-*.

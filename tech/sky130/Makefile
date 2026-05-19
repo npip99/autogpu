@@ -54,9 +54,8 @@ $(BUILD_DIR)/tile_buf_8row.v: $(REPO_ROOT)/tile_buf_8row/tile_buf_8row.sv
 	@mkdir -p $(BUILD_DIR)
 	sv2v --exclude=Always $^ --top=tile_buf_8row -w $@
 
-# Standalone sv2v outputs for the compute_array submodules (Phase 7i-5).
-# cmd_unit hardens as one big control block; row_unit hardens once and
-# is instantiated 32× by compute_array.
+# Standalone sv2v output for the cmd_unit submodule: one control block,
+# the only non-array macro inside compute_array.
 $(BUILD_DIR)/cmd_unit.v: $(REPO_ROOT)/cmd_unit/cmd_unit.sv
 	@mkdir -p $(BUILD_DIR)
 	sv2v --exclude=Always $^ --top=cmd_unit -w $@
