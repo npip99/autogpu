@@ -1,10 +1,11 @@
 """
-cocotb testbench for mac_tmem_cell.sv.
+cocotb testbench for mac_tmem_cell.sv (Phase 7i systolic leaf).
 
 Drives mac_tmem_cell.sv and pymodel.mac_tmem_cell.MacTmemCell in lockstep.
 Asserts equality on:
   - drain_data (registered output)
   - storage[*] (back-door observation each cycle)
+  - {compute,a,b,slot,accum}_out (pipeline pass-through registers)
 """
 
 import random
@@ -28,11 +29,11 @@ def _encode_one(x: float) -> int:
 
 
 async def _drive_defaults(dut) -> None:
-    dut.compute.value = 0
-    dut.a.value = 0
-    dut.b.value = 0
-    dut.slot.value = 0
-    dut.accum.value = 0
+    dut.compute_in.value = 0
+    dut.a_in.value = 0
+    dut.b_in.value = 0
+    dut.slot_in.value = 0
+    dut.accum_in.value = 0
     dut.drain_en.value = 0
     dut.drain_slot.value = 0
     dut.init_en.value = 0
@@ -48,6 +49,18 @@ def _read_storage(dut, n_slots: int) -> list[int]:
 def _py_storage_bits(py: MacTmemCell) -> list[int]:
     arr = py.storage.astype(np.float32).view(np.uint32)
     return [int(x) for x in arr]
+
+
+def _check_pipe_out(dut, py: MacTmemCell, cyc: int, inputs: dict) -> None:
+    sv = (
+        int(dut.compute_out.value),
+        int(dut.a_out.value),
+        int(dut.b_out.value),
+        int(dut.slot_out.value),
+        int(dut.accum_out.value),
+    )
+    p = (py.compute_out, py.a_out, py.b_out, py.slot_out, py.accum_out)
+    assert sv == p, f"cycle {cyc}: pipe-out mismatch sv={sv} py={p} inputs={inputs}"
 
 
 @cocotb.test()
@@ -72,31 +85,37 @@ async def test_directed(dut):
     )
     await NextTimeStep()
 
-    # --- Cycle 2: compute accum=1 on slot 0 ---
+    # --- Cycle 2: compute_in accum_in=1 on slot 0 ---
     a = _encode_one(2.0)
     b = _encode_one(3.0)
     dut.init_en.value = 0
     dut.init_slot.value = 0
     dut.init_data.value = 0
-    dut.compute.value = 1
-    dut.a.value = a
-    dut.b.value = b
-    dut.slot.value = 0
-    dut.accum.value = 1
+    dut.compute_in.value = 1
+    dut.a_in.value = a
+    dut.b_in.value = b
+    dut.slot_in.value = 0
+    dut.accum_in.value = 1
     await RisingEdge(dut.clk)
-    py.tick(compute=1, a=a, b=b, slot=0, accum=1)
+    py.tick(compute_in=1, a_in=a, b_in=b, slot_in=0, accum_in=1)
     await ReadOnly()
     assert _read_storage(dut, TMEM_SLOTS) == _py_storage_bits(py), (
         "storage mismatch after compute"
     )
+    # Pipe regs: a_out, b_out, etc. should reflect this cycle's _in.
+    assert int(dut.a_out.value) == a
+    assert int(dut.b_out.value) == b
+    assert int(dut.slot_out.value) == 0
+    assert int(dut.accum_out.value) == 1
+    assert int(dut.compute_out.value) == 1
     await NextTimeStep()
 
     # --- Cycle 3: drain slot 0 (capture) ---
-    dut.compute.value = 0
-    dut.a.value = 0
-    dut.b.value = 0
-    dut.slot.value = 0
-    dut.accum.value = 0
+    dut.compute_in.value = 0
+    dut.a_in.value = 0
+    dut.b_in.value = 0
+    dut.slot_in.value = 0
+    dut.accum_in.value = 0
     dut.drain_en.value = 1
     dut.drain_slot.value = 0
     await RisingEdge(dut.clk)
@@ -106,6 +125,9 @@ async def test_directed(dut):
         f"drain_data mismatch on capture cycle: sv={int(dut.drain_data.value)} "
         f"py={int(py.drain_data)}"
     )
+    # Pipe regs: should have cleared compute_out etc. since _in=0 last edge.
+    assert int(dut.compute_out.value) == 0
+    assert int(dut.a_out.value) == 0
     await NextTimeStep()
 
     # --- Cycle 4: idle; drain_data should now reflect slot 0 ---
@@ -134,16 +156,15 @@ async def test_directed(dut):
 
 def _rand_inputs(rng: random.Random) -> dict:
     """Random inputs respecting the mutex invariants (scrub > init > compute)."""
-    # Pick exactly one of (scrub, init, compute, none) via a roulette wheel.
     op = rng.choices(["scrub", "init", "compute", "none"], weights=[1, 3, 5, 2])[0]
     scrub_en = 1 if op == "scrub" else 0
     init_en = 1 if op == "init" else 0
-    compute = 1 if op == "compute" else 0
+    compute_in = 1 if op == "compute" else 0
 
-    a = rng.randint(0, 255)
-    b = rng.randint(0, 255)
-    slot = rng.randrange(TMEM_SLOTS)
-    accum = rng.randint(0, 1)
+    a_in = rng.randint(0, 255)
+    b_in = rng.randint(0, 255)
+    slot_in = rng.randrange(TMEM_SLOTS)
+    accum_in = rng.randint(0, 1)
 
     init_slot = rng.randrange(TMEM_SLOTS)
     init_data = rng.randint(0, 0xFFFFFFFF)
@@ -152,11 +173,11 @@ def _rand_inputs(rng: random.Random) -> dict:
     drain_slot = rng.randrange(TMEM_SLOTS)
 
     return {
-        "compute": compute,
-        "a": a,
-        "b": b,
-        "slot": slot,
-        "accum": accum,
+        "compute_in": compute_in,
+        "a_in": a_in,
+        "b_in": b_in,
+        "slot_in": slot_in,
+        "accum_in": accum_in,
         "drain_en": drain_en,
         "drain_slot": drain_slot,
         "init_en": init_en,
@@ -200,4 +221,5 @@ async def test_random_vs_pymodel(dut):
             f"cycle {cyc}: storage mismatch\n  sv={[f'0x{x:08x}' for x in sv_storage]}\n"
             f"  py={[f'0x{x:08x}' for x in py_storage]}\n  inputs={inputs}"
         )
+        _check_pipe_out(dut, py, cyc, inputs)
         await NextTimeStep()

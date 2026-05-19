@@ -177,24 +177,35 @@ module compute_array #(
                 assign cell_drain_en = drain_issue_now &&
                                        (drain_issue_row == gi[$clog2(MMA_M)-1:0]);
 
-                mac_tmem_cell #(
-                    .N_SLOTS (N_SLOTS)
-                ) u_cell (
-                    .clk        (clk),
-                    .reset      (reset),
-                    .compute    (bcast_compute),
-                    .a          (bcast_a_bytes[gi*8 +: 8]),
-                    .b          (bcast_b_bytes[gj*8 +: 8]),
-                    .slot       (bcast_slot),
-                    .accum      (bcast_accum),
-                    .drain_en   (cell_drain_en),
-                    .drain_slot (bcast_drain_slot),
-                    .drain_data (drain_data[gi][gj]),
+                // N_SLOTS not overridden: when hardened as a sky130 macro
+                // (no parameter pins), the leaf's default must match.
+                //
+                // Phase 7i-2 STUB: leaf is now systolic (a_in/_out, etc.). This
+                // parent still wires the OLD broadcast pattern by feeding the
+                // same byte into every cell's _in and leaving _out unbound, so
+                // the design parses and the leaf can be hardened. The proper
+                // systolic neighbor wiring lands in Phase 7i-3.
+                mac_tmem_cell u_cell (
+                    .clk         (clk),
+                    .reset       (reset),
+                    .compute_in  (bcast_compute),
+                    .a_in        (bcast_a_bytes[gi*8 +: 8]),
+                    .b_in        (bcast_b_bytes[gj*8 +: 8]),
+                    .slot_in     (bcast_slot),
+                    .accum_in    (bcast_accum),
+                    .compute_out (),
+                    .a_out       (),
+                    .b_out       (),
+                    .slot_out    (),
+                    .accum_out   (),
+                    .drain_en    (cell_drain_en),
+                    .drain_slot  (bcast_drain_slot),
+                    .drain_data  (drain_data[gi][gj]),
                     // Init port unused for now; pymodel uses backdoor only.
-                    .init_en    (1'b0),
-                    .init_slot  ('0),
-                    .init_data  (32'd0),
-                    .scrub_en   (scrub_en)
+                    .init_en     (1'b0),
+                    .init_slot   ('0),
+                    .init_data   (32'd0),
+                    .scrub_en    (scrub_en)
                 );
             end
         end
@@ -342,17 +353,19 @@ module compute_array #(
     // pymodel's read-cell-after-tick semantics — registering them would
     // sample cell.drain_data one edge too early (when it's still 0).
     // ------------------------------------------------------------------
-    always_comb begin
-        drain_row_valid = s2_valid;
-        drain_row_idx   = s2_row;
-        drain_last      = s2_valid && s2_last;
-        drain_row_data  = '0;
-        if (s2_valid) begin
-            for (int j = 0; j < MMA_N; j++) begin
-                drain_row_data[j*32 +: 32] = drain_data[s2_row][j];
-            end
+    assign drain_row_valid = s2_valid;
+    assign drain_row_idx   = s2_row;
+    assign drain_last      = s2_valid && s2_last;
+
+    // Generate-form (not always_comb + for-int) so sv2v's named-block
+    // expansion doesn't trip yosys into inferring a latch on the loop var.
+    genvar gj_drain;
+    generate
+        for (gj_drain = 0; gj_drain < MMA_N; gj_drain++) begin : g_drain_pack
+            assign drain_row_data[gj_drain*32 +: 32] =
+                s2_valid ? drain_data[s2_row][gj_drain] : 32'd0;
         end
-    end
+    endgenerate
 
     // ------------------------------------------------------------------
     // Sequential logic

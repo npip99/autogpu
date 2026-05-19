@@ -80,15 +80,15 @@ def _backdoor_smem_read(dut, addr: int, n: int) -> bytes:
 
 
 def _bar_pending(dut, bar_id: int) -> int:
-    return (int(dut.bars_pending.value) >> (bar_id * 16)) & 0xFFFF
+    return int(dut.u_barrier.pending[bar_id].value)
 
 
 def _bar_tx_pending(dut, bar_id: int) -> int:
-    return (int(dut.bars_tx_pending.value) >> (bar_id * 32)) & 0xFFFFFFFF
+    return int(dut.u_barrier.tx_pending[bar_id].value)
 
 
 def _bar_phase(dut, bar_id: int) -> int:
-    return (int(dut.bars_phase.value) >> bar_id) & 1
+    return int(dut.u_barrier.phase[bar_id].value)
 
 
 def _pat(base: int, length: int) -> bytes:

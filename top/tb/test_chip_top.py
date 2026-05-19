@@ -389,8 +389,8 @@ async def test_directed_dispatch(dut):
     cycles = await _wait_sys_idle(dut, max_cycles=2000)
     cocotb.log.info(f"directed test: LOAD+WAIT settled in {cycles} cycles")
 
-    bars_phase = int(dut.bars_phase.value)
-    bar0_phase = bars_phase & 1
+    # Backdoor read — barrier no longer exposes bars_phase as a chip pin.
+    bar0_phase = int(dut.u_chip.u_barrier.phase[0].value)
     assert bar0_phase == 1, f"bar 0 phase should be 1 after flip; got {bar0_phase}"
 
     # ---- 4) MMA dispatch ----
@@ -510,9 +510,9 @@ async def test_repeat_basic(dut):
     cocotb.log.info(f"repeat_basic: settled in {cycles} cycles")
 
     # Barrier should have seen 4 arrivals → phase flipped.
-    bars_phase = int(dut.bars_phase.value)
-    assert (bars_phase & 1) == 1, (
-        f"bar 0 phase should be 1 after 4 loop iters; got {bars_phase & 1}"
+    bar0_phase = int(dut.u_chip.u_barrier.phase[0].value)
+    assert bar0_phase == 1, (
+        f"bar 0 phase should be 1 after 4 loop iters; got {bar0_phase}"
     )
 
 

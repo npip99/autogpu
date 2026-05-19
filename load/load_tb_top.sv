@@ -61,13 +61,9 @@ module load_tb_top #(
     output logic [31:0]                sub_tx_bar_id,
     output logic [31:0]                sub_tx_bytes,
     output logic                       arrive_en,
-    output logic [31:0]                arrive_bar_id,
-
-    // Observable barrier state (packed per-bar arrays).
-    output logic [NUM_BARRIERS*16-1:0] bars_pending,
-    output logic [NUM_BARRIERS*16-1:0] bars_expected,
-    output logic [NUM_BARRIERS*32-1:0] bars_tx_pending,
-    output logic [NUM_BARRIERS-1:0]    bars_phase
+    output logic [31:0]                arrive_bar_id
+    // Barrier observable state dropped from this tb wrapper; tests read
+    // u_barrier.pending[]/expected_r[]/tx_pending[]/phase[] via backdoor.
 );
 
     // -----------------------------------------------------------------
@@ -210,11 +206,7 @@ module load_tb_top #(
         .sub_tx_bytes         (l_sub_tx_bytes),
         .query_bar_id         (32'd0),
         .query_expected_phase (1'b0),
-        .wait_done            (),
-        .bars_pending         (bars_pending),
-        .bars_expected        (bars_expected),
-        .bars_tx_pending      (bars_tx_pending),
-        .bars_phase           (bars_phase)
+        .wait_done            ()
     );
 
     // Surface the load's barrier-drive signals so the TB can sample them

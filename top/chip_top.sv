@@ -83,13 +83,10 @@ module chip_top #(
     output logic                          mma_done,
     output logic                          store_busy,
     output logic                          store_done,
-    output logic                          idle,
-
-    // Barrier observable state (packed; per-barrier slices).
-    output logic [NUM_BARRIERS*16-1:0]    bars_pending,
-    output logic [NUM_BARRIERS*16-1:0]    bars_expected,
-    output logic [NUM_BARRIERS*32-1:0]    bars_tx_pending,
-    output logic [NUM_BARRIERS-1:0]       bars_phase
+    output logic                          idle
+    // (No barrier observable-state ports — testbenches use backdoor
+    // access to u_barrier's internal arrays. Exposing them at the chip
+    // boundary cost ~520 pins / bond pads for verification-only data.)
 );
 
     // ------------------------------------------------------------------
@@ -443,11 +440,7 @@ module chip_top #(
         .sub_tx_bytes         (l_sub_tx_bytes),
         .query_bar_id         (cp_query_bar_id),
         .query_expected_phase (cp_query_phase),
-        .wait_done            (br_wait_done),
-        .bars_pending         (bars_pending),
-        .bars_expected        (bars_expected),
-        .bars_tx_pending      (bars_tx_pending),
-        .bars_phase           (bars_phase)
+        .wait_done            (br_wait_done)
     );
 
     // ------------------------------------------------------------------

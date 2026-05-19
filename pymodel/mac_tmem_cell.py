@@ -1,78 +1,70 @@
 """
-mac_tmem_cell — one MAC + one cell's per-position TMEM micro-storage.
+mac_tmem_cell — one MAC + one cell's per-position TMEM micro-storage (systolic).
 
 PURPOSE
-    Leaf module of the future compute_array fabric (Phase 7h-1). Each cell
-    owns ONE fp32 fused-multiply-add datapath and a small register file of
-    N_SLOTS fp32 accumulator words (its own column of the spatially-banked
-    TMEM at this (i, j) MAC position). compute_array (Phase 7h-2) will
-    instantiate MMA_M x MMA_N of these and feed them via a broadcast
-    network; chip_top (Phase 7h-3) will swap out the old monolithic
-    mma + tmem pair.
+    Leaf module of compute_array (Phase 7i). Each cell owns ONE fp32 fused-
+    multiply-add datapath and a small register file of N_SLOTS fp32 accumulator
+    words. The five-signal compute packet (a, b, compute, slot, accum) flows
+    from west/north neighbors through a single pipeline register per cell and
+    out to east/south neighbors; the per-cell hop delay is 1.
 
-    Splitting MMA and TMEM down to per-cell granularity avoids two
-    synth-time issues on sky130:
-      - 32k-bit packed tile signals across a module boundary won't fit
-        on a macro perimeter.
-      - ABC chokes on the resulting flattened combinational fanout.
+    Latency to the (M-1, N-1) corner for a K-loop fed at cycle 0:
+        K + M + N - 2 cycles.
 
 INPUTS (sampled at tick start)
-    compute    : 1-bit       — fire the FMA this cycle
-    a          : 8-bit fp8   — already row-selected by the broadcast net
-    b          : 8-bit fp8   — already col-selected by the broadcast net
-    slot       : log2(N_SLOTS) bits — which accumulator slot to update
-    accum      : 1-bit       — 1: storage[slot] += a*b ; 0: storage[slot] = a*b
-    drain_en   : 1-bit       — fire a slot read (registered, 1-cycle latency)
-    drain_slot : log2(N_SLOTS) bits
-    init_en    : 1-bit       — seed storage[init_slot] with init_data
-    init_slot  : log2(N_SLOTS) bits
-    init_data  : 32-bit      — fp32 bit pattern
-    scrub_en   : 1-bit       — clear ALL slots to 0 (reset_seq drives this)
+    compute_in : 1-bit       — this cycle's (a_in, b_in, slot_in, accum_in) is
+                               a valid MAC. Fires the FMA on the FRESH packet
+                               (the result lands in storage at edge).
+    a_in       : 8-bit fp8   — comes from west neighbor's a_out (or row-feed edge).
+    b_in       : 8-bit fp8   — comes from north neighbor's b_out (or col-feed edge).
+    slot_in    : log2(N_SLOTS) — which slot to update.
+    accum_in   : 1-bit       — 1: storage[slot_in] += a*b ; 0: storage[slot_in] = a*b
+    drain_en   : 1-bit       — fire a slot read (registered, 1-cycle latency).
+    drain_slot : log2(N_SLOTS)
+    init_en    : 1-bit       — seed storage[init_slot] with init_data.
+    init_slot  : log2(N_SLOTS)
+    init_data  : 32-bit fp32 bit pattern
+    scrub_en   : 1-bit       — clear ALL slots to 0 (reset_seq drives this).
 
-OUTPUTS (registered)
-    drain_data : 32-bit      — storage[drain_slot] captured one cycle prior
+OUTPUTS (registered, available after tick())
+    compute_out: 1-bit       — last cycle's compute_in.
+    a_out      : 8-bit       — last cycle's a_in.
+    b_out      : 8-bit       — last cycle's b_in.
+    slot_out   : log2(N_SLOTS) — last cycle's slot_in.
+    accum_out  : 1-bit       — last cycle's accum_in.
+    drain_data : 32-bit      — storage[drain_slot] captured one cycle prior.
 
 INTERNAL STATE
-    storage         : np.float32[N_SLOTS], zero-init
-    _drain_pending  : (slot or None) — captured this cycle, drained next
+    storage        : np.float32[N_SLOTS], zero-init
+    _drain_pending : (slot or None) — captured this cycle, drained next.
 
 BEHAVIOR (per tick, two-phase)
     sample phase: check input-mutex invariants below.
     commit phase, in priority order (only one of 1-3 fires per cycle):
-        1. scrub_en:  storage[:] = 0.
-        2. init_en:   storage[init_slot] = bit-cast(init_data, fp32).
-        3. compute:   a_f = fp8_to_fp32(a)
-                      b_f = fp8_to_fp32(b)
-                      c   = storage[slot] if accum else 0.0
-                      storage[slot] = fp32_fma(a_f, b_f, c)
-        Then: drain the previous cycle's pending read (with write-forwarding
-              from the same-cycle commit above), capture the new drain_en.
+        1. scrub_en:    storage[:] = 0.
+        2. init_en:     storage[init_slot] = bit-cast(init_data, fp32).
+        3. compute_in:  a_f = fp8_to_fp32(a_in)
+                        b_f = fp8_to_fp32(b_in)
+                        c   = storage[slot_in] if accum_in else 0.0
+                        storage[slot_in] = fp32_fma(a_f, b_f, c)
+        4. Drain the previous cycle's pending read with write-forwarding.
+        5. Capture new pending drain (if drain_en).
+        6. Pipeline-register the compute packet: *_out <- *_in.
 
 WRITE-FORWARDING SEMANTICS (drain vs same-cycle commit)
-    drain captures at cycle T, drives drain_data at T+1. If a compute / init /
-    scrub commits to storage[drain_slot] at cycle T+1 BEFORE the drain reads,
-    drain_data presents the NEW value at T+1 — exactly mirroring tmem.sv
-    §"WRITE-THEN-DRAIN ordering" / pack_slot() forwarding. A drain on cycle T
-    of the same slot that compute also writes on cycle T sees the OLD value;
-    the write-forward happens for the drain captured on T-1 and drained at T.
-    Equivalently: drain reads storage AFTER the same-cycle write commits.
+    drain captures at cycle T, drives drain_data at T+1. A compute / init /
+    scrub on cycle T+1 to storage[drain_slot] is visible in drain_data at T+1.
+
+ORDERING NOTE FOR PARENT MODULE
+    compute_array MUST snapshot all cells' _out values BEFORE any cell's tick,
+    then feed each cell's _in from the snapshot. Otherwise a cell's tick will
+    overwrite an upstream cell's _out before downstream cells read it.
 
 INVARIANTS
-    - scrub_en mutually exclusive with compute and init_en.
-    - init_en mutually exclusive with compute.
-    - drain_en is read-only and may coexist with any of the above.
-    - slot, init_slot, drain_slot in [0, N_SLOTS).
-
-TEST CASES (pymodel/tests/test_mac_tmem_cell.py)
-    1. compute_no_accum: drive compute accum=0, storage equals a*b.
-    2. compute_with_accum: pre-init, then compute accum=1, storage equals prior + a*b.
-    3. drain_latency_1: drain_en at T -> drain_data valid at T+1.
-    4. drain_write_forwarding: compute writes slot S at T, drain captured at T-1
-       on slot S sees the NEW value at T (write-then-drain order).
-    5. init_writes_slot.
-    6. scrub_clears_all_slots.
-    7. slot_isolation: ops to slot A don't affect slot B.
-    8. mutex_assert: simultaneous compute+scrub raises AssertionError.
+    - scrub_en mutually exclusive with compute_in and init_en.
+    - init_en  mutually exclusive with compute_in.
+    - drain_en may coexist with any of the above.
+    - slot_in, init_slot, drain_slot in [0, N_SLOTS).
 """
 
 import numpy as np
@@ -87,17 +79,22 @@ class MacTmemCell:
         # Internal state — flip-flop storage, zero-init.
         self.storage: np.ndarray = np.zeros((n_slots,), dtype=np.float32)
         self._drain_pending: int | None = None
-        # Registered output.
-        self.drain_data: int = 0  # exposed as a 32-bit int matching SV port
+        # Registered outputs (last cycle's _in values).
+        self.compute_out: int = 0
+        self.a_out: int = 0
+        self.b_out: int = 0
+        self.slot_out: int = 0
+        self.accum_out: int = 0
+        self.drain_data: int = 0  # 32-bit int matching SV port
 
     def tick(
         self,
         *,
-        compute: int = 0,
-        a: int = 0,
-        b: int = 0,
-        slot: int = 0,
-        accum: int = 0,
+        compute_in: int = 0,
+        a_in: int = 0,
+        b_in: int = 0,
+        slot_in: int = 0,
+        accum_in: int = 0,
         drain_en: int = 0,
         drain_slot: int = 0,
         init_en: int = 0,
@@ -107,14 +104,14 @@ class MacTmemCell:
     ) -> None:
         # ---- Sample-phase asserts (mutex invariants) ----
         if scrub_en:
-            assert not compute, "scrub_en concurrent with compute"
+            assert not compute_in, "scrub_en concurrent with compute_in"
             assert not init_en, "scrub_en concurrent with init_en"
         if init_en:
-            assert not compute, "init_en concurrent with compute"
-        if compute:
-            assert 0 <= slot < self.n_slots, f"slot {slot} OOR"
-            assert 0 <= a <= 0xFF, "a must be a uint8 fp8 byte"
-            assert 0 <= b <= 0xFF, "b must be a uint8 fp8 byte"
+            assert not compute_in, "init_en concurrent with compute_in"
+        if compute_in:
+            assert 0 <= slot_in < self.n_slots, f"slot_in {slot_in} OOR"
+            assert 0 <= a_in <= 0xFF, "a_in must be a uint8 fp8 byte"
+            assert 0 <= b_in <= 0xFF, "b_in must be a uint8 fp8 byte"
         if init_en:
             assert 0 <= init_slot < self.n_slots, f"init_slot {init_slot} OOR"
             assert 0 <= init_data <= 0xFFFFFFFF, "init_data must be a uint32"
@@ -126,24 +123,20 @@ class MacTmemCell:
         if scrub_en:
             self.storage[:] = np.float32(0.0)
         elif init_en:
-            # init_data is a 32-bit fp32 bit pattern; reinterpret to fp32.
             bits = np.array([init_data & 0xFFFFFFFF], dtype=np.uint32)
             self.storage[init_slot] = bits.view(np.float32)[0]
-        elif compute:
-            a_f = float(decode_e4m3(np.array([a & 0xFF], dtype=np.uint8))[0])
-            b_f = float(decode_e4m3(np.array([b & 0xFF], dtype=np.uint8))[0])
-            c = float(self.storage[slot]) if accum else 0.0
-            # Native fp32 a*b + c. fpnew_fma in FMADD/RNE produces bit-exact
-            # results vs IEEE-754 fp32 a*b+c with round-to-nearest-even, which
-            # is what numpy float32 arithmetic does.
+        elif compute_in:
+            a_f = float(decode_e4m3(np.array([a_in & 0xFF], dtype=np.uint8))[0])
+            b_f = float(decode_e4m3(np.array([b_in & 0xFF], dtype=np.uint8))[0])
+            c = float(self.storage[slot_in]) if accum_in else 0.0
             af = np.float32(a_f)
             bf = np.float32(b_f)
             cf = np.float32(c)
-            self.storage[slot] = np.float32(af * bf + cf)
+            self.storage[slot_in] = np.float32(af * bf + cf)
         # else: storage unchanged.
 
-        # 4: drain the previous-cycle pending read (write-forwarded by virtue
-        # of having committed above already).
+        # 4: drain the previous-cycle pending read (write-forwarded by
+        # virtue of having committed above already).
         if self._drain_pending is not None:
             val = self.storage[self._drain_pending]
             self.drain_data = int(
@@ -156,3 +149,10 @@ class MacTmemCell:
         # 5: capture new pending drain.
         if drain_en:
             self._drain_pending = int(drain_slot)
+
+        # 6: pipeline-register the compute packet.
+        self.compute_out = int(compute_in)
+        self.a_out = int(a_in) & 0xFF
+        self.b_out = int(b_in) & 0xFF
+        self.slot_out = int(slot_in)
+        self.accum_out = int(accum_in)

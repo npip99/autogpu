@@ -22,6 +22,7 @@ SV_SOURCES := \
     $(REPO_ROOT)/smem/smem.sv \
     $(REPO_ROOT)/barrier/barrier.sv \
     $(REPO_ROOT)/mac_tmem_cell/mac_tmem_cell.sv \
+    $(REPO_ROOT)/mac_array_small/mac_array_small.sv \
     $(REPO_ROOT)/compute_array/compute_array.sv \
     $(REPO_ROOT)/load/load.sv \
     $(REPO_ROOT)/store/store.sv \
@@ -30,7 +31,7 @@ SV_SOURCES := \
 
 .PHONY: sv2v synth clean
 
-sv2v: $(BUILD_DIR)/chip_top.v
+sv2v: $(BUILD_DIR)/chip_top.v $(BUILD_DIR)/mac_array_small.v
 
 $(BUILD_DIR)/chip_top.v: $(SV_SOURCES)
 	@mkdir -p $(BUILD_DIR)
@@ -40,6 +41,22 @@ $(BUILD_DIR)/chip_top.v: $(SV_SOURCES)
 	# -D USE_SKY130_MACRO makes sram_1rw instantiate the sky130 SRAM macro
 	# instead of the FF behavioral fallback (validated in smem cocotb).
 	sv2v -I $(REPO_ROOT)/common/fpnew -D USE_SKY130_MACRO --exclude=Always $(SV_SOURCES) --top=chip_top -w $@
+
+# Separate sv2v output for the small systolic synth-proof wrapper (it's
+# not reachable from chip_top, so the main run drops it).
+$(BUILD_DIR)/mac_array_small.v: \
+		$(REPO_ROOT)/common/fpnew/cf_math_pkg.sv \
+		$(REPO_ROOT)/common/fpnew/fpnew_pkg.sv \
+		$(REPO_ROOT)/common/fpnew/fpnew_classifier.sv \
+		$(REPO_ROOT)/common/fpnew/fpnew_rounding.sv \
+		$(REPO_ROOT)/common/fpnew/fpnew_fma.sv \
+		$(REPO_ROOT)/common/fpnew/lzc.sv \
+		$(REPO_ROOT)/common/fp32_fma.sv \
+		$(REPO_ROOT)/common/fp8_decode.sv \
+		$(REPO_ROOT)/mac_tmem_cell/mac_tmem_cell.sv \
+		$(REPO_ROOT)/mac_array_small/mac_array_small.sv
+	@mkdir -p $(BUILD_DIR)
+	sv2v -I $(REPO_ROOT)/common/fpnew --exclude=Always $^ --top=mac_array_small -w $@
 
 synth: sv2v
 	sg docker -c './run.sh < /dev/null'

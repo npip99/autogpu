@@ -60,13 +60,12 @@ module barrier #(
     input  logic [31:0]                query_bar_id,
     /* verilator lint_on UNUSEDSIGNAL */
     input  logic                       query_expected_phase,
-    output logic                       wait_done,
-
-    // Observable per-bar state (registered; packed for cocotb indexing).
-    output logic [NUM_BARRIERS*16-1:0] bars_pending,
-    output logic [NUM_BARRIERS*16-1:0] bars_expected,
-    output logic [NUM_BARRIERS*32-1:0] bars_tx_pending,
-    output logic [NUM_BARRIERS-1:0]    bars_phase
+    output logic                       wait_done
+    // (No observable-state output ports — testbenches read the per-barrier
+    // unpacked arrays `pending`/`expected_r`/`tx_pending`/`phase` directly
+    // via hierarchical-name backdoor access. Exposing those as packed
+    // perimeter ports cost ~520 pins and caused routing congestion at
+    // synth, with zero benefit on real silicon.)
 );
 
     // Per-bar storage as unpacked arrays — easier to index inside always_ff.
@@ -84,15 +83,6 @@ module barrier #(
         end
     end
 
-    // Pack observable state into the output ports each cycle.
-    always_comb begin
-        for (int b = 0; b < NUM_BARRIERS; b++) begin
-            bars_pending   [b*16 +: 16] = pending[b];
-            bars_expected  [b*16 +: 16] = expected_r[b];
-            bars_tx_pending[b*32 +: 32] = tx_pending[b];
-            bars_phase     [b]          = phase[b];
-        end
-    end
 
     // Combinational wait_done.
     assign wait_done = (phase[query_bar_id] != query_expected_phase);

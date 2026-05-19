@@ -70,11 +70,6 @@ module chip_tb_top #(
     output logic                          idle,
     output logic                          sys_idle,
 
-    output logic [NUM_BARRIERS*16-1:0]    bars_pending,
-    output logic [NUM_BARRIERS*16-1:0]    bars_expected,
-    output logic [NUM_BARRIERS*32-1:0]    bars_tx_pending,
-    output logic [NUM_BARRIERS-1:0]       bars_phase,
-
     output logic                          chip_in_reset,
     output logic                          scrub_done
 );
@@ -147,12 +142,7 @@ module chip_tb_top #(
         .mma_done            (mma_done),
         .store_busy          (store_busy),
         .store_done          (store_done),
-        .idle                (idle),
-
-        .bars_pending        (bars_pending),
-        .bars_expected       (bars_expected),
-        .bars_tx_pending     (bars_tx_pending),
-        .bars_phase          (bars_phase)
+        .idle                (idle)
     );
 
     // Off-chip behavioral DRAM. TB backdoors data through u_gmem.mem[]

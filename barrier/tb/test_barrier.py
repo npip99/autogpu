@@ -69,16 +69,17 @@ def _slice(packed: int, idx: int, width: int) -> int:
 
 
 def _sv_bar(dut, idx: int) -> tuple[int, int, int, int]:
-    """Return (pending, expected, tx_pending, phase) for bar `idx` from SV."""
-    bp = int(dut.bars_pending.value)
-    be = int(dut.bars_expected.value)
-    bt = int(dut.bars_tx_pending.value)
-    ph = int(dut.bars_phase.value)
+    """Return (pending, expected, tx_pending, phase) for bar `idx` from SV.
+
+    Read directly from the unpacked per-bar arrays via hierarchical backdoor
+    — no top-level pin needed. Saves ~520 perimeter pins at synth (was an
+    observability port set, never used by functional logic).
+    """
     return (
-        _slice(bp, idx, 16),
-        _slice(be, idx, 16),
-        _slice(bt, idx, 32),
-        (ph >> idx) & 1,
+        int(dut.pending[idx].value),
+        int(dut.expected_r[idx].value),
+        int(dut.tx_pending[idx].value),
+        int(dut.phase[idx].value),
     )
 
 

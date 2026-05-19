@@ -15,3 +15,10 @@ FP_IO_HLAYER: met3 met5
 FP_IO_VLAYER: met2 met4
 FP_SIZING: relative
 FP_CORE_UTIL: 50
+# Denser internal PDN so chip-level PDN finds a macro PIN to land on
+# regardless of placement (Phase 7i-2b). Defaults are 153.6 / 153.18 µm
+# matching chip-level pitch — works ONLY when placement is exactly on
+# grid. Tighter pitch here makes the macro robust to off-grid placement
+# at the cost of a bit more metal area inside the macro.
+FP_PDN_VPITCH: 50
+FP_PDN_HPITCH: 50
