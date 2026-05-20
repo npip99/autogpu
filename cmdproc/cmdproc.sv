@@ -92,7 +92,7 @@
 // one cycle. query_* drives combinationally during S_WAITING_FOR_WAIT_DONE.
 
 module cmdproc #(
-    parameter int INSTR_FIFO_DEPTH = 256,    // also used as imem capacity
+    parameter int INSTR_FIFO_DEPTH = 64,     // also used as imem capacity
     parameter int NUM_LOOP_STACK   = 4
 ) (
     input  logic                       clk,

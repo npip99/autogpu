@@ -1,0 +1,121 @@
+# Auto-generated from chip_top_floorplan.yaml (mode=stub).
+# DO NOT EDIT — edit the floorplan YAML and re-run `make tech/sky130/config.stub.yaml`.
+meta:
+  version: 2
+DESIGN_NAME: chip_top
+VERILOG_FILES:
+- dir::../../build/sv2v/chip_top_only.v
+- dir::../../build/sv2v/v-stub/cmdproc.v
+- dir::../../build/sv2v/v-stub/barrier.v
+- dir::../../build/sv2v/v-stub/reset_seq.v
+- dir::../../build/sv2v/v-stub/load.v
+- dir::../../build/sv2v/v-stub/smem.v
+- dir::../../build/sv2v/v-stub/compute_array.v
+- dir::../../build/sv2v/v-stub/store.v
+CLOCK_PORT: clk
+CLOCK_PERIOD: 100
+PL_TIME_DRIVEN: false
+RUN_LINTER: false
+SYNTH_STRATEGY: AREA 3
+SYNTH_SHARE_RESOURCES: false
+SYNTH_ABC_BUFFERING: false
+SYNTH_HIERARCHY_MODE: keep
+FP_IO_HLAYER: met3
+FP_IO_VLAYER: met4
+RT_MAX_LAYER: met5
+FP_SIZING: absolute
+DIE_AREA:
+- 0
+- 0
+- 21000
+- 23000
+CORE_AREA:
+- 50
+- 50
+- 20950
+- 22950
+MACROS:
+  cmdproc:
+    gds:
+    - dir::../../build/sv2v/gds-stub/cmdproc.gds
+    lef:
+    - dir::../../build/sv2v/lef-stub/cmdproc.lef
+    lib:
+      '*':
+      - dir::../../build/sv2v/lib-stub/cmdproc.lib
+    instances:
+      u_cmdproc:
+        location: [4000, 20000]
+        orientation: N
+  barrier:
+    gds:
+    - dir::../../build/sv2v/gds-stub/barrier.gds
+    lef:
+    - dir::../../build/sv2v/lef-stub/barrier.lef
+    lib:
+      '*':
+      - dir::../../build/sv2v/lib-stub/barrier.lib
+    instances:
+      u_barrier:
+        location: [7100, 20000]
+        orientation: N
+  reset_seq:
+    gds:
+    - dir::../../build/sv2v/gds-stub/reset_seq.gds
+    lef:
+    - dir::../../build/sv2v/lef-stub/reset_seq.lef
+    lib:
+      '*':
+      - dir::../../build/sv2v/lib-stub/reset_seq.lib
+    instances:
+      u_reset_seq:
+        location: [7800, 20000]
+        orientation: N
+  load:
+    gds:
+    - dir::../../build/sv2v/gds-stub/load.gds
+    lef:
+    - dir::../../build/sv2v/lef-stub/load.lef
+    lib:
+      '*':
+      - dir::../../build/sv2v/lib-stub/load.lib
+    instances:
+      u_load:
+        location: [200, 10500]
+        orientation: N
+  smem:
+    gds:
+    - dir::../../build/sv2v/gds-stub/smem.gds
+    lef:
+    - dir::../../build/sv2v/lef-stub/smem.lef
+    lib:
+      '*':
+      - dir::../../build/sv2v/lib-stub/smem.lib
+    instances:
+      u_smem:
+        location: [1000, 3000]
+        orientation: N
+  compute_array:
+    gds:
+    - dir::../../build/sv2v/gds-stub/compute_array.gds
+    lef:
+    - dir::../../build/sv2v/lef-stub/compute_array.lef
+    lib:
+      '*':
+      - dir::../../build/sv2v/lib-stub/compute_array.lib
+    instances:
+      u_compute_array:
+        location: [4100, 3000]
+        orientation: N
+  store:
+    gds:
+    - dir::../../build/sv2v/gds-stub/store.gds
+    lef:
+    - dir::../../build/sv2v/lef-stub/store.lef
+    lib:
+      '*':
+      - dir::../../build/sv2v/lib-stub/store.lib
+    instances:
+      u_store:
+        location: [11250, 500]
+        orientation: N

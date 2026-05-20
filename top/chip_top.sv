@@ -197,9 +197,7 @@ module chip_top #(
     logic [31:0]                                smem_scrub_addr;
     logic                                       tmem_scrub_en;
 
-    reset_seq #(
-        .SCRUB_DEPTH(SMEM_SCRUB_DEPTH)
-    ) u_reset_seq (
+    reset_seq u_reset_seq (
         .clk            (clk),
         .reset_in       (reset_in),
         .chip_in_reset  (chip_in_reset),
@@ -213,9 +211,7 @@ module chip_top #(
     // ------------------------------------------------------------------
     // cmdproc
     // ------------------------------------------------------------------
-    cmdproc #(
-        .INSTR_FIFO_DEPTH(IMEM_DEPTH)
-    ) u_cmdproc (
+    cmdproc u_cmdproc (
         .clk                 (clk),
         .reset               (chip_in_reset),
         .push_en             (instr_push_en),
@@ -272,12 +268,7 @@ module chip_top #(
     // column-major (stride = MMA_M bytes per column), B is row-major
     // (stride = MMA_N bytes per row), matching the old hardcoded mma.sv.
     // ------------------------------------------------------------------
-    compute_array #(
-        .MMA_M  (MMA_M),
-        .MMA_N  (MMA_N),
-        .MMA_K  (MMA_K),
-        .N_SLOTS(TMEM_SLOTS)
-    ) u_compute_array (
+    compute_array u_compute_array (
         .clk             (clk),
         .reset           (chip_in_reset),
         .mma_issue       (cp_mma_start),
@@ -317,10 +308,7 @@ module chip_top #(
     // LOAD. Drives chip's mc_rd_* ports for off-chip reads; sinks the
     // response on mc_rd_data / mc_rd_valid.
     // ------------------------------------------------------------------
-    load #(
-        .BEAT_BYTES      (BEAT_BYTES),
-        .INSTR_FIFO_DEPTH(LOAD_FIFO_DEPTH)
-    ) u_load (
+    load u_load (
         .clk           (clk),
         .reset         (chip_in_reset),
         .issue_en      (cp_load_en),
@@ -358,11 +346,7 @@ module chip_top #(
     // compute_array's accumulator row-by-row over the drain-stream
     // interface (Phase 7h-3).
     // ------------------------------------------------------------------
-    store #(
-        .MMA_M(MMA_M),
-        .MMA_N(MMA_N),
-        .BEAT_BYTES(BEAT_BYTES)
-    ) u_store (
+    store u_store (
         .clk             (clk),
         .reset           (chip_in_reset),
         .issue_en        (cp_store_en),
@@ -391,12 +375,7 @@ module chip_top #(
     // ------------------------------------------------------------------
     // SMEM (32 banks of sram_1rw).
     // ------------------------------------------------------------------
-    smem #(
-        .SMEM_BYTES(SMEM_BYTES),
-        .BEAT_BYTES(BEAT_BYTES),
-        .MMA_M     (MMA_M),
-        .MMA_N     (MMA_N)
-    ) u_smem (
+    smem u_smem (
         .clk        (clk),
         .reset      (chip_in_reset),
         .wr_en      (l_smem_wr_en),
@@ -426,9 +405,7 @@ module chip_top #(
     // ------------------------------------------------------------------
     // Barrier.
     // ------------------------------------------------------------------
-    barrier #(
-        .NUM_BARRIERS(NUM_BARRIERS)
-    ) u_barrier (
+    barrier u_barrier (
         .clk                  (clk),
         .reset                (chip_in_reset),
         .init_en              (cp_init_en),

@@ -1,0 +1,76 @@
+# Single source of truth for the chip_top floorplan.
+#
+# Adding a module to chip_top: one entry here + one instantiation in
+# chip_top.sv + the module's own SV/config/pin_order.cfg in its
+# submodule directory. The Makefile generates the real + stub
+# chip_top configs from this file.
+#
+# Each entry specifies:
+#   - instance: SV instance name (matches u_<mod> in chip_top.sv)
+#   - location: [x, y] in microns (lower-left corner)
+#   - orientation: N | S | E | W | FN | FS | FE | FW
+#
+# Coordinates follow FLOORPLAN.md adjacency map.
+#
+# Layout (units in µm; lower-left origin):
+#
+#   y=23000  ┌──────────────────────────────────────────────────┐
+#            │                                                  │
+#   y=20000  │ ┌────────┐┌──────┐┌────┐                          │
+#            │ │ cmdproc││barrier││r_s │      ← north strip     │
+#   y=19700  └─┴────────┴┴──────┴┴────┴─                        │
+#            ┌─────────────────────────────────────────┐         │
+#            │                                          │         │
+#            │              compute_array               │         │
+#            │              16700 × 16700               │         │
+#   y=10000  │ ┌─────┐                                  │         │
+#            │ │load │                                  │         │
+#            │ └─────┘                                  │         │
+#   y=3000   │ ┌─────┐                                  │         │
+#            │ │smem │  ← abuts compute_array west      │         │
+#            │ │3000×│                                  │         │
+#            │ │7000 │                                  │         │
+#   y=3000   └─┴─────┴──────────────────────────────────┴─        │
+#                              ┌────────┐                         │
+#                              │ store  │  ← abuts compute_array  │
+#   y=600                      │2400×   │    south, centered      │
+#                              │2400    │                         │
+#   y=0                        └────────┘                         │
+#            x=0  900 1000   4000      20700                21000
+#
+# Die: 21000 × 23000 µm = ~483 mm² (down from 750 mm² when the floorplan
+# had ~5 mm of empty margin all around).
+
+chip:
+  die:       [21000, 23000]
+  core:      [50, 50, 20950, 22950]
+
+modules:
+  cmdproc:
+    instance: u_cmdproc
+    location: [4000, 20000]
+    orientation: N
+  barrier:
+    instance: u_barrier
+    location: [7100, 20000]
+    orientation: N
+  reset_seq:
+    instance: u_reset_seq
+    location: [7800, 20000]
+    orientation: N
+  load:
+    instance: u_load
+    location: [200, 10500]
+    orientation: N
+  smem:
+    instance: u_smem
+    location: [1000, 3000]
+    orientation: N
+  compute_array:
+    instance: u_compute_array
+    location: [4100, 3000]      # 100 um channel between smem (east edge 4000) and compute_array
+    orientation: N
+  store:
+    instance: u_store
+    location: [11250, 500]      # 100 um channel between store top (2900) and compute_array south (3000)
+    orientation: N

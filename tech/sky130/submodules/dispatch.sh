@@ -23,9 +23,25 @@ MODULE="${1:?usage: $0 <module_name>}"
 SESSION="luna-$MODULE"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Already running?
+# Already running? Refuse to start a second one — explicit teardown is
+# the user's call, since killing in-flight synth or its docker container
+# loses work. To clean up cleanly:
+#   docker kill $SESSION      # if a docker container is still alive
+#   screen -S $SESSION -X quit
 if screen -ls 2>/dev/null | grep -q "\.$SESSION\b"; then
-    echo "ERROR: screen session '$SESSION' already exists. Attach with: screen -r $SESSION"
+    echo "ERROR: screen session '$SESSION' already exists."
+    echo "  Attach:  screen -r $SESSION"
+    echo "  Or, to tear down before re-dispatching:"
+    echo "    sg docker -c 'docker kill $SESSION'   # if container still alive"
+    echo "    screen -S $SESSION -X quit"
+    exit 1
+fi
+# Same for a leftover docker container without a screen (the zombie case
+# we hit before). Don't kill it — surface it to the user.
+if sg docker -c "docker ps --filter name=$SESSION --format '{{.ID}}'" 2>/dev/null | grep -q .; then
+    echo "ERROR: docker container '$SESSION' is still running (without a screen)."
+    echo "  Inspect: docker ps --filter name=$SESSION"
+    echo "  Kill:    sg docker -c 'docker kill $SESSION'"
     exit 1
 fi
 

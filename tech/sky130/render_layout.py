@@ -51,9 +51,16 @@ if is_def:
     cell_lefs = glob.glob(
         os.path.join(sky130A, "libs.ref/sky130_fd_sc_hd/lef/*.lef")
     )
+    sram_lefs = glob.glob(
+        os.path.join(sky130A, "libs.ref/sky130_sram_macros/lef/*.lef")
+    )
+    # Optional: directory of extra LEFs (e.g. stub LEFs or hardened
+    # submodule LEFs). Pass `-rd extra_lef_dir=/work/build/sv2v/lef-stub`.
+    extra_lef_dir = globals().get("extra_lef_dir") or os.environ.get("EXTRA_LEF_DIR")
+    extra_lefs = glob.glob(os.path.join(extra_lef_dir, "*.lef")) if extra_lef_dir else []
     options = pya.LoadLayoutOptions()
     options.lefdef_config.read_lef_with_def = False
-    options.lefdef_config.lef_files = tech_lef + cell_lefs
+    options.lefdef_config.lef_files = tech_lef + cell_lefs + sram_lefs + extra_lefs
     view.create_layout(True)
     view.load_layout(layout_path, options, 0)
 else:

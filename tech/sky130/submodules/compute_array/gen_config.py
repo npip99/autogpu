@@ -94,8 +94,16 @@ def main():
     # height is its parent-y span. The b-skew row needs vertical room equal
     # to sbh (not sbw); column-pitch must fit sbw across cw_p (which it does
     # since cw_p ≈ 500 > sbw).
-    origin_x = snap(max(uw, saw))
-    origin_y = snap(max(uh, sbh))
+    #
+    # `+ CMD_HALO` widens the routing channels between cmd_unit and the
+    # neighboring skew macros. Without it, cmd_unit (564×575) packs flush
+    # against a-skew[0] / b-skew[0] with 25/36 µm gaps, and the post-CTS
+    # buffer trees + control-signal fanouts saturate those channels (12,303
+    # GR overflow tiles, 99.9% concentrated in the SW 1.6 mm box). Costs
+    # CMD_HALO µm of die growth in each dimension (~0.3% at 50).
+    CMD_HALO = 50
+    origin_x = snap(max(uw + CMD_HALO, saw))
+    origin_y = snap(max(uh + CMD_HALO, sbh))
 
     die_w = origin_x + MMA * cw_p + 50
     die_h = origin_y + MMA * ch_p + 50

@@ -69,7 +69,7 @@
 
 module load #(
     parameter int BEAT_BYTES       = 16,
-    parameter int INSTR_FIFO_DEPTH = 256
+    parameter int INSTR_FIFO_DEPTH = 8
 ) (
     input  logic                       clk,
     input  logic                       reset,
