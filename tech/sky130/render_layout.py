@@ -119,17 +119,28 @@ if bg_white == "1":
 
 view.zoom_fit()
 
-# Optional zoom mode: "crop" picks a CROP_UM × CROP_UM box centered on
-# the design's bbox; "fit" uses the whole die.
+# Optional zoom mode:
+#   "fit"  — klayout's auto-fit (adds a small margin around the bbox)
+#   "tight" — explicitly zoom_box to the design bbox so chip → image edges
+#             with NO margin. Use this if you need precise µm→px mapping.
+#   "crop" — CROP_UM × CROP_UM box centered on the design bbox.
+#   "bbox" — explicit zoom_box from BBOX_UM="x0,y0,x1,y1" env or globals.
 zoom_mode = globals().get("zoom_mode") or os.environ.get("ZOOM_MODE", "fit")
-if zoom_mode == "crop":
-    crop_um = float(os.environ.get("CROP_UM", "100"))
-    # Use the first cellview's bbox (works for both gds and def loads).
+if zoom_mode in ("tight", "crop"):
     bbox = view.cellview(0).cell.dbbox()
+if zoom_mode == "tight":
+    view.zoom_box(pya.DBox(bbox.left, bbox.bottom, bbox.right, bbox.top))
+elif zoom_mode == "crop":
+    crop_um = float(os.environ.get("CROP_UM", "100"))
     cx, cy = (bbox.left + bbox.right) / 2, (bbox.bottom + bbox.top) / 2
     half = crop_um / 2
     view.zoom_box(pya.DBox(cx - half, cy - half, cx + half, cy + half))
+elif zoom_mode == "bbox":
+    bbox_um = globals().get("bbox_um") or os.environ["BBOX_UM"]
+    x0, y0, x1, y1 = (float(s) for s in bbox_um.split(","))
+    view.zoom_box(pya.DBox(x0, y0, x1, y1))
 
-res = int(os.environ.get("RES", "4096"))
-view.save_image(out_png, res, res)
-print(f"Wrote {out_png}")
+res_x = int(os.environ.get("RES_X", os.environ.get("RES", "4096")))
+res_y = int(os.environ.get("RES_Y", os.environ.get("RES", "4096")))
+view.save_image(out_png, res_x, res_y)
+print(f"Wrote {out_png} ({res_x}x{res_y})")

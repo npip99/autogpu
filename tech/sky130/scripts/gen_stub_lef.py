@@ -255,12 +255,15 @@ def emit_lef(module: str, die_w: float, die_h: float,
                 "    END",
                 f"  END {pin_name}",
             ]
-    # Obstruction over the whole die on met1-met4 (force chip_top router
-    # to only use met5 or the explicit pin shapes for crossing this macro).
+    # Obstruction over the whole die on met1-met5 (chip_top routing must
+    # go AROUND the macro via die margins, NOT over it on top metal).
+    # This matches "no over-macro transit" intent — stubs being more
+    # conservative than real LEFs is fine because real LEFs will only
+    # ever be more permissive.
     lines += [
         "  OBS",
     ]
-    for layer in ("met1", "met2", "met3", "met4"):
+    for layer in ("met1", "met2", "met3", "met4", "met5"):
         lines += [
             f"    LAYER {layer} ;",
             f"      RECT 0.000 0.000 {die_w:.3f} {die_h:.3f} ;",

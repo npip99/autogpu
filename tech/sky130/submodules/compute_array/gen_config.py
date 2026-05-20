@@ -97,16 +97,25 @@ def main():
     #
     # `+ CMD_HALO` widens the routing channels between cmd_unit and the
     # neighboring skew macros. Without it, cmd_unit (564×575) packs flush
-    # against a-skew[0] / b-skew[0] with 25/36 µm gaps, and the post-CTS
-    # buffer trees + control-signal fanouts saturate those channels (12,303
-    # GR overflow tiles, 99.9% concentrated in the SW 1.6 mm box). Costs
-    # CMD_HALO µm of die growth in each dimension (~0.3% at 50).
-    CMD_HALO = 50
-    origin_x = snap(max(uw + CMD_HALO, saw))
-    origin_y = snap(max(uh + CMD_HALO, sbh))
+    # against a-skew[0] / b-skew[0] with 25/36 µm gaps.
+    #
+    # `CMD_OFFSET` pushes cmd_unit off the die SW corner so its W and S
+    # faces aren't flush with the die edge — gives space for chip-level
+    # signals on cmd_unit's W (rd_a_*) and S (drain_*, clk, reset) faces
+    # to escape to compute_array's W and S die-edge pin tracks without
+    # crowding the macro perimeter.
+    CMD_HALO     = 500
+    CMD_OFFSET   = 800
+    # NORTH_MARGIN: extra space between MAC array north edge and die N edge.
+    # Gives room for chip-IO pin attach + fly-over routing toward N die edge.
+    NORTH_MARGIN = 1000
+    # EAST_MARGIN: same on east side.
+    EAST_MARGIN  = 1000
+    origin_x = snap(max(CMD_OFFSET + uw + CMD_HALO, saw))
+    origin_y = snap(max(CMD_OFFSET + uh + CMD_HALO, sbh))
 
-    die_w = origin_x + MMA * cw_p + 50
-    die_h = origin_y + MMA * ch_p + 50
+    die_w = origin_x + MMA * cw_p + EAST_MARGIN
+    die_h = origin_y + MMA * ch_p + NORTH_MARGIN
 
     macros = {
         "mac_tmem_cell": macro_block(f_cell,   "mac_tmem_cell"),
@@ -150,9 +159,11 @@ def main():
             "orientation": "N",
         }
 
-    # ---- cmd_unit at NW corner ----
+    # ---- cmd_unit at SW corner, pushed in by CMD_OFFSET ----
+    # Offset from (0,0) so the W and S faces aren't flush with the die edge,
+    # giving room for chip-level signals on those faces to escape.
     macros["cmd_unit"]["instances"]["u_cmd"] = {
-        "location": [0.0, 0.0],
+        "location": [float(CMD_OFFSET), float(CMD_OFFSET)],
         "orientation": "N",
     }
 

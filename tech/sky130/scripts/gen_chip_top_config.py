@@ -136,6 +136,12 @@ def main(argv: list[str]) -> int:
         print("FP_IO_HLAYER: met3")
         print("FP_IO_VLAYER: met4")
         print("RT_MAX_LAYER: met5")
+        # Heatmap mode: let GR finish past congestion so the next steps
+        # can dump per-GCell usage/capacity for diagnosis. Set to true
+        # ONLY when iterating on the floorplan.
+        print("GRT_ALLOW_CONGESTION: true")
+        # Fewer overflow iters so heatmap dump finishes in minutes, not hours.
+        print("GRT_OVERFLOW_ITERS: 5")
         print("FP_SIZING: absolute")
     else:
         sys.stdout.write(HEADER_REAL)

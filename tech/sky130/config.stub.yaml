@@ -23,17 +23,19 @@ SYNTH_HIERARCHY_MODE: keep
 FP_IO_HLAYER: met3
 FP_IO_VLAYER: met4
 RT_MAX_LAYER: met5
+GRT_ALLOW_CONGESTION: true
+GRT_OVERFLOW_ITERS: 5
 FP_SIZING: absolute
 DIE_AREA:
 - 0
 - 0
-- 21000
-- 23000
+- 26000
+- 30000
 CORE_AREA:
 - 50
 - 50
-- 20950
-- 22950
+- 25950
+- 29950
 MACROS:
   cmdproc:
     gds:
@@ -45,7 +47,7 @@ MACROS:
       - dir::../../build/sv2v/lib-stub/cmdproc.lib
     instances:
       u_cmdproc:
-        location: [4000, 20000]
+        location: [3000, 25400]
         orientation: N
   barrier:
     gds:
@@ -57,7 +59,7 @@ MACROS:
       - dir::../../build/sv2v/lib-stub/barrier.lib
     instances:
       u_barrier:
-        location: [7100, 20000]
+        location: [7000, 25400]
         orientation: N
   reset_seq:
     gds:
@@ -69,7 +71,7 @@ MACROS:
       - dir::../../build/sv2v/lib-stub/reset_seq.lib
     instances:
       u_reset_seq:
-        location: [7800, 20000]
+        location: [9000, 25400]
         orientation: N
   load:
     gds:
@@ -81,7 +83,7 @@ MACROS:
       - dir::../../build/sv2v/lib-stub/load.lib
     instances:
       u_load:
-        location: [200, 10500]
+        location: [3000, 16000]
         orientation: N
   smem:
     gds:
@@ -93,7 +95,7 @@ MACROS:
       - dir::../../build/sv2v/lib-stub/smem.lib
     instances:
       u_smem:
-        location: [1000, 3000]
+        location: [1000, 8000]
         orientation: N
   compute_array:
     gds:
@@ -105,7 +107,7 @@ MACROS:
       - dir::../../build/sv2v/lib-stub/compute_array.lib
     instances:
       u_compute_array:
-        location: [4100, 3000]
+        location: [5000, 4500]
         orientation: N
   store:
     gds:
@@ -117,5 +119,5 @@ MACROS:
       - dir::../../build/sv2v/lib-stub/store.lib
     instances:
       u_store:
-        location: [11250, 500]
+        location: [11250, 1100]
         orientation: N

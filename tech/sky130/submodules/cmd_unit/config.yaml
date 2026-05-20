@@ -16,7 +16,15 @@ FP_IO_VLAYER: met2
 FP_PIN_ORDER_CFG: dir::cmd_unit.pin_order.cfg
 FP_IO_VTHICKNESS_MULT: 1
 FP_IO_HTHICKNESS_MULT: 1
-FP_SIZING: relative
-FP_CORE_UTIL: 40
+FP_SIZING: absolute
+# Width MUST be a multiple of 50 µm to align internal PDN with parent
+# compute_array (same rule as skew_lane). Height chosen tall enough so the
+# W face (now 582 pins after rd_b moved here from E) has comfortable pin
+# pitch (~1.4 µm at 800 µm tall) without GR overflow inside the macro.
+DIE_AREA: [0, 0, 1200, 1600]
 FP_PDN_VPITCH: 50
 FP_PDN_HPITCH: 50
+# Match parent (compute_array) PDN offsets so PG pins sit on the same
+# 50 µm chip-level grid. Both child and parent use VOFFSET=HOFFSET=0.
+FP_PDN_VOFFSET: 0
+FP_PDN_HOFFSET: 0

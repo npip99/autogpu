@@ -42,35 +42,35 @@
 # had ~5 mm of empty margin all around).
 
 chip:
-  die:       [21000, 23000]
-  core:      [50, 50, 20950, 22950]
+  die:       [26000, 30000]
+  core:      [50, 50, 25950, 29950]
 
 modules:
   cmdproc:
     instance: u_cmdproc
-    location: [4000, 20000]
+    location: [3000, 25400]      # 1000 um channel above compute_array.N (y=24400); compute_array now 19500x19900
     orientation: N
   barrier:
     instance: u_barrier
-    location: [7100, 20000]
+    location: [7000, 25400]      # 1000 um east of cmdproc.E (x=6000); barrier.E=7652
     orientation: N
   reset_seq:
     instance: u_reset_seq
-    location: [7800, 20000]
+    location: [9000, 25400]      # 1348 um east of barrier.E=7652
     orientation: N
   load:
     instance: u_load
-    location: [200, 10500]
+    location: [3000, 16000]      # 1000 um above smem.N (y=15000); load.N=16700
     orientation: N
   smem:
     instance: u_smem
-    location: [1000, 3000]
+    location: [1000, 8000]       # smem.E=4000 (1000 um channel to compute_array.W=5000)
     orientation: N
   compute_array:
     instance: u_compute_array
-    location: [4100, 3000]      # 100 um channel between smem (east edge 4000) and compute_array
+    location: [5000, 4500]       # compute_array is 19500x19900 (per its config.yaml); occupies (5000,4500)..(24500,24400)
     orientation: N
   store:
     instance: u_store
-    location: [11250, 500]      # 100 um channel between store top (2900) and compute_array south (3000)
+    location: [11250, 1100]      # 1000 um channel to compute_array.S (y=4500); store.N=3500
     orientation: N
