@@ -27,6 +27,7 @@ build/
 .vscode/
 .idea/
 *.swp
+*.swo
 
 # --- Claude Code personal overrides + runtime state ---
 .claude/settings.local.json

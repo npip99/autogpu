@@ -161,7 +161,10 @@ $(BUILD_LEF)/%.lef:
 # Stub LEF/GDS/LIB — generated from SV + config + pin_order.cfg. Fast
 # (<1s each). Useful for trial chip_top floorplan independent of leaf
 # hardening status.
-$(BUILD_LEF_STUB)/%.lef: $(REPO_ROOT)/tech/sky130/scripts/gen_stub_lef.py
+.SECONDEXPANSION:
+$(BUILD_LEF_STUB)/%.lef: $(REPO_ROOT)/tech/sky130/scripts/gen_stub_lef.py \
+                        $(REPO_ROOT)/tech/sky130/submodules/$$*/$$*.pin_order.cfg \
+                        $(REPO_ROOT)/tech/sky130/submodules/$$*/config.yaml
 	@mkdir -p $(BUILD_LEF_STUB)
 	uv run python $< $* $(REPO_ROOT) > $@
 

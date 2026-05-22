@@ -185,6 +185,17 @@ def main():
         "FP_IO_VLAYER": "met4",
         "RT_MAX_LAYER": "met5",
         "GRT_OVERFLOW_ITERS": 200,
+        # Option B: reduce hold-buffer pressure (see FAILURES.md GRT-0118)
+        # CTS: tighter local skew balance (smaller clusters = less skew
+        # between physically-nearby flops → fewer hold violations).
+        "CTS_SINK_CLUSTERING_SIZE": 10,
+        "CTS_SINK_CLUSTERING_MAX_DIAMETER": 30,
+        # Resizer: stop padding hold paths by 100 ps "extra margin". Default
+        # 0.1 forces buffers on paths that already meet hold. 0.0 means only
+        # fix actually-violating paths.
+        "PL_RESIZER_HOLD_SLACK_MARGIN": 0.0,
+        # Allow GR to bail with residual congestion → let DR clean up.
+        "GRT_ALLOW_CONGESTION": True,
         "FP_SIZING": "absolute",
         "DIE_AREA":  [0, 0, round(die_w, 1), round(die_h, 1)],
         "CORE_AREA": [50, 50, round(die_w - 50, 1), round(die_h - 50, 1)],
