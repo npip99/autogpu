@@ -162,8 +162,16 @@ module compute_array #(
                 .reset      (reset),
                 .push_now   (push_now),
                 .push_byte  (push_b_bytes[(MMA_N-1-gj_b)*8 +: 8]),
-                .push_slot  ('0),
-                .push_accum (1'b0),
+                // push_slot / push_accum: functionally unused on b-side
+                // (b-skew's edge_slot / edge_accum outputs are dangling — the
+                // cell grid takes slot/accum from a-skew, not from here).
+                // Reusing cmd_unit's existing broadcast nets instead of tying
+                // to '0 avoids 96 per-instance conb_1 tie cells (32 b-skews
+                // × 3 bits) and their wires, which otherwise pile up in the
+                // std-cell strip just south of the b-skew row and contribute
+                // to GR congestion there.
+                .push_slot  (push_slot),
+                .push_accum (push_accum),
                 .tap_index  (gj_b[$clog2(SKEW_DEPTH)-1:0]),
                 .edge_valid (ev_unused),
                 .edge_byte  (eb),

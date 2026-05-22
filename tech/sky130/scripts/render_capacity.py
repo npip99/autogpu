@@ -133,7 +133,7 @@ def util_color(util: float) -> str:
 
 
 def main(argv):
-    out = Path(argv[1] if len(argv) > 1 else REPO / "build/render/chip_top_capacity.png")
+    out = Path(argv[1] if len(argv) > 1 else REPO / "build/render/capacity.png")
     out.parent.mkdir(parents=True, exist_ok=True)
 
     fp = yaml.safe_load((REPO / "tech/sky130/chip_top_floorplan.yaml").read_text())

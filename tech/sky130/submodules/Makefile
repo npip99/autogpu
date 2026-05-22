@@ -6,7 +6,7 @@
 
 REPO_ROOT := $(realpath $(dir $(lastword $(MAKEFILE_LIST)))../../..)
 
-MODULES := store barrier reset_seq mac_tmem_cell mac_array_small tile_buf_8row cmd_unit skew_lane_a skew_lane_b compute_array load cmdproc smem
+MODULES := store barrier reset_seq mac_tmem_cell mac_array_small tile_buf_8row cmd_unit skew_lane_a skew_lane_b compute_array load cmdproc smem dense_grid
 # (fp32_fma and fpnew_fma_EA93F are pure combinational — no clock port —
 # and need a different config to synthesize. Add them later if needed.)
 

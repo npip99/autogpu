@@ -7,7 +7,7 @@ under the hotspots.
 Usage:
     render_grt_heatmap.py <after_grt.guide> [out_dir]
 
-Output: build/render/grt_heatmap_<layer>.png  (one per routing layer)
+Output: build/render/heatmap.png
 """
 
 import re
@@ -179,7 +179,7 @@ def main(argv):
     for ax in axes[len(plot_data):]:
         ax.axis("off")
 
-    out = out_dir / "grt_heatmap.png"
+    out = out_dir / "heatmap.png"
     fig.suptitle("GRT congestion heatmap (after 5 overflow iters, allow_congestion=true)\n"
                  "ratio = usage / GCell-capacity; bright = congested",
                  fontsize=14)

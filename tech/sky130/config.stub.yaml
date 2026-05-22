@@ -25,6 +25,7 @@ FP_IO_VLAYER: met4
 RT_MAX_LAYER: met5
 GRT_ALLOW_CONGESTION: true
 GRT_OVERFLOW_ITERS: 5
+FP_TAPCELL_DIST: 150
 FP_SIZING: absolute
 DIE_AREA:
 - 0
@@ -47,7 +48,7 @@ MACROS:
       - dir::../../build/sv2v/lib-stub/cmdproc.lib
     instances:
       u_cmdproc:
-        location: [3000, 25400]
+        location: [1000, 26000]
         orientation: N
   barrier:
     gds:
@@ -59,7 +60,7 @@ MACROS:
       - dir::../../build/sv2v/lib-stub/barrier.lib
     instances:
       u_barrier:
-        location: [7000, 25400]
+        location: [5000, 26000]
         orientation: N
   reset_seq:
     gds:
@@ -71,7 +72,7 @@ MACROS:
       - dir::../../build/sv2v/lib-stub/reset_seq.lib
     instances:
       u_reset_seq:
-        location: [9000, 25400]
+        location: [7000, 26000]
         orientation: N
   load:
     gds:
@@ -83,7 +84,7 @@ MACROS:
       - dir::../../build/sv2v/lib-stub/load.lib
     instances:
       u_load:
-        location: [3000, 16000]
+        location: [1000, 16000]
         orientation: N
   smem:
     gds:

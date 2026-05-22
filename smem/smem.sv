@@ -388,15 +388,67 @@ module smem #(
     logic [31:0] beat_b_rb;
     logic        beat_b_fwd;
 
+    // Write-forward mask: one barrel-shift instead of MMA comparators.
+    //
+    // pos = wr_addr - rd_pending_addr (signed). Tells us where the 16-byte
+    // write window sits inside the MMA-byte read window. If overlap, the
+    // mask is a contiguous run of BEAT_BYTES 1s positioned at offset pos.
+    //
+    //   pos >=  MMA  : write past end of read    → no overlap, mask = 0
+    //   pos <= -BB   : write before start of read → no overlap, mask = 0
+    //   pos in [0, MMA)         : mask = 16'hFFFF << pos      (clipped to MMA bits)
+    //   pos in [-(BB-1), 0)     : mask = 16'hFFFF >> (-pos)
+    //
+    // Byte index into wr_data for beat i (only valid when mask[i] = 1):
+    //   byte_idx = (i - pos) mod BEAT_BYTES  — only 4 LSBs needed.
+    //
+    // 272 -> ~32 $alu cells: one 32-bit subtract + one 32-bit barrel-shift
+    // per read port, then 4-bit muxes per beat. SHARE pass no longer OOMs.
+    logic signed [31:0]      pos_a, pos_b;
+    logic [31:0]             neg_pos_a, neg_pos_b;
+    logic                    in_range_a, in_range_b;
+    logic [MMA_M-1:0]        fwd_mask_a;
+    logic [MMA_N-1:0]        fwd_mask_b;
+    localparam int LOG2_MMA_M = $clog2(MMA_M);
+    localparam int LOG2_MMA_N = $clog2(MMA_N);
+
+    always_comb begin
+        pos_a       = $signed(wr_addr) - $signed(rd_a_pending_addr);
+        neg_pos_a   = -pos_a;
+        in_range_a  = wr_en && (pos_a > -32'(BEAT_BYTES)) && (pos_a < 32'(MMA_M));
+        if (!in_range_a) begin
+            fwd_mask_a = '0;
+        end else if (pos_a >= 0) begin
+            fwd_mask_a = MMA_M'(32'h0000FFFF) << pos_a[LOG2_MMA_M-1:0];
+        end else begin
+            fwd_mask_a = MMA_M'(32'h0000FFFF) >> neg_pos_a[LOG2_MMA_M-1:0];
+        end
+    end
+
+    always_comb begin
+        pos_b       = $signed(wr_addr) - $signed(rd_b_pending_addr);
+        neg_pos_b   = -pos_b;
+        in_range_b  = wr_en && (pos_b > -32'(BEAT_BYTES)) && (pos_b < 32'(MMA_N));
+        if (!in_range_b) begin
+            fwd_mask_b = '0;
+        end else if (pos_b >= 0) begin
+            fwd_mask_b = MMA_N'(32'h0000FFFF) << pos_b[LOG2_MMA_N-1:0];
+        end else begin
+            fwd_mask_b = MMA_N'(32'h0000FFFF) >> neg_pos_b[LOG2_MMA_N-1:0];
+        end
+    end
+
     always_comb begin
         beat_a_rb  = '0;
         beat_a_fwd = 1'b0;
         rd_a_beat = '0;
         for (beat_a_i = 0; beat_a_i < MMA_M; beat_a_i++) begin
             beat_a_rb  = rd_a_pending_addr + 32'(beat_a_i);
-            beat_a_fwd = wr_en && (beat_a_rb >= wr_addr) && (beat_a_rb < wr_addr + 32'(BEAT_BYTES));
+            beat_a_fwd = fwd_mask_a[beat_a_i];
             if (beat_a_fwd) begin
-                rd_a_beat[beat_a_i*8 +: 8] = wr_data[(beat_a_rb - wr_addr)*8 +: 8];
+                // byte_idx = (i - pos_a) mod 16; only need 4 LSBs.
+                rd_a_beat[beat_a_i*8 +: 8] =
+                    wr_data[((4'(beat_a_i) - pos_a[3:0]) & 4'hF) * 8 +: 8];
             end else begin
                 rd_a_beat[beat_a_i*8 +: 8] = read_byte_from_banks(beat_a_rb);
             end
@@ -409,9 +461,10 @@ module smem #(
         rd_b_beat = '0;
         for (beat_b_i = 0; beat_b_i < MMA_N; beat_b_i++) begin
             beat_b_rb  = rd_b_pending_addr + 32'(beat_b_i);
-            beat_b_fwd = wr_en && (beat_b_rb >= wr_addr) && (beat_b_rb < wr_addr + 32'(BEAT_BYTES));
+            beat_b_fwd = fwd_mask_b[beat_b_i];
             if (beat_b_fwd) begin
-                rd_b_beat[beat_b_i*8 +: 8] = wr_data[(beat_b_rb - wr_addr)*8 +: 8];
+                rd_b_beat[beat_b_i*8 +: 8] =
+                    wr_data[((4'(beat_b_i) - pos_b[3:0]) & 4'hF) * 8 +: 8];
             end else begin
                 rd_b_beat[beat_b_i*8 +: 8] = read_byte_from_banks(beat_b_rb);
             end

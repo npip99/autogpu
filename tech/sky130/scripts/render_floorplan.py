@@ -125,7 +125,7 @@ def main(argv):
     args = [a for a in argv[1:] if a]
     draw_pins = "--no-pins" not in args
     args = [a for a in args if a != "--no-pins"]
-    out = Path(args[0]) if args else REPO / "build/render/chip_top_floorplan.png"
+    out = Path(args[0]) if args else REPO / "build/render/floorplan.png"
     out.parent.mkdir(parents=True, exist_ok=True)
 
     fp = yaml.safe_load((REPO / "tech/sky130/chip_top_floorplan.yaml").read_text())

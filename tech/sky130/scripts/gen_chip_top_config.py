@@ -142,6 +142,10 @@ def main(argv: list[str]) -> int:
         print("GRT_ALLOW_CONGESTION: true")
         # Fewer overflow iters so heatmap dump finishes in minutes, not hours.
         print("GRT_OVERFLOW_ITERS: 5")
+        # Stub mode has no real logic — only macro blockages + a few buffers.
+        # Default FP_TAPCELL_DIST=13 inserts ~5M tap cells on a 780 mm² die,
+        # which then OOMs the legalizer. Bump 10× so cell count is ~50k.
+        print("FP_TAPCELL_DIST: 150")
         print("FP_SIZING: absolute")
     else:
         sys.stdout.write(HEADER_REAL)

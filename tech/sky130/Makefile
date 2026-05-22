@@ -242,3 +242,8 @@ endif
 .PHONY: chip-top
 chip-top: $(CHIPTOP_DEPS)
 	cd $(REPO_ROOT)/tech/sky130 && sg docker -c '. $(REPO_ROOT)/.venv/bin/activate && python -m openlane --dockerized --pdk sky130A $(CHIPTOP_CFG)'
+
+# dense_grid: NxN mac_tmem_cell macros, trivially chained. PoC of fast PnR.
+$(BUILD_DIR)/dense_grid.v: $(REPO_ROOT)/mac_tmem_cell/mac_tmem_cell.sv $(REPO_ROOT)/dense_grid/dense_grid.sv
+	@mkdir -p $(BUILD_DIR)
+	sv2v --exclude=Always $^ --top=dense_grid -w $@

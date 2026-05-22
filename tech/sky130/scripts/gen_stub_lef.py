@@ -88,7 +88,9 @@ _PARAM_TABLE = {
     "BEAT_BYTES": 16,
     "MMA_M": 32,
     "MMA_N": 32,
+    "MMA_K": 32,
     "TMEM_SLOTS": 4,
+    "N_SLOTS": 4,
     "NUM_BARRIERS": 8,
     "INSTR_FIFO_DEPTH": 64,
     "IMEM_DEPTH": 64,
@@ -99,25 +101,37 @@ _PARAM_TABLE = {
 }
 
 
+def _clog2(x: int) -> int:
+    """Ceiling log2 for integer x ≥ 1."""
+    if x <= 1:
+        return 1
+    return (x - 1).bit_length()
+
+
 def _eval_param_expr(expr: str) -> int | None:
     """Try to evaluate a width expression using known constants."""
     expr = expr.strip()
+    # Translate $clog2(X) → _clog2(X) so the safe eval can resolve it.
+    expr = re.sub(r"\$clog2\b", "_clog2", expr)
     safe = re.sub(r"[A-Za-z_]\w*",
-                  lambda m: str(_PARAM_TABLE.get(m.group(0), "0")),
+                  lambda m: str(_PARAM_TABLE.get(m.group(0), m.group(0))),
                   expr)
     try:
-        return int(eval(safe, {"__builtins__": {}}, {}))
+        return int(eval(safe, {"__builtins__": {}, "_clog2": _clog2}, {}))
     except Exception:
         return None
 
 
-def parse_pin_order(cfg_path: Path) -> list[tuple[str, str]]:
-    """Return [(edge, pin_or_pattern), ...] preserving order.
+def parse_pin_order(cfg_path: Path) -> list[tuple[str, object]]:
+    """Return [(edge, item), ...] preserving order.
 
-    edge is one of "N", "S", "E", "W". Patterns with `.*` are kept as-is
-    and expanded later against the SV port widths.
+    edge is one of "N", "S", "E", "W". item is either a string (pin name
+    or bus pattern with `.*`) or an int (virtual pin count from `$N`).
+    Virtual pins consume track slots without producing real pins —
+    this matches openlane's `equally_spaced_sequence` behavior so stub
+    pin positions match what openlane will choose for the real harden.
     """
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, object]] = []
     current_edge = None
     for raw in cfg_path.read_text().splitlines():
         line = raw.strip()
@@ -128,14 +142,19 @@ def parse_pin_order(cfg_path: Path) -> list[tuple[str, str]]:
             if tag in ("N", "S", "E", "W"):
                 current_edge = tag
             continue
-        if line.startswith("$"):
-            # Virtual spacer — ignore for stub purposes
-            continue
         # Strip any inline comment
         line = line.split("//", 1)[0].split("#", 1)[0].strip()
         if not line:
             continue
         if current_edge is None:
+            continue
+        if line.startswith("$"):
+            # Virtual pin marker: "$N" consumes N track slots.
+            try:
+                count = int(line[1:])
+            except ValueError:
+                continue
+            out.append((current_edge, count))
             continue
         out.append((current_edge, line))
     return out
@@ -196,8 +215,101 @@ def get_die_dimensions(cfg_yaml_path: Path, module: str,
 
 
 def edge_layer(edge: str) -> str:
-    """met3 for N/S (horizontal edges); met4 for E/W (vertical edges)."""
-    return "met3" if edge in ("N", "S") else "met4"
+    """Pin layer per openlane convention:
+      N/S edges use FP_IO_VLAYER (met4) — pin extends vertically into macro
+      E/W edges use FP_IO_HLAYER (met3) — pin extends horizontally into macro
+    """
+    return "met4" if edge in ("N", "S") else "met3"
+
+
+_PDK_TRACKS = None
+
+
+def load_pdk_tracks(pdk_root: Path | None = None) -> dict:
+    """Parse sky130A tracks.info → {layer: {"X": (origin, step), "Y": (origin, step)}}.
+
+    Cached after first call.
+    """
+    global _PDK_TRACKS
+    if _PDK_TRACKS is not None:
+        return _PDK_TRACKS
+    if pdk_root is None:
+        pdk_root = Path.home() / ".volare/volare/sky130/versions"
+    versions = sorted(pdk_root.iterdir())
+    if not versions:
+        raise SystemExit(f"no sky130 PDK install found at {pdk_root}")
+    info = versions[-1] / "sky130A/libs.tech/openlane/sky130_fd_sc_hd/tracks.info"
+    if not info.exists():
+        raise SystemExit(f"missing tracks.info: {info}")
+    out: dict = {}
+    for line in info.read_text().splitlines():
+        parts = line.split()
+        if len(parts) != 4:
+            continue
+        layer, axis, origin, step = parts[0], parts[1], float(parts[2]), float(parts[3])
+        out.setdefault(layer, {})[axis] = (origin, step)
+    _PDK_TRACKS = out
+    return out
+
+
+# sky130 met3/met4 width + spacing (from tech.lef). H_WIDTH/V_WIDTH = 2× minWidth
+# (openlane's ver_width_mult / hor_width_mult default = 2).
+LAYER_PIN_WIDTH = {"met3": 0.6, "met4": 0.6}     # = 2 × minWidth(0.3)
+LAYER_SPACING   = {"met3": 0.3, "met4": 0.3}
+
+
+def _slot_positions(edge: str, die_w: float, die_h: float,
+                    sequence: list) -> list[float | None]:
+    """Match openlane's `equally_spaced_sequence` exactly.
+
+    `sequence` is the ordered list of items on this edge: each element is
+    either a real pin (anything but int) or an int virtual-pin count.
+    Returns one position per element: float for real pins, None for virtual.
+    """
+    layer = edge_layer(edge)
+    tracks_info = load_pdk_tracks()
+    axis = "Y" if edge in ("E", "W") else "X"
+    origin, step = tracks_info[layer][axis]
+    upper = die_h if axis == "Y" else die_w
+    n_tracks = int((upper - origin) // step) + 1
+    all_tracks = [origin + i * step for i in range(n_tracks)]
+    min_dist = LAYER_PIN_WIDTH[layer] + LAYER_SPACING[layer]
+    # ceil(min_dist / step) — use scaled ints to avoid float rounding.
+    keep_every = max(1, -(-int(round(min_dist * 1000)) // int(round(step * 1000))))
+    filtered = [all_tracks[i] for i in range(len(all_tracks)) if (i % keep_every) == 0]
+    n_real = sum(1 for x in sequence if not isinstance(x, int))
+    n_virtual = sum(x for x in sequence if isinstance(x, int))
+    total = n_real + n_virtual
+    n_avail = len(filtered)
+    out: list[float | None] = []
+    if total == 0:
+        return [None] * len(sequence)
+    if total > n_avail:
+        raise SystemExit(
+            f"edge {edge}: {total} pins (incl. virtual) need tracks "
+            f"but only {n_avail} available on {layer}")
+    if total == n_avail:
+        cur = 0
+        for item in sequence:
+            if isinstance(item, int):
+                cur += item
+                out.append(None)
+            else:
+                out.append(filtered[cur])
+                cur += 1
+        return out
+    tracks_per_pin = n_avail // total
+    used = tracks_per_pin * (total - 1) + 1
+    unused = n_avail - used
+    cur = unused // 2
+    for item in sequence:
+        if isinstance(item, int):
+            cur += tracks_per_pin * item
+            out.append(None)
+        else:
+            out.append(filtered[cur])
+            cur += tracks_per_pin
+    return out
 
 
 def pin_rect_on_edge(edge: str, offset: float, die_w: float, die_h: float,
@@ -219,8 +331,17 @@ def pin_rect_on_edge(edge: str, offset: float, die_w: float, die_h: float,
 
 
 def emit_lef(module: str, die_w: float, die_h: float,
-             pins_by_edge: dict[str, list[tuple[str, str]]]) -> str:
-    """Build the LEF text. pins_by_edge maps edge → [(pin_name, direction), ...]."""
+             pins_by_edge: dict[str, list]) -> str:
+    """Build the LEF text. pins_by_edge maps edge → ordered list whose
+    items are either (pin_name, direction) tuples for real pins, or int
+    virtual-pin-counts that consume track slots without being emitted.
+
+    Slot math mirrors openlane's `equally_spaced_sequence`: total slots =
+    real_pin_count + sum(virtual_pin_counts); pins land at evenly spaced
+    offsets within the edge margins. This makes the stub pin positions
+    identical to what openlane's real ioplacer produces from the same
+    pin_order.cfg.
+    """
     lines = [
         "VERSION 5.7 ;",
         '  NOWIREEXTENSIONATPIN ON ;',
@@ -232,19 +353,17 @@ def emit_lef(module: str, die_w: float, die_h: float,
         "  ORIGIN 0.000 0.000 ;",
         f"  SIZE {die_w:.3f} BY {die_h:.3f} ;",
     ]
-    edge_length = {"N": die_w, "S": die_w, "E": die_h, "W": die_h}
     for edge in ("N", "S", "E", "W"):
-        pins = pins_by_edge.get(edge, [])
-        if not pins:
+        items = pins_by_edge.get(edge, [])
+        if not items:
             continue
-        # Distribute pins evenly along the edge (start/end margins of 50 µm).
-        margin = 50.0
-        span = max(edge_length[edge] - 2 * margin, 1.0)
-        step = span / max(len(pins) - 1, 1) if len(pins) > 1 else 0.0
+        positions = _slot_positions(edge, die_w, die_h, items)
         layer = edge_layer(edge)
-        for i, (pin_name, direction) in enumerate(pins):
-            offset = margin + i * step if len(pins) > 1 else edge_length[edge] / 2
-            x0, y0, x1, y1 = pin_rect_on_edge(edge, offset, die_w, die_h)
+        for item, pos in zip(items, positions):
+            if isinstance(item, int) or pos is None:
+                continue
+            pin_name, direction = item
+            x0, y0, x1, y1 = pin_rect_on_edge(edge, pos, die_w, die_h)
             lines += [
                 f"  PIN {pin_name}",
                 f"    DIRECTION {direction} ;",
@@ -294,9 +413,14 @@ def main(argv: list[str]) -> int:
     edge_pins = parse_pin_order(pin_cfg)
 
     # Group pins by edge, expanding bus patterns and looking up directions.
-    pins_by_edge: dict[str, list[tuple[str, str]]] = {"N": [], "S": [], "E": [], "W": []}
-    for edge, pattern in edge_pins:
-        for pin_name in expand_pin_pattern(pattern, ports):
+    # Virtual-pin counts ($N) pass through unchanged so they consume
+    # track slots in emit_lef just like openlane's ioplacer does.
+    pins_by_edge: dict[str, list] = {"N": [], "S": [], "E": [], "W": []}
+    for edge, item in edge_pins:
+        if isinstance(item, int):
+            pins_by_edge[edge].append(item)
+            continue
+        for pin_name in expand_pin_pattern(item, ports):
             base = pin_name.split("[")[0]
             port = ports.get(base)
             if port is None:

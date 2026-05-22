@@ -48,19 +48,19 @@ chip:
 modules:
   cmdproc:
     instance: u_cmdproc
-    location: [3000, 25400]      # 1000 um channel above compute_array.N (y=24400); compute_array now 19500x19900
+    location: [1000, 26000]      # west-aligned with smem/load; cmdproc.E=4000 (matches smem.E)
     orientation: N
   barrier:
     instance: u_barrier
-    location: [7000, 25400]      # 1000 um east of cmdproc.E (x=6000); barrier.E=7652
+    location: [5000, 26000]      # 1000 um east of cmdproc.E=4000; barrier.E=5652
     orientation: N
   reset_seq:
     instance: u_reset_seq
-    location: [9000, 25400]      # 1348 um east of barrier.E=7652
+    location: [7000, 26000]      # 1348 um east of barrier.E=5652
     orientation: N
   load:
     instance: u_load
-    location: [3000, 16000]      # 1000 um above smem.N (y=15000); load.N=16700
+    location: [1000, 16000]      # west-aligned with smem; load over smem's west portion
     orientation: N
   smem:
     instance: u_smem
