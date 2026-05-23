@@ -40,9 +40,16 @@ if is_def:
     cell_lefs = glob.glob(
         os.path.join(asap7, "libs.ref/asap7sc7p5t_rvt/lef/*.lef")
     )
+    # Also pick up any hardened-macro LEFs from our ORFS results tree so a
+    # hierarchical DEF (e.g. compute_array placing skew_lane / mac_tmem_cell)
+    # finds its child macros without us having to enumerate them.
+    macro_lefs_root = os.environ.get(
+        "MACRO_LEFS_ROOT", "/work/build/orfs/results/asap7"
+    )
+    macro_lefs = glob.glob(os.path.join(macro_lefs_root, "*/base/*.lef"))
     options = pya.LoadLayoutOptions()
     options.lefdef_config.read_lef_with_def = False
-    options.lefdef_config.lef_files = tech_lef + cell_lefs
+    options.lefdef_config.lef_files = tech_lef + cell_lefs + macro_lefs
     view.create_layout(True)
     view.load_layout(layout_path, options, 0)
 else:

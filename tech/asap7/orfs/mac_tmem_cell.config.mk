@@ -20,11 +20,12 @@ export SDC_FILE = /work/tech/asap7/orfs/mac_tmem_cell.sdc
 # Floorplan / placement knobs. asap7 stdcells are ~10x smaller than
 # sky130, so we run modest utilization with a bit of margin to let
 # OpenROAD's pin-access engine work without exhausting routing tracks.
-export CORE_UTILIZATION  = 30
+export CORE_UTILIZATION  = 65
 export CORE_ASPECT_RATIO = 1
 export CORE_MARGIN       = 2
-export PLACE_DENSITY     = 0.45
+export PLACE_DENSITY     = 0.75
 
 # Skip the "last gasp" hold/setup iterations on this smoke run — they
 # cost ~10min and aren't useful when CTS is off.
 export SKIP_LAST_GASP ?= 1
+

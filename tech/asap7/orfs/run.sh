@@ -31,6 +31,24 @@ mkdir -p "$WORK_HOST"
 
 # Magic is broken on asap7 in the orfs:latest image (no asap7.magicrc),
 # so we drop the Magic-based streamout/DRC steps and rely on KLayout.
+# NUM_CORES caps OpenROAD's thread count per container. Default to
+# nproc, but override (e.g. NUM_CORES=8) when running several modules
+# in parallel to avoid oversubscription on a busy host.
+NUM_CORES="${NUM_CORES:-$(nproc)}"
+# ORFS make uses incremental targets keyed on file timestamps in
+# results/. A config.mk knob change (e.g. CORE_UTILIZATION) does NOT
+# invalidate those, so we wipe the per-module result/object/log trees
+# before each run. Skip with KEEP=1 if you want make's incremental
+# behavior (e.g. resuming after a single-step failure).
+if [[ -z "$KEEP" ]]; then
+    rm -rf "$WORK_HOST/results/asap7/$MODULE" \
+           "$WORK_HOST/objects/asap7/$MODULE" \
+           "$WORK_HOST/logs/asap7/$MODULE" \
+           "$WORK_HOST/reports/asap7/$MODULE"
+fi
+# The `generate_abstract` target runs the GDS flow then synthesizes a
+# LEF + LIB from the final layout. We always run it so the macro is
+# usable as a black-box in a parent design (e.g. compute_array).
 sg docker -c "docker run --rm --user $(id -u):$(id -g) \
     -v $REPO_ROOT:/work \
     -w /OpenROAD-flow-scripts/flow \
@@ -38,10 +56,36 @@ sg docker -c "docker run --rm --user $(id -u):$(id -g) \
     make \
       DESIGN_CONFIG=/work/tech/asap7/orfs/${MODULE}.config.mk \
       WORK_HOME=$WORK_GUEST \
+      NUM_CORES=$NUM_CORES \
       GDS_FINISHING_TOOL=klayout \
-      RUN_KLAYOUT_DRC=1"
+      RUN_KLAYOUT_DRC=1 \
+      LEC_CHECK=0 \
+      generate_abstract"
 ORFS_RC=$?
 [[ $ORFS_RC -ne 0 ]] && exit $ORFS_RC
+
+# Re-write the abstract LEF without -bloat_occupied_layers, so the module
+# can be used as a hardened macro inside another design without blocking
+# the parent's PDN. ORFS's stock generate_abstract.tcl always passes
+# -bloat_occupied_layers, which tags every routing layer the module
+# touched as an obstruction over the whole macro footprint — including
+# the layers we deliberately reserved for parent PDN via MAX_ROUTING_LAYER.
+# Always do this — harmless if nobody uses the macro as a leaf.
+echo "Re-writing $MODULE.lef with bloated obstructions (then stripping M6/M7) …"
+sg docker -c "docker run --rm --user $(id -u):$(id -g) \
+    -v $REPO_ROOT:/work \
+    -w /OpenROAD-flow-scripts/flow \
+    -e MODULE_NAME=$MODULE \
+    -e RESULTS_DIR=/work/build/orfs/results/asap7/$MODULE/base \
+    -e TECH_LEF=/OpenROAD-flow-scripts/flow/platforms/asap7/lef/asap7_tech_1x_201209.lef \
+    -e SC_LEF=/OpenROAD-flow-scripts/flow/platforms/asap7/lef/asap7sc7p5t_28_R_1x_220121a.lef \
+    openroad/orfs:latest \
+    /OpenROAD-flow-scripts/tools/install/OpenROAD/bin/openroad -exit \
+    /work/tech/asap7/orfs/scripts/rewrite_abstract_lef.tcl" 2>&1 | tail -3
+# Post-process: strip OBS for layers above the leaf's MAX_ROUTING_LAYER so
+# the parent's PDN can run M6/M7 stripes over the macro without colliding.
+python3 $REPO_ROOT/tech/asap7/orfs/scripts/strip_lef_obs_layers.py \
+    $REPO_ROOT/build/orfs/results/asap7/$MODULE/base/$MODULE.lef M6 M7
 
 GDS="$WORK_HOST/results/asap7/$MODULE/base/6_final.gds"
 PNG_DIR="$REPO_ROOT/build/render"
