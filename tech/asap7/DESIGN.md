@@ -271,9 +271,14 @@ ship broken silicon if left unaddressed.
       evaluate. `antenna_check.sh` distinguishes "clean" from "vacuous
       pass" via exit code 4. See `tech/asap7/PDK_GAPS.md` for the data
       that'd need to be added.
-- [ ] **No IR-drop sign-off.** `psm` runs but we've been working around its
-      false-failure mode (which on inspection turned out to be a real
-      failure — see PSM-0069 above).
+- [~] **IR-drop sign-off — tooling shipped, blocked on PDN.**
+      `tech/asap7/orfs/ir_drop.sh <module>` runs psm (analyze_power_grid)
+      post-route with a documented activity factor (default 0.10) and
+      reports worst-case Vdrop vs 10% of VDD. Exit 0=PASS, 1=FAIL
+      (Vdrop > budget), 2=BLOCKED (PSM-0069), 3=tool/env failure. Leaf
+      `mac_tmem_cell` passes (2.3 mV / 70 mV budget).
+      `compute_array_tiny_bcast0` is BLOCKED on the A1 PDN bug; chip_top
+      doesn't yet exist (A6). Unblocks once PSM-0069 is fixed.
 
 ### Fundamental constraint (outside this repo's reach)
 
@@ -297,3 +302,12 @@ ship broken silicon if left unaddressed.
       `build/orfs/reports/asap7/<module>/antenna.log`. Exit 0 / 2 / 4
       mean clean / violations / vacuous (no PDK rules). See
       `tech/asap7/PDK_GAPS.md`.
+- [x] `orfs/ir_drop.sh <module> [--budget F] [--activity A]` — static
+      IR-drop sign-off via psm. Loads `6_final.odb` + `.spef`, runs
+      `report_power` with `set_power_activity -global -activity 0.10`
+      (default), then `analyze_power_grid -voltage_file -error_file` for
+      both nets at the asap7 typical corner (VDD=0.70 V). Outputs
+      `build/orfs/reports/asap7/<module>/base/{ir_drop.log,VDD_voltage.csv,VSS_voltage.csv,VDD_error.rpt,VSS_error.rpt}`.
+      The `.log` ends with a one-line `SUMMARY:` for grepping. Failing
+      instances (above budget) are listed by name + (x,y) + layer.
+      Activity factor and supply voltage are documented in every report.
