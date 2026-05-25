@@ -260,9 +260,13 @@ ship broken silicon if left unaddressed.
 - [ ] **No LVS.** Magic + netgen with asap7 is not set up. Currently no
       schematic-vs-layout equivalence at any level.
 - [ ] **No antenna sign-off.** Neither asserted nor verified.
-- [ ] **No IR-drop sign-off.** `psm` runs but we've been working around its
-      false-failure mode (which on inspection turned out to be a real
-      failure — see PSM-0069 above).
+- [x] **IR-drop sign-off:** `tech/asap7/orfs/ir_drop.sh <module>` runs
+      psm (analyze_power_grid) post-route with a documented activity
+      factor (default 0.10) and reports worst-case Vdrop vs 10% of VDD.
+      Exit 0=PASS, 1=FAIL (Vdrop > budget), 2=BLOCKED (PSM-0069). Leaf
+      `mac_tmem_cell` passes (2.3 mV / 70 mV budget). `compute_array_tiny_bcast0`
+      is BLOCKED on the A1 PDN bug — IR-drop unblocks once PSM-0069 is
+      fixed.
 
 ### Fundamental constraint (outside this repo's reach)
 
@@ -280,3 +284,13 @@ ship broken silicon if left unaddressed.
       after every parent-level run: `openroad -exit -db <path>/6_final.odb
       scripts/verify_macro_power.tcl`. Exit 0 = clean, exit 1 = real PDN
       bug. Caught PSM-0069 as a real bug rather than tool artifact.
+
+- [x] `orfs/ir_drop.sh <module> [--budget F] [--activity A]` — static
+      IR-drop sign-off via psm. Loads `6_final.odb` + `.spef`, runs
+      `report_power` with `set_power_activity -global -activity 0.10`
+      (default), then `analyze_power_grid -voltage_file -error_file` for
+      both nets at the asap7 typical corner (VDD=0.70 V). Outputs
+      `build/orfs/reports/asap7/<module>/base/{ir_drop.log,VDD_voltage.csv,VSS_voltage.csv,VDD_error.rpt,VSS_error.rpt}`.
+      The `.log` ends with a one-line `SUMMARY:` for grepping. Failing
+      instances (above budget) are listed by name + (x,y) + layer.
+      Activity factor and supply voltage are documented in every report.
