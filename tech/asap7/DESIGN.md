@@ -131,6 +131,44 @@ Fixes when this happens:
 4. **Predict it before synth.** Bus to N receivers across L µm of die
    has min period ≈ wire_delay(L) + ceil(log2(N)) * buffer_delay.
 
+## Hold-timing limitation of hierarchical hardening
+
+When a parent design (compute_array) instantiates hardened-leaf macros
+(mac_tmem_cell, skew_lane, cmd_unit), hold violations on macro-to-macro
+paths cannot be repaired by ORFS's resizer. The disease:
+
+- Top-level CTS only routes clock to each macro's CLK pin
+- Each macro has its OWN internal clock tree from leaf hardening
+- Internal clock latency varies between leaves (depends on their CTS
+  cluster diameter, buffer chain depth)
+- A macro-to-macro signal path's hold timing depends on the difference
+  in *internal* clock arrival, which the parent flow doesn't control
+
+Symptom: `RSZ-0060 Max buffer count reached` during CTS repair_timing.
+The resizer inserts thousands of hold buffers on short macro-to-macro
+wires but the worst-path WNS doesn't move — buffers added to non-worst
+paths only. We reproduced this on a 4×4 compute_array (`compute_array_tiny`)
+where total wire length is <500 µm, confirming it isn't wire delay.
+
+Workaround used: `SKIP_CTS_REPAIR_TIMING=1` in compute_array's config.mk.
+The flow completes; the GDS is physically valid but has hold violations
+in PVT corners. Acceptable for proof-of-concept renderable GDS; not for
+real silicon.
+
+What would actually fix this:
+
+- **Hierarchical CTS methodology** with leaf-level `set_clock_source_latency`
+  matched across all leaves + top-level CTS compensation. ORFS doesn't
+  automate this — typically a commercial-tool (Synopsys ICC2, Cadence
+  Innovus) capability.
+- **Flatten the hierarchy** — let ORFS do flat CTS over all 50K+ stdcells.
+  Loses all the value of hierarchical hardening (long ABC, long route).
+- **Re-harden leaves with output flops** to absorb the hold time, then
+  let parent route their now-relaxed-timing outputs. Substantial RTL work
+  on every leaf.
+
+For now, document the limitation and ship the GDS with the skip flag.
+
 ## ORFS knobs we override
 
 Per-module `config.mk` overrides, with rationale (see Layer discipline +
@@ -172,3 +210,73 @@ Build artifacts (all gitignored, all under `build/`):
 - `build/orfs/results/asap7/<module>/base/<module>.lef` — for hierarchy
 - `build/orfs/results/asap7/<module>/base/<module>_typ.lib` — for hierarchy
 - `build/render/<module>_asap7.png` — visual preview
+
+## Known issues / TODO toward tape-out
+
+State as of 2026-05-25. Ordered by severity. Items marked **BLOCKER** would
+ship broken silicon if left unaddressed.
+
+### Hard blockers (silicon would not function)
+
+- [ ] **BLOCKER: PSM-0069 floating macro power pins.** `pdngen` in
+      `compute_array.pdn.tcl` has only a `top` grid + parent-stripe-to-stripe
+      connect rules. It does *not* have a `-macro` grid telling pdngen to
+      weld parent stripes to leaf-macro VDD/VSS pins. Result on
+      `compute_array_tiny_bcast0`: 264 macro power pins, **0** with any
+      overlapping parent power-net shape (verified by
+      `scripts/verify_macro_power.tcl`). Silicon would have ~264 floating
+      VDD/VSS instances per tiny → brown-out. **Fix:** add
+      `define_pdn_grid -macro` + `add_pdn_connect -grid macro_grid -layers
+      {M5 M6}` and `{M6 M7}` to `compute_array.pdn.tcl`. Stripe pitch may
+      need adjusting so vias actually land on the 5.4 µm-pitch leaf pin
+      rows. Re-run tiny, confirm `verify_macro_power.tcl` exits 0.
+
+- [ ] **BLOCKER: ~200 ps negative hold slack accepted as workaround.**
+      `compute_array_tiny_bcast0.config.mk` sets `HOLD_SLACK_MARGIN=-200`,
+      which tells `repair_timing` to terminate hold-fix when violations are
+      within 200 ps (instead of fixing them). The violations remain in the
+      design. On real silicon, broadcast paths from `cmd_unit` to
+      `skew_lane` macros would race ahead of receiving clock edges and
+      capture wrong values. **Fix candidates:** (a) insert an RTL pipeline
+      flop in `compute_array.sv` between `cmd_unit` and the `skew_lane`
+      macros (cleanest; +1 cycle latency); (b) re-harden leaves with
+      matched `set_clock_latency` so internal CTS arrival aligns; (c)
+      commercial CTS (CCOpt / ICC2). See "Hold-timing limitation" section
+      above for the analysis.
+
+### Integration gaps (chip is not fully assembled)
+
+- [ ] **chip_top not yet integrated.** No `chip_top.config.mk`, no SDC, no
+      floorplan, no IO ring. The full system (compute_array + smem +
+      tile_buf + cmdproc + load + store + barrier + reset_seq) has only
+      been built as separate hardened blocks. PSM-0069 will recur at
+      chip_top once it's added — same macro-grid fix applies.
+
+- [ ] **No IO pads / pad ring.** The ORFS asap7 platform doesn't ship pad
+      cells. Tape-out needs pads (or a wafer-level format without them).
+
+### Sign-off gaps (chip might not be verifiable as correct)
+
+- [ ] **No LVS.** Magic + netgen with asap7 is not set up. Currently no
+      schematic-vs-layout equivalence at any level.
+- [ ] **No antenna sign-off.** Neither asserted nor verified.
+- [ ] **No IR-drop sign-off.** `psm` runs but we've been working around its
+      false-failure mode (which on inspection turned out to be a real
+      failure — see PSM-0069 above).
+
+### Fundamental constraint (outside this repo's reach)
+
+- **asap7 is not a real foundry PDK.** It is an academic predictive PDK
+  from ASU; there is no fab process behind it and no GDSII-to-silicon
+  path. Anything built here is *representative* of 7 nm geometry/timing
+  but cannot be physically taped out. For literal tape-out, switch to a
+  real PDK (under NDA: TSMC N7/N6, GF12LP+; or open: SkyWater 130 — but
+  not 7 nm in that case). ORFS support for real foundry PDKs is limited.
+
+### Verification tooling that exists
+
+- [x] `scripts/verify_macro_power.tcl` — walks post-route ODB, flags any
+      macro VDD/VSS pin with no overlapping parent power-net shape. Use
+      after every parent-level run: `openroad -exit -db <path>/6_final.odb
+      scripts/verify_macro_power.tcl`. Exit 0 = clean, exit 1 = real PDN
+      bug. Caught PSM-0069 as a real bug rather than tool artifact.

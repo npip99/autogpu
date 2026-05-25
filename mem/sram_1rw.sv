@@ -60,6 +60,21 @@ module sram_1rw #(
         .addr1  (8'b0),
         .dout1  ()
     );
+`elsif USE_ASAP7_FAKERAM
+    // ORFS-shipped asap7 FakeRAM 256x32: active-high ce/we (per the .v
+    // model in flow/platforms/asap7/verilog/fakeram7_256x32.v).
+    // Requires WORDS<=256 and W==32. Address is zero-padded to 8 bits.
+    logic [7:0] macro_addr_a7;
+    assign macro_addr_a7 = {{(8 - $clog2(WORDS)){1'b0}}, addr};
+
+    fakeram7_256x32 u_macro (
+        .clk     (clk),
+        .ce_in   (en),
+        .we_in   (we),
+        .addr_in (macro_addr_a7),
+        .wd_in   (wdata),
+        .rd_out  (rdata)
+    );
 `else
     // Behavioral fallback for sim: pure flip-flop array.
     logic [W-1:0] mem [WORDS];

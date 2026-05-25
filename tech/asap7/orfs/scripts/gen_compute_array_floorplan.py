@@ -26,12 +26,24 @@ REPO = Path("/home/ubuntu/pipitone/gpu2")
 RESULTS = REPO / "build/orfs/results/asap7"
 OUT_DIR = REPO / "tech/asap7/orfs"
 
-# Mac-grid shape (matches compute_array.sv parameters MMA_M=MMA_N=32).
-ROWS, COLS = 32, 32
+# Mac-grid shape — matches compute_array.sv parameters MMA_M, MMA_N. Override
+# with --rows / --cols / --suffix to generate a smaller variant for iteration.
+import argparse
+_parser = argparse.ArgumentParser(add_help=False)
+_parser.add_argument("--rows", type=int, default=32)
+_parser.add_argument("--cols", type=int, default=32)
+_parser.add_argument("--suffix", type=str, default="",
+                     help="Suffix on output files (e.g. '_tiny' → compute_array_tiny.macro_placement.tcl)")
+_args, _ = _parser.parse_known_args()
+ROWS, COLS = _args.rows, _args.cols
+SUFFIX = _args.suffix
 
 # Pitch + channel spacing (µm). Mac pitch leaves a routing channel between
 # adjacent cells; skew lanes get their own dedicated column / row.
-MAC_PITCH         = 45.0   # 34.5 µm mac + 10.5 µm channel for routing access
+MAC_PITCH         = 55.0   # 34.5 µm mac + 20.5 µm channel. Wider than the
+                            # natural 5-10 µm so the row fragments between
+                            # macros are big enough for PDN to route M1
+                            # followpins without PDN-0179 errors.
 CHANNEL_MAC_SKEW  = 10.0   # gap between skew lane and mac grid
 CHANNEL_CMD_SKEW  = 10.0   # gap between cmd_unit and skew lanes
 CHANNEL_DIE_EDGE  = 40.0   # margin from die edge to outermost macro
@@ -184,7 +196,7 @@ def main():
                 f"place_macro -macro_name {{gen_row\\[{i}\\].gen_col\\[{j}\\].u_cell}} "
                 f"-location {{{mac_x0 + j*MAC_PITCH} {mac_y0 + i*MAC_PITCH}}} -orientation R0"
             )
-    tcl_path = OUT_DIR / "compute_array.macro_placement.tcl"
+    tcl_path = OUT_DIR / f"compute_array{SUFFIX}.macro_placement.tcl"
     tcl_path.write_text("\n".join(tcl_lines) + "\n")
     print(f"\nWrote {tcl_path} ({len(tcl_lines)-2} macros)")
 
@@ -272,7 +284,7 @@ def main():
     ]
     ax.legend(handles=legend_patches, loc="upper right", fontsize=8)
 
-    png_path = OUT_DIR / "compute_array.floorplan_preview.png"
+    png_path = OUT_DIR / f"compute_array{SUFFIX}.floorplan_preview.png"
     fig.savefig(png_path, dpi=150, bbox_inches="tight")
     print(f"Wrote {png_path}")
 

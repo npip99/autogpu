@@ -11,15 +11,15 @@
 
 export PLATFORM     = asap7
 export DESIGN_NAME      = compute_array
-export DESIGN_NICKNAME = compute_array_clk10000
+export DESIGN_NICKNAME = compute_array_tiny_bcast2
 
-export VERILOG_FILES = /work/build/sv2v/chip_top.v
-export SDC_FILE      = /work/tech/asap7/orfs/compute_array_clk10000.sdc
+export VERILOG_FILES = /work/build/sv2v/compute_array_tiny_bcast2.v
+export SDC_FILE      = /work/tech/asap7/orfs/compute_array_tiny_bcast2.sdc
 
 # Absolute floorplan (must match macro_placement.tcl numbers).
 export FLOORPLAN_DEF =
-export DIE_AREA  = 0 0 1950 1950
-export CORE_AREA = 20 20 1930 1930
+export DIE_AREA  = 0 0 400 400
+export CORE_AREA = 20 20 380 380
 
 # Hardened leaf macros — LEFs come from `generate_abstract` in each leaf run.
 ASAP7_RESULTS = /work/build/orfs/results/asap7
@@ -40,7 +40,7 @@ export ADDITIONAL_GDS = \
     $(ASAP7_RESULTS)/cmd_unit/base/6_final.gds
 
 # Explicit placement (1089 macros: 1024 mac_tmem_cell + 32+32 skew_lanes + 1 cmd_unit).
-export MACRO_PLACEMENT_TCL = /work/tech/asap7/orfs/compute_array.macro_placement.tcl
+export MACRO_PLACEMENT_TCL = /work/tech/asap7/orfs/compute_array_tiny.macro_placement.tcl
 
 # Keep yosys from flattening the hierarchy — the 1024 mac_tmem_cell, 32 skew_a,
 # 32 skew_b, and 1 cmd_unit instances must stay as named instances for the

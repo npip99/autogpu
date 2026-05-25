@@ -58,25 +58,56 @@ else:
 view.max_hier_levels = 99
 view.min_hier_levels = 0
 
-# Apply ASAP7 colors.
-lyp_path = os.path.join(asap7, "libs.tech/klayout/asap7.lyp")
-if os.path.exists(lyp_path):
-    view.load_layer_props(lyp_path)
+# Apply ASAP7 colors then override the busiest layers with saturated
+# values — the stock asap7.lyp uses very pale cream/beige (#fef5e7 etc.)
+# which washes out at chip-scale zoom. Sky130's renders look "colorful
+# chip-photo" because sky130A.lyp uses jewel tones; we match by
+# repainting the key layers (poly, active, LIs, M1..M7).
+use_lyp = os.environ.get("USE_LYP", "0") == "1"
+if use_lyp:
+    lyp_path = os.path.join(asap7, "libs.tech/klayout/asap7.lyp")
+    if os.path.exists(lyp_path):
+        view.load_layer_props(lyp_path)
 view.add_missing_layers()
 
-# Hide front-end-of-line layers in ASAP7 GDS so M1+ routing is visible.
-# Layer numbers from ~/.volare/asap7/libs.tech/klayout/asap7.lyp:
+VIBRANT = {
+    (7, 0):   0xd62728,   # Gate (poly)        crimson
+    (11, 0):  0x1f77b4,   # Active (diffusion) blue
+    (16, 0):  0xffbf00,   # LIG (local int gate) gold
+    (17, 0):  0x2ca02c,   # LISD (local int S/D) green
+    (19, 0):  0xff00ff,   # M1  magenta
+    (20, 0):  0x00ffff,   # M2  cyan
+    (30, 0):  0xffff00,   # M3  yellow
+    (40, 0):  0x00ff80,   # M4  spring green
+    (50, 0):  0xff7f0e,   # M5  orange
+    (60, 0):  0x4488ff,   # M6  azure
+    (70, 0):  0xff1493,   # M7  hot pink
+    (80, 0):  0xee82ee,   # M8  violet
+    (90, 0):  0x9acd32,   # M9  yellow green
+}
+it = view.begin_layers()
+while not it.at_end():
+    lp = it.current()
+    src = (lp.source_layer, lp.source_datatype)
+    if src in VIBRANT:
+        color = VIBRANT[src]
+        lp.fill_color = color
+        lp.frame_color = color
+        lp.fill_brightness = 0
+        view.replace_layer_node(it, lp)
+    it.next()
+view.update_content()
+
+# Hide only the layers that cover the whole die in uniform blocks (wells,
+# implants, dummy fill). Keep poly / active / local-interconnect / metals
+# visible so the render shows cell internals in full color — matches the
+# sky130 render style at tech/sky130/render_layout.py.
 HIDE = {
-    (1, 0),    # well drawing
-    (2, 0),    # fin drawing
-    (7, 0),    # Gate (poly) drawing
-    (8, 0),    # Dummy poly drawing  (very dense fill — dominates without this)
-    (10, 0),   # GCut drawing
-    (11, 0),   # Active (diffusion) drawing
-    (12, 0),   # Nselect (NMOS implant) drawing
-    (13, 0),   # Pselect (PMOS implant) drawing
-    (16, 0),   # LIG (local interconnect to gate) drawing
-    (17, 0),   # LISD (local interconnect to S/D) drawing
+    (1, 0),    # well drawing — monolithic, hides everything
+    (2, 0),    # fin drawing — uniform repetition
+    (8, 0),    # Dummy poly drawing — fill noise
+    (12, 0),   # Nselect (NMOS implant) — big rectangles
+    (13, 0),   # Pselect (PMOS implant) — big rectangles
 }
 it = view.begin_layers()
 while not it.at_end():

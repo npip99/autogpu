@@ -82,10 +82,15 @@ sg docker -c "docker run --rm --user $(id -u):$(id -g) \
     openroad/orfs:latest \
     /OpenROAD-flow-scripts/tools/install/OpenROAD/bin/openroad -exit \
     /work/tech/asap7/orfs/scripts/rewrite_abstract_lef.tcl" 2>&1 | tail -3
-# Post-process: strip OBS for layers above the leaf's MAX_ROUTING_LAYER so
-# the parent's PDN can run M6/M7 stripes over the macro without colliding.
+# Post-process: strip OBS so the parent design can use these layers over
+# the macro footprint without conflicting.
+#   M1  — parent runs M1 followpins for any stdcells in the inter-macro
+#         channels. Macro M1 OBS would fragment those into "unrepairable
+#         channels" (PDN-0179). Power-only layer, no signal conflict.
+#   M6/M7 — parent's PDN stripes go here. Leaf internal PDN uses M5/M6
+#         which the bloat tags; stripping lets parent stripes pass through.
 python3 $REPO_ROOT/tech/asap7/orfs/scripts/strip_lef_obs_layers.py \
-    $REPO_ROOT/build/orfs/results/asap7/$MODULE/base/$MODULE.lef M6 M7
+    $REPO_ROOT/build/orfs/results/asap7/$MODULE/base/$MODULE.lef M1 M2 M5 M6 M7
 
 GDS="$WORK_HOST/results/asap7/$MODULE/base/6_final.gds"
 PNG_DIR="$REPO_ROOT/build/render"

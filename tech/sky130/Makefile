@@ -36,7 +36,7 @@ SV_SOURCES := \
 
 .PHONY: sv2v synth clean
 
-sv2v: $(BUILD_DIR)/chip_top.v $(BUILD_DIR)/mac_array_small.v $(BUILD_DIR)/tile_buf_8row.v $(BUILD_DIR)/cmd_unit.v $(BUILD_DIR)/skew_lane_a.v $(BUILD_DIR)/skew_lane_b.v $(BUILD_DIR)/smem.v
+sv2v: $(BUILD_DIR)/chip_top.v $(BUILD_DIR)/mac_array_small.v $(BUILD_DIR)/tile_buf_8row.v $(BUILD_DIR)/cmd_unit.v $(BUILD_DIR)/skew_lane_a.v $(BUILD_DIR)/skew_lane_b.v $(BUILD_DIR)/smem.v $(BUILD_DIR)/smem_asap7.v
 
 $(BUILD_DIR)/chip_top.v: $(SV_SOURCES)
 	@mkdir -p $(BUILD_DIR)
@@ -46,6 +46,45 @@ $(BUILD_DIR)/chip_top.v: $(SV_SOURCES)
 	# -D USE_SKY130_MACRO makes sram_1rw instantiate the sky130 SRAM macro
 	# instead of the FF behavioral fallback (validated in smem cocotb).
 	sv2v -I $(REPO_ROOT)/common/fpnew -D USE_SKY130_MACRO --exclude=Always $(SV_SOURCES) --top=chip_top -w $@
+
+# Sweep target — generate chip_top.v variants with different broadcast
+# pipeline depths in compute_array. Each variant produces a separate
+# build/sv2v/chip_top_bcastN.v that ORFS configs (compute_array_bcastN)
+# can point at.
+.PHONY: sv2v-bcast-sweep
+sv2v-bcast-sweep: $(BUILD_DIR)/chip_top_bcast0.v $(BUILD_DIR)/chip_top_bcast1.v $(BUILD_DIR)/chip_top_bcast2.v $(BUILD_DIR)/chip_top_bcast3.v
+
+$(BUILD_DIR)/chip_top_bcast%.v: $(SV_SOURCES)
+	@mkdir -p $(BUILD_DIR)
+	sv2v -I $(REPO_ROOT)/common/fpnew -D USE_SKY130_MACRO -D BCAST_PIPE=$* --exclude=Always $(SV_SOURCES) --top=chip_top -w $@
+
+# Tiny compute_array (MMA_M=MMA_N=4 → 16 mac cells instead of 1024) for
+# fast iteration on hierarchical-PnR bugs. Same broadcast topology as the
+# full design, so the wire-delay + hold-buffer disease should reproduce
+# at the same shape but synthesizes in minutes not hours. Skip chip_top
+# (its M/N are fixed to 32); synth compute_array directly.
+.PHONY: sv2v-tiny-bcast-sweep
+sv2v-tiny-bcast-sweep: $(BUILD_DIR)/compute_array_tiny_bcast0.v $(BUILD_DIR)/compute_array_tiny_bcast1.v $(BUILD_DIR)/compute_array_tiny_bcast2.v
+
+TINY_SOURCES := \
+    $(REPO_ROOT)/common/fpnew/cf_math_pkg.sv \
+    $(REPO_ROOT)/common/fpnew/fpnew_pkg.sv \
+    $(REPO_ROOT)/common/fpnew/fpnew_classifier.sv \
+    $(REPO_ROOT)/common/fpnew/fpnew_rounding.sv \
+    $(REPO_ROOT)/common/fpnew/fpnew_fma.sv \
+    $(REPO_ROOT)/common/fpnew/lzc.sv \
+    $(REPO_ROOT)/common/fp32_fma.sv \
+    $(REPO_ROOT)/common/fp8_decode.sv \
+    $(REPO_ROOT)/mac_tmem_cell/mac_tmem_cell.sv \
+    $(REPO_ROOT)/cmd_unit/cmd_unit.sv \
+    $(REPO_ROOT)/skew_lane/skew_lane.sv \
+    $(REPO_ROOT)/skew_lane/skew_lane_a.sv \
+    $(REPO_ROOT)/skew_lane/skew_lane_b.sv \
+    $(REPO_ROOT)/compute_array/compute_array.sv
+
+$(BUILD_DIR)/compute_array_tiny_bcast%.v: $(TINY_SOURCES)
+	@mkdir -p $(BUILD_DIR)
+	sv2v -I $(REPO_ROOT)/common/fpnew -D MMA_M=4 -D MMA_N=4 -D MMA_K=4 -D BCAST_PIPE=$* --exclude=Always $(TINY_SOURCES) --top=compute_array -w $@
 
 # Standalone sv2v output for tile_buf_8row — the 8-row × 1024-bit banked
 # storage submodule. Hardens once as a leaf macro; store.sv will later
@@ -74,6 +113,14 @@ $(BUILD_DIR)/skew_lane_b.v: $(REPO_ROOT)/skew_lane/skew_lane.sv $(REPO_ROOT)/ske
 $(BUILD_DIR)/smem.v: $(REPO_ROOT)/smem/smem.sv $(REPO_ROOT)/mem/sram_1rw.sv
 	@mkdir -p $(BUILD_DIR)
 	sv2v -D USE_SKY130_MACRO --exclude=Always $^ --top=smem -w $@
+
+# asap7 variant — same sources but USE_ASAP7_FAKERAM selects the
+# ORFS-shipped fakeram7_256x32 macro in sram_1rw.sv. Distinct output path
+# because sky130 and asap7 macro names differ and the chip_top sv2v output
+# can't host both.
+$(BUILD_DIR)/smem_asap7.v: $(REPO_ROOT)/smem/smem.sv $(REPO_ROOT)/mem/sram_1rw.sv
+	@mkdir -p $(BUILD_DIR)
+	sv2v -D USE_ASAP7_FAKERAM --exclude=Always $^ --top=smem -w $@
 
 # Chip-top-only sv2v output for stub-mode chip_top synthesis. Contains
 # just chip_top.sv (no submodule bodies). Combined with v-stub/*.v

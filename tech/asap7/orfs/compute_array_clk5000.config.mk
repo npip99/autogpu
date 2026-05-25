@@ -18,8 +18,8 @@ export SDC_FILE      = /work/tech/asap7/orfs/compute_array_clk5000.sdc
 
 # Absolute floorplan (must match macro_placement.tcl numbers).
 export FLOORPLAN_DEF =
-export DIE_AREA  = 0 0 1600 1600
-export CORE_AREA = 20 20 1580 1580
+export DIE_AREA  = 0 0 1950 1950
+export CORE_AREA = 20 20 1930 1930
 
 # Hardened leaf macros — LEFs come from `generate_abstract` in each leaf run.
 ASAP7_RESULTS = /work/build/orfs/results/asap7

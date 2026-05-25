@@ -11,10 +11,10 @@
 
 export PLATFORM     = asap7
 export DESIGN_NAME      = compute_array
-export DESIGN_NICKNAME = compute_array_clk10000
+export DESIGN_NICKNAME = compute_array_clk1000
 
 export VERILOG_FILES = /work/build/sv2v/chip_top.v
-export SDC_FILE      = /work/tech/asap7/orfs/compute_array_clk10000.sdc
+export SDC_FILE      = /work/tech/asap7/orfs/compute_array_clk1000.sdc
 
 # Absolute floorplan (must match macro_placement.tcl numbers).
 export FLOORPLAN_DEF =
@@ -70,4 +70,13 @@ export MACRO_ROWS_HALO_Y = 11
 export PDN_TCL = /work/tech/asap7/orfs/compute_array.pdn.tcl
 
 export SKIP_LAST_GASP ?= 1
+
+# Skip CTS-stage timing repair. The 1024 macro-to-macro paths have hold
+# violations the resizer can't fix (both endpoints are hardened macros
+# with fixed pin timing; the resizer can only buffer the short wire
+# between, which doesn't shift the WNS). Proven on tiny variant: 2400+
+# buffers inserted with no WNS movement. Skipping accepts the hold
+# violations and lets the flow finish in ~1-2 hr instead of grinding
+# forever.
+export SKIP_CTS_REPAIR_TIMING = 1
 

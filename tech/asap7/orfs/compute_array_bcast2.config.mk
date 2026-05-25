@@ -11,10 +11,10 @@
 
 export PLATFORM     = asap7
 export DESIGN_NAME      = compute_array
-export DESIGN_NICKNAME = compute_array_clk10000
+export DESIGN_NICKNAME = compute_array_bcast2
 
-export VERILOG_FILES = /work/build/sv2v/chip_top.v
-export SDC_FILE      = /work/tech/asap7/orfs/compute_array_clk10000.sdc
+export VERILOG_FILES = /work/build/sv2v/chip_top_bcast2.v
+export SDC_FILE      = /work/tech/asap7/orfs/compute_array_bcast2.sdc
 
 # Absolute floorplan (must match macro_placement.tcl numbers).
 export FLOORPLAN_DEF =

@@ -10,11 +10,35 @@
 //
 // Drain output = top row of cells' drain_out (no mux).
 
+// BCAST_PIPE adds N register stages on the broadcast nets from cmd_unit
+// to the 32 skew_lanes and 1024 mac cells. Each stage shortens the worst
+// wire from ~1.5 mm (corner-to-corner at chip scale) to ~1.5/(N+1) mm.
+// Set via -DBCAST_PIPE=N to sv2v.
+//
+// Functional caveat: adding pipeline stages delays the broadcast but
+// cmd_unit's internal FSM (mma_done/busy generation) is NOT compensated.
+// For N>0 the chip is structurally synthesizable but cycle-level
+// behavior differs from the cocotb model. Used for synthesis closure
+// experiments; cmd_unit needs matching adjustment for real silicon.
+`ifndef BCAST_PIPE
+`define BCAST_PIPE 0
+`endif
+`ifndef MMA_M
+`define MMA_M 32
+`endif
+`ifndef MMA_N
+`define MMA_N 32
+`endif
+`ifndef MMA_K
+`define MMA_K 32
+`endif
+
 module compute_array #(
-    parameter int MMA_M   = 32,
-    parameter int MMA_N   = 32,
-    parameter int MMA_K   = 32,
-    parameter int N_SLOTS = 4
+    parameter int MMA_M      = `MMA_M,
+    parameter int MMA_N      = `MMA_N,
+    parameter int MMA_K      = `MMA_K,
+    parameter int N_SLOTS    = 4,
+    parameter int BCAST_PIPE = `BCAST_PIPE
 ) (
     input  logic                          clk,
     input  logic                          reset,
@@ -67,6 +91,18 @@ module compute_array #(
     logic                       cells_drain_en;
     logic [SLOT_W-1:0]          cells_drain_slot;
 
+    // Pipelined copies of cmd_unit's broadcast outputs. Width matches
+    // the source signals exactly. Consumed by skew_lanes (push_*) and
+    // by every mac cell (cells_drain_* / scrub_en).
+    logic                       push_now_piped;
+    logic [MMA_M*8-1:0]         push_a_bytes_piped;
+    logic [MMA_N*8-1:0]         push_b_bytes_piped;
+    logic [SLOT_W-1:0]          push_slot_piped;
+    logic                       push_accum_piped;
+    logic                       cells_drain_en_piped;
+    logic [SLOT_W-1:0]          cells_drain_slot_piped;
+    logic                       scrub_en_piped;
+
     cmd_unit u_cmd (
         .clk                  (clk),
         .reset                (reset),
@@ -109,6 +145,70 @@ module compute_array #(
     );
 
     // ------------------------------------------------------------------
+    // Broadcast pipeline. `BCAST_PIPE=0 is a direct wire; >0 inserts N
+    // D-FF stages on every broadcast signal so the long wire from cmd_unit
+    // (SW corner) to the NE-most consumer is cut into segments of
+    // ~1.5/(N+1) mm each. Sets the achievable Fmax of the hierarchical
+    // layout. Resolved at sv2v preprocess time (`BCAST_PIPE macro), not
+    // at parameter elaboration, so sv2v emits the right code per variant.
+    // ------------------------------------------------------------------
+    // Size-safe array decl: PIPE_SZ is at least 1 even when BCAST_PIPE=0.
+    // The unused element gets optimized away by yosys; the generate-if
+    // below decides whether we emit a real shift register or direct wires.
+    localparam int PIPE_SZ = (BCAST_PIPE > 0) ? BCAST_PIPE : 1;
+
+    logic                       pn_pipe  [0:PIPE_SZ-1];
+    logic [MMA_M*8-1:0]         pa_pipe  [0:PIPE_SZ-1];
+    logic [MMA_N*8-1:0]         pb_pipe  [0:PIPE_SZ-1];
+    logic [SLOT_W-1:0]          ps_pipe  [0:PIPE_SZ-1];
+    logic                       pac_pipe [0:PIPE_SZ-1];
+    logic                       dre_pipe [0:PIPE_SZ-1];
+    logic [SLOT_W-1:0]          drs_pipe [0:PIPE_SZ-1];
+    logic                       sc_pipe  [0:PIPE_SZ-1];
+
+    generate
+        if (BCAST_PIPE > 0) begin : gen_bcast_pipe
+            always_ff @(posedge clk) begin
+                pn_pipe[0]  <= push_now;
+                pa_pipe[0]  <= push_a_bytes;
+                pb_pipe[0]  <= push_b_bytes;
+                ps_pipe[0]  <= push_slot;
+                pac_pipe[0] <= push_accum;
+                dre_pipe[0] <= cells_drain_en;
+                drs_pipe[0] <= cells_drain_slot;
+                sc_pipe[0]  <= scrub_en;
+                for (int s = 1; s < BCAST_PIPE; s++) begin
+                    pn_pipe[s]  <= pn_pipe[s-1];
+                    pa_pipe[s]  <= pa_pipe[s-1];
+                    pb_pipe[s]  <= pb_pipe[s-1];
+                    ps_pipe[s]  <= ps_pipe[s-1];
+                    pac_pipe[s] <= pac_pipe[s-1];
+                    dre_pipe[s] <= dre_pipe[s-1];
+                    drs_pipe[s] <= drs_pipe[s-1];
+                    sc_pipe[s]  <= sc_pipe[s-1];
+                end
+            end
+            assign push_now_piped         = pn_pipe[PIPE_SZ-1];
+            assign push_a_bytes_piped     = pa_pipe[PIPE_SZ-1];
+            assign push_b_bytes_piped     = pb_pipe[PIPE_SZ-1];
+            assign push_slot_piped        = ps_pipe[PIPE_SZ-1];
+            assign push_accum_piped       = pac_pipe[PIPE_SZ-1];
+            assign cells_drain_en_piped   = dre_pipe[PIPE_SZ-1];
+            assign cells_drain_slot_piped = drs_pipe[PIPE_SZ-1];
+            assign scrub_en_piped         = sc_pipe[PIPE_SZ-1];
+        end else begin : gen_bcast_direct
+            assign push_now_piped         = push_now;
+            assign push_a_bytes_piped     = push_a_bytes;
+            assign push_b_bytes_piped     = push_b_bytes;
+            assign push_slot_piped        = push_slot;
+            assign push_accum_piped       = push_accum;
+            assign cells_drain_en_piped   = cells_drain_en;
+            assign cells_drain_slot_piped = cells_drain_slot;
+            assign scrub_en_piped         = scrub_en;
+        end
+    endgenerate
+
+    // ------------------------------------------------------------------
     // a-side skew_lanes: one per row. Each row i has tap_index = i.
     // Outputs feed the west edge of cell (i, 0).
     // ------------------------------------------------------------------
@@ -127,10 +227,10 @@ module compute_array #(
             skew_lane_a u_a (
                 .clk        (clk),
                 .reset      (reset),
-                .push_now   (push_now),
-                .push_byte  (push_a_bytes[(MMA_M-1-gi_a)*8 +: 8]),
-                .push_slot  (push_slot),
-                .push_accum (push_accum),
+                .push_now   (push_now_piped),
+                .push_byte  (push_a_bytes_piped[(MMA_M-1-gi_a)*8 +: 8]),
+                .push_slot  (push_slot_piped),
+                .push_accum (push_accum_piped),
                 .tap_index  (gi_a[$clog2(SKEW_DEPTH)-1:0]),
                 .edge_valid (ev),
                 .edge_byte  (eb),
@@ -160,8 +260,8 @@ module compute_array #(
             skew_lane_b u_b (
                 .clk        (clk),
                 .reset      (reset),
-                .push_now   (push_now),
-                .push_byte  (push_b_bytes[(MMA_N-1-gj_b)*8 +: 8]),
+                .push_now   (push_now_piped),
+                .push_byte  (push_b_bytes_piped[(MMA_N-1-gj_b)*8 +: 8]),
                 // push_slot / push_accum: functionally unused on b-side
                 // (b-skew's edge_slot / edge_accum outputs are dangling — the
                 // cell grid takes slot/accum from a-skew, not from here).
@@ -170,8 +270,8 @@ module compute_array #(
                 // × 3 bits) and their wires, which otherwise pile up in the
                 // std-cell strip just south of the b-skew row and contribute
                 // to GR congestion there.
-                .push_slot  (push_slot),
-                .push_accum (push_accum),
+                .push_slot  (push_slot_piped),
+                .push_accum (push_accum_piped),
                 .tap_index  (gj_b[$clog2(SKEW_DEPTH)-1:0]),
                 .edge_valid (ev_unused),
                 .edge_byte  (eb),
@@ -225,12 +325,12 @@ module compute_array #(
                     .accum_out   (accum_pipe  [gi][gj]),
                     .drain_in    (drain_in_w),
                     .drain_out   (drain_pipe  [gi][gj]),
-                    .drain_en    (cells_drain_en),
-                    .drain_slot  (cells_drain_slot),
+                    .drain_en    (cells_drain_en_piped),
+                    .drain_slot  (cells_drain_slot_piped),
                     .init_en     (1'b0),
                     .init_slot   ('0),
                     .init_data   (32'd0),
-                    .scrub_en    (scrub_en)
+                    .scrub_en    (scrub_en_piped)
                 );
             end
         end
