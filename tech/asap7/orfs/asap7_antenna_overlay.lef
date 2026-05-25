@@ -56,6 +56,16 @@
 # Ratios below are deliberately CONSERVATIVE (lower number = tighter
 # rule = more violations flagged). Treat any FAIL out of this overlay as
 # "investigate", not as a tape-out gate.
+#
+# CAVEAT — ANTENNASIDEAREARATIO is parsed by antenna_check.tcl but NOT
+# applied: the current OpenROAD Tcl ODB API in openroad/orfs:latest
+# exposes setPAR / setCAR / setDiffPAR / setDiffCAR on dbTechLayerAntennaRule
+# but no setter for the sidewall ratio. The SIDE values on M4..M9 below
+# are aspirational (kept for completeness so a future OpenROAD build
+# that exposes the setter doesn't need a LEF rev). Sidewall antenna
+# effects on this overlay are therefore under-checked. Mitigation: the
+# area-ratio (PAR) caps are already on the tight end of the published
+# bands, so a sidewall-driven violation would usually also trip PAR.
 
 VERSION 5.8 ;
 

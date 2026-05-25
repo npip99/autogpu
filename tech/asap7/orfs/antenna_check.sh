@@ -162,17 +162,17 @@ sg docker -c "docker run --rm --user $(id -u):$(id -g) \
 OR_RC=$?
 set -e
 
-# Decide pass/fail. Map OpenROAD tcl exit codes to our spec:
-#   0  → clean → exit 0
-#   2  → violations → exit 2
-#   3  → missing env (our tcl) → exit 3
-#   4  → openroad failure → exit 3
-#   *  → unexpected → exit 3
+# Decide pass/fail. Map OpenROAD tcl exit codes to our spec. The TCL
+# layer uses 3=missing env (wrapper bug, shouldn't happen at runtime)
+# and 4=openroad command failure; both collapse to bash exit 3 since
+# from the user's perspective they're the same outcome ("the check did
+# not run"). The OR_RC value is echoed in the diagnostic so a failing
+# TCL exit is still traceable.
 case $OR_RC in
     0) STATUS="clean" ;;
     2) STATUS="violations" ;;
     *) echo "antenna_check: ERROR: openroad/tcl exit $OR_RC" >&2
-       echo "antenna_check: $MODULE: openroad invocation failed (exit $OR_RC)"
+       echo "antenna_check: $MODULE: openroad invocation failed (TCL exit $OR_RC)"
        exit 3 ;;
 esac
 
@@ -187,9 +187,21 @@ if [[ "$WITH_OVERLAY" == "1" ]]; then
     RULE_COUNT=$(grep -c -E '^[[:space:]]*ANTENNA' "$OVERLAY_LEF_HOST" || echo 0)
 else
     # Stock tech LEF lives inside the docker image. Grep it via a
-    # one-shot container.
+    # one-shot container. Track docker exit separately so a docker
+    # failure (image gone, sg permission revoked) does not silently
+    # report 0 rules → VACUOUS PASS.
+    set +e
     RULE_COUNT_RAW=$(sg docker -c "docker run --rm openroad/orfs:latest \
-        grep -c -E '^[[:space:]]*ANTENNA' $TECH_LEF_GUEST" 2>/dev/null || true)
+        grep -c -E '^[[:space:]]*ANTENNA' $TECH_LEF_GUEST" 2>/dev/null)
+    DOCKER_RC=$?
+    set -e
+    if (( DOCKER_RC != 0 && DOCKER_RC != 1 )); then
+        # grep -c exits 1 when zero matches, which is exactly the asap7
+        # case; treat 1 as "0 matches", but anything else (2+, 125+) is
+        # a real docker/grep failure.
+        echo "antenna_check: ERROR: docker rule-count probe exited $DOCKER_RC (cannot verify PDK gap)" >&2
+        exit 3
+    fi
     RULE_COUNT=$(printf '%s' "$RULE_COUNT_RAW" | tr -d '[:space:]')
     : "${RULE_COUNT:=0}"
 fi
