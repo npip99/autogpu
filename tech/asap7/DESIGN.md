@@ -260,13 +260,14 @@ ship broken silicon if left unaddressed.
 - [ ] **No LVS.** Magic + netgen with asap7 is not set up. Currently no
       schematic-vs-layout equivalence at any level.
 - [ ] **No antenna sign-off.** Neither asserted nor verified.
-- [x] **IR-drop sign-off:** `tech/asap7/orfs/ir_drop.sh <module>` runs
-      psm (analyze_power_grid) post-route with a documented activity
-      factor (default 0.10) and reports worst-case Vdrop vs 10% of VDD.
-      Exit 0=PASS, 1=FAIL (Vdrop > budget), 2=BLOCKED (PSM-0069). Leaf
-      `mac_tmem_cell` passes (2.3 mV / 70 mV budget). `compute_array_tiny_bcast0`
-      is BLOCKED on the A1 PDN bug — IR-drop unblocks once PSM-0069 is
-      fixed.
+- [~] **IR-drop sign-off — tooling shipped, blocked on PDN.**
+      `tech/asap7/orfs/ir_drop.sh <module>` runs psm (analyze_power_grid)
+      post-route with a documented activity factor (default 0.10) and
+      reports worst-case Vdrop vs 10% of VDD. Exit 0=PASS, 1=FAIL
+      (Vdrop > budget), 2=BLOCKED (PSM-0069), 3=tool/env failure. Leaf
+      `mac_tmem_cell` passes (2.3 mV / 70 mV budget).
+      `compute_array_tiny_bcast0` is BLOCKED on the A1 PDN bug; chip_top
+      doesn't yet exist (A6). Unblocks once PSM-0069 is fixed.
 
 ### Fundamental constraint (outside this repo's reach)
 
