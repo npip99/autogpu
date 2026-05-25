@@ -259,7 +259,18 @@ ship broken silicon if left unaddressed.
 
 - [ ] **No LVS.** Magic + netgen with asap7 is not set up. Currently no
       schematic-vs-layout equivalence at any level.
-- [ ] **No antenna sign-off.** Neither asserted nor verified.
+- [~] **Antenna sign-off — tooling shipped, PDK gap blocks.**
+      `tech/asap7/orfs/antenna_check.sh <module>` invokes OpenROAD's
+      `check_antennas` against the routed ODB and writes a per-module
+      report. ORFS's `repair_antennas` is already integrated into
+      `global_route.tcl` and `detail_route.tcl` (defaults
+      `SKIP_ANTENNA_REPAIR*=0`), so any fix-up has already happened by
+      the time the check runs. **However**, the asap7 platform LEF has
+      *zero* antenna properties (no `ANTENNAGATEAREA` on stdcell pins,
+      no `ANTENNAAREARATIO` on M1..M9), so the check has nothing to
+      evaluate. `antenna_check.sh` distinguishes "clean" from "vacuous
+      pass" via exit code 4. See `tech/asap7/PDK_GAPS.md` for the data
+      that'd need to be added.
 - [~] **IR-drop sign-off — tooling shipped, blocked on PDN.**
       `tech/asap7/orfs/ir_drop.sh <module>` runs psm (analyze_power_grid)
       post-route with a documented activity factor (default 0.10) and
@@ -285,7 +296,12 @@ ship broken silicon if left unaddressed.
       after every parent-level run: `openroad -exit -db <path>/6_final.odb
       scripts/verify_macro_power.tcl`. Exit 0 = clean, exit 1 = real PDN
       bug. Caught PSM-0069 as a real bug rather than tool artifact.
-
+- [x] `antenna_check.sh` — one-command antenna sign-off for an
+      ORFS-routed module. Reads tech + stdcell + macro LEFs and the
+      post-route ODB, runs `check_antennas`, writes
+      `build/orfs/reports/asap7/<module>/antenna.log`. Exit 0 / 2 / 4
+      mean clean / violations / vacuous (no PDK rules). See
+      `tech/asap7/PDK_GAPS.md`.
 - [x] `orfs/ir_drop.sh <module> [--budget F] [--activity A]` — static
       IR-drop sign-off via psm. Loads `6_final.odb` + `.spef`, runs
       `report_power` with `set_power_activity -global -activity 0.10`

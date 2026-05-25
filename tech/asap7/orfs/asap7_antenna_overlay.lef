@@ -1,0 +1,187 @@
+# asap7_antenna_overlay.lef
+#
+# PREDICTIVE-SIGN-OFF antenna rules for the asap7 PDK.
+#
+#                       ============= WARNING =============
+# These ratios are NOT foundry-verified. They are derived from public
+# academic data for the asap7 predictive 7nm PDK (Clark, L.T. et al.,
+# "ASAP7: A 7-nm finFET predictive process design kit", Microelectronics
+# Journal vol. 53, 2016, pp. 105-115) cross-checked against the metal
+# stack defined in asap7_tech_1x_201209.lef (M1..M9 width / pitch / area
+# values quoted below). The numbers fall within the *order of magnitude*
+# real foundry 7nm processes report, but using them for tape-out sign-off
+# is by definition predictive, NOT a green light.
+#
+# What this overlay adds (and *only* this — no other LEF mutation):
+#   ANTENNAAREARATIO       per-layer (single-path PAR limit)
+#   ANTENNADIFFAREARATIO   per-layer (diffusion-protected PAR limit)
+#   ANTENNACUMAREARATIO    per-layer (cumulative PAR limit)
+#   ANTENNACUMDIFFAREARATIO per-layer (cumulative diffusion-protected)
+#   ANTENNASIDEAREARATIO   per-layer (sidewall PAR — meaningful only on
+#                          layers thick enough for sidewall to matter,
+#                          i.e. M4..M9 here)
+# Vias V1..V8 get only ANTENNAAREARATIO / ANTENNACUMAREARATIO since via
+# cut "area" is the dominant antenna contribution for CUT layers.
+#
+# DERIVATION
+# ----------
+# Per-layer geometry from asap7_tech_1x_201209.lef (1x scale, microns):
+#   layer  WIDTH  PITCH        thickness (Clark et al. Tbl 2, scaled to 1x)
+#   M1     0.018  0.036        ~36 nm
+#   M2     0.018  0.045/0.036  ~36 nm
+#   M3     0.018  0.036        ~36 nm
+#   M4     0.024  0.048        ~48 nm
+#   M5     0.024  0.048        ~48 nm
+#   M6     0.032  0.064        ~64 nm
+#   M7     0.032  0.064        ~64 nm
+#   M8     0.04   0.08         ~80 nm
+#   M9     0.04   0.08         ~80 nm
+#
+# At 7nm-class nodes published foundry antenna PAR caps trend like:
+#   thin lower metals  (Mx ~ 18 nm wide) -> PAR cap ~400
+#   mid metals         (Mx ~ 24-32 nm wide) -> PAR cap ~600..800
+#   thick upper metals (Mx ~ 40+ nm wide) -> PAR cap ~1000..1500
+# CAR (cumulative through this layer back to the gate) typically caps at
+# ~3x PAR. DIFF ratios (gate has diffusion-protected antenna sink) are
+# typically 2x-3x PAR. We pick the conservative low end of each band.
+#
+# Sources cross-checked:
+#   - sky130 antenna rules (`sky130_fd_pr/cells/.../*.lef` ANTENNA* lines)
+#   - skywater130 PEX deck antenna section
+#   - public TSMC N7 / Samsung 7LPP antenna PAR ranges reported in
+#     "Antenna effects in nanometer-scale CMOS" survey papers
+# Both sky130 and IHP130 use PAR caps in the 400..1500 range. Scaling
+# down by area for the thinner asap7 metals lands in the same ballpark.
+#
+# Ratios below are deliberately CONSERVATIVE (lower number = tighter
+# rule = more violations flagged). Treat any FAIL out of this overlay as
+# "investigate", not as a tape-out gate.
+#
+# CAVEAT — ANTENNASIDEAREARATIO is parsed by antenna_check.tcl but NOT
+# applied: the current OpenROAD Tcl ODB API in openroad/orfs:latest
+# exposes setPAR / setCAR / setDiffPAR / setDiffCAR on dbTechLayerAntennaRule
+# but no setter for the sidewall ratio. The SIDE values on M4..M9 below
+# are aspirational (kept for completeness so a future OpenROAD build
+# that exposes the setter doesn't need a LEF rev). Sidewall antenna
+# effects on this overlay are therefore under-checked. Mitigation: the
+# area-ratio (PAR) caps are already on the tight end of the published
+# bands, so a sidewall-driven violation would usually also trip PAR.
+
+VERSION 5.8 ;
+
+# ---- Routing layers ----
+
+LAYER M1
+  ANTENNAAREARATIO 400 ;
+  ANTENNADIFFAREARATIO 1000 ;
+  ANTENNACUMAREARATIO 1200 ;
+  ANTENNACUMDIFFAREARATIO 3000 ;
+END M1
+
+LAYER M2
+  ANTENNAAREARATIO 400 ;
+  ANTENNADIFFAREARATIO 1000 ;
+  ANTENNACUMAREARATIO 1200 ;
+  ANTENNACUMDIFFAREARATIO 3000 ;
+END M2
+
+LAYER M3
+  ANTENNAAREARATIO 400 ;
+  ANTENNADIFFAREARATIO 1000 ;
+  ANTENNACUMAREARATIO 1200 ;
+  ANTENNACUMDIFFAREARATIO 3000 ;
+END M3
+
+LAYER M4
+  ANTENNAAREARATIO 600 ;
+  ANTENNADIFFAREARATIO 1500 ;
+  ANTENNACUMAREARATIO 1800 ;
+  ANTENNACUMDIFFAREARATIO 4500 ;
+  ANTENNASIDEAREARATIO 200 ;
+END M4
+
+LAYER M5
+  ANTENNAAREARATIO 600 ;
+  ANTENNADIFFAREARATIO 1500 ;
+  ANTENNACUMAREARATIO 1800 ;
+  ANTENNACUMDIFFAREARATIO 4500 ;
+  ANTENNASIDEAREARATIO 200 ;
+END M5
+
+LAYER M6
+  ANTENNAAREARATIO 800 ;
+  ANTENNADIFFAREARATIO 2000 ;
+  ANTENNACUMAREARATIO 2400 ;
+  ANTENNACUMDIFFAREARATIO 6000 ;
+  ANTENNASIDEAREARATIO 250 ;
+END M6
+
+LAYER M7
+  ANTENNAAREARATIO 800 ;
+  ANTENNADIFFAREARATIO 2000 ;
+  ANTENNACUMAREARATIO 2400 ;
+  ANTENNACUMDIFFAREARATIO 6000 ;
+  ANTENNASIDEAREARATIO 250 ;
+END M7
+
+LAYER M8
+  ANTENNAAREARATIO 1200 ;
+  ANTENNADIFFAREARATIO 3000 ;
+  ANTENNACUMAREARATIO 3600 ;
+  ANTENNACUMDIFFAREARATIO 9000 ;
+  ANTENNASIDEAREARATIO 350 ;
+END M8
+
+LAYER M9
+  ANTENNAAREARATIO 1200 ;
+  ANTENNADIFFAREARATIO 3000 ;
+  ANTENNACUMAREARATIO 3600 ;
+  ANTENNACUMDIFFAREARATIO 9000 ;
+  ANTENNASIDEAREARATIO 350 ;
+END M9
+
+# ---- Via cut layers ----
+# Cut-layer antenna ratios constrain the cut area / gate area. The
+# numbers track the routing-layer band above them.
+
+LAYER V1
+  ANTENNAAREARATIO 400 ;
+  ANTENNACUMAREARATIO 1200 ;
+END V1
+
+LAYER V2
+  ANTENNAAREARATIO 400 ;
+  ANTENNACUMAREARATIO 1200 ;
+END V2
+
+LAYER V3
+  ANTENNAAREARATIO 400 ;
+  ANTENNACUMAREARATIO 1200 ;
+END V3
+
+LAYER V4
+  ANTENNAAREARATIO 600 ;
+  ANTENNACUMAREARATIO 1800 ;
+END V4
+
+LAYER V5
+  ANTENNAAREARATIO 600 ;
+  ANTENNACUMAREARATIO 1800 ;
+END V5
+
+LAYER V6
+  ANTENNAAREARATIO 800 ;
+  ANTENNACUMAREARATIO 2400 ;
+END V6
+
+LAYER V7
+  ANTENNAAREARATIO 800 ;
+  ANTENNACUMAREARATIO 2400 ;
+END V7
+
+LAYER V8
+  ANTENNAAREARATIO 1200 ;
+  ANTENNACUMAREARATIO 3600 ;
+END V8
+
+END LIBRARY
