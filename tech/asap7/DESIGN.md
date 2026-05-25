@@ -257,8 +257,11 @@ ship broken silicon if left unaddressed.
 
 ### Sign-off gaps (chip might not be verifiable as correct)
 
-- [ ] **No LVS.** Magic + netgen with asap7 is not set up. Currently no
-      schematic-vs-layout equivalence at any level.
+- [x] **LVS (cell-instance level).** `tech/asap7/orfs/lvs.sh <module>`
+      runs a KLayout-based equivalence check on the post-route GDS vs.
+      `6_final.v` for any hardened block, treating standard cells and
+      hardened macros as black-box subcircuits. See "LVS infrastructure"
+      below for what it catches (and what the asap7 PDK gap prevents).
 - [ ] **No antenna sign-off.** Neither asserted nor verified.
 - [ ] **No IR-drop sign-off.** `psm` runs but we've been working around its
       false-failure mode (which on inspection turned out to be a real
@@ -280,3 +283,116 @@ ship broken silicon if left unaddressed.
       after every parent-level run: `openroad -exit -db <path>/6_final.odb
       scripts/verify_macro_power.tcl`. Exit 0 = clean, exit 1 = real PDN
       bug. Caught PSM-0069 as a real bug rather than tool artifact.
+
+- [x] `orfs/lvs.sh` — cell-instance LVS. See next section.
+
+## LVS infrastructure
+
+`tech/asap7/orfs/lvs.sh <module>` runs a Layout-vs-Schematic check on a
+hardened block. Outputs exit code 0 on clean, nonzero on mismatch, and
+writes a report to `build/orfs/reports/asap7/<module>/lvs.log`.
+
+### What it does
+
+For a given module (e.g., `mac_tmem_cell`, `compute_array_tiny_bcast0`):
+
+1. Reads `build/orfs/results/asap7/<module>/base/6_final.gds`.
+2. Extracts a gate-level netlist from the GDS via KLayout's
+   `LayoutToNetlist`. Standard cells (`*_ASAP7_75t_*`) and hardened
+   macros are treated as black-box subcircuits — only the metal-stack
+   routing M1..M9 + via stack V1..V8 is traced, no transistor-level
+   extraction.
+3. Reads `6_final.v` and parses it into a `pya.Netlist` via a custom
+   structural-Verilog parser.
+4. Reconciles known asymmetries (physical-only cells in GDS but not
+   netlist, dangling CTS-load outputs, etc).
+5. Compares with `pya.NetlistComparer`.
+
+### What it catches
+
+Two independent checks must both pass to report LVS clean:
+
+1. **Structural cell-instance compare** (KLayout NetlistComparer)
+    - Misplaced or missing cells (GDS cell count ≠ Verilog instance count).
+    - Routing shorts and opens (two cell pins on the same M1 net where
+      the netlist says they should be separate, or vice versa).
+    - Pin swaps (a cell's `A` and `B` inputs wired the wrong way).
+    - Mis-routed buses (one bit of a bus connected to the wrong
+      destination).
+
+2. **Macro power-pin connectivity check**
+    - **Floating macro power pins** — the PSM-0069 failure mode. For
+      each subcircuit instance, the script verifies its VDD/VSS pins
+      land on a multi-fanout (global) net at the parent level. Any pin
+      on a 1-fanout dangling net flags a PDN bug. (This check has to
+      run *before* the structural simplify, which would otherwise purge
+      the dangling nets and mask the issue.)
+
+This sort of cleanly separates "did you wire the signal nets right?"
+(structural) from "did the PDN actually deliver power to every macro?"
+(PDN check).
+
+### What it does NOT catch (asap7 PDK gap — explicit limitation)
+
+- **Standard-cell-internal transistor-level bugs.** asap7 ships no
+  production-grade LVS rule deck:
+    - The volare-packaged asap7 has empty placeholder files at
+      `~/.volare/asap7/libs.tech/{magic,netgen}/*`
+    - `openroad/orfs:latest` does not have `magic` or `netgen` installed
+    - The ORFS asap7 platform dir has only `drc/` (DRC rules from
+      laurentc2), no `lvs/`
+    - KLayout LVS is installed (we use its `LayoutToNetlist`) but no
+      transistor-extraction rule deck exists for asap7 either
+  Writing one from scratch for production tape-out would mean porting
+  the asap7 LEF/GDS cell geometries into KLayout LVS DSL — a sizable
+  task and ultimately moot, since asap7 is itself an academic predictive
+  PDK with no fab path (see "Fundamental constraint" below).
+
+- **Stdcell substitution attacks.** If a stdcell GDS were swapped with
+  a malformed variant (same cell name, different transistor topology),
+  cell-instance LVS wouldn't notice. Out of scope; trust the PDK.
+
+### Hierarchy mode
+
+Cell-instance hierarchical: standard cells are black-box leaves; hardened
+macros (`mac_tmem_cell`, `skew_lane_a/b`, `cmd_unit` at compute_array
+level) are also black-box. At the leaf level, the lvs.sh on each
+hardened macro verifies that macro's own routing. At the parent level,
+those macros become black boxes so we only check the parent's routing.
+This is the same hierarchy mode used by commercial LVS flows for
+top-down tape-out sign-off — each level checks only what's new at that
+level.
+
+### Reproduction
+
+```bash
+# After the synthesis flow has produced 6_final.gds / .v:
+./tech/asap7/orfs/lvs.sh mac_tmem_cell                # PASS
+./tech/asap7/orfs/lvs.sh skew_lane_a                  # PASS
+./tech/asap7/orfs/lvs.sh skew_lane_b                  # PASS
+./tech/asap7/orfs/lvs.sh cmd_unit                     # PASS
+./tech/asap7/orfs/lvs.sh compute_array_tiny_bcast0    # FAIL (PSM-0069)
+```
+
+Uses the same `openroad/orfs:latest` Docker image as the synthesis
+flow; no additional tools required.
+
+The compute_array failure is the known PSM-0069 PDN bug (see
+"BLOCKER: PSM-0069 floating macro power pins" above) — the LVS PDN
+check independently rediscovered it (31 macro VDD/VSS pins land on
+dangling, single-fanout nets instead of the global VDD/VSS rail).
+After the A1 fix lands, this should report clean.
+
+### Files
+
+```
+tech/asap7/orfs/
+├── lvs.sh                          driver (this is what you invoke)
+├── scripts/
+│   └── lvs.py                      KLayout Python implementation
+└── ...
+build/orfs/reports/asap7/<module>/
+├── lvs.log                         full LVS report
+└── layout_netlist.cir              SPICE dump of the extracted netlist
+                                    (handy for grep / manual inspection)
+```
