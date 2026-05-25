@@ -43,6 +43,19 @@ EOF
 }
 
 set -e
+# Run a command with `set -e` temporarily disabled, then restore it and
+# return the command's exit code. Use for steps whose non-zero exit is a
+# meaningful outcome (FAIL=1, BLOCKED=2 from the postprocessor; openroad
+# errors we report ourselves) rather than a reason to abort.
+run_unchecked() {
+    local rc
+    set +e
+    "$@"
+    rc=$?
+    set -e
+    return $rc
+}
+
 case "${1:-}" in
     -h|--help) usage; exit 0 ;;
     "") usage >&2; exit 3 ;;
@@ -118,8 +131,7 @@ fi
 ACTIVITY_ARG=""
 [[ -n "$ACTIVITY" ]] && ACTIVITY_ARG="-e IR_ACTIVITY=$ACTIVITY"
 
-set +e
-sg docker -c "docker run --rm --user $(id -u):$(id -g) \
+run_unchecked sg docker -c "docker run --rm --user $(id -u):$(id -g) \
     -v $REPO_ROOT:/work \
     --env-file $ENV_FILE \
     $ACTIVITY_ARG \
@@ -129,7 +141,6 @@ sg docker -c "docker run --rm --user $(id -u):$(id -g) \
         /work/tech/asap7/orfs/scripts/ir_drop.tcl" \
     > "$DOCKER_OUT" 2>&1
 ORC=$?
-set -e
 
 cp "$DOCKER_OUT" "$REPORTS_HOST/ir_drop.openroad.log"
 
@@ -153,15 +164,12 @@ ACTIVITY_USED=$(grep -oP 'activity=\K[0-9.]+' "$DOCKER_OUT" | head -1)
 # disconnection from the PSM error files. Exit codes 0/1/2 map directly
 # to PASS / FAIL / BLOCKED.
 #
-# Disable set -e around the python call: PASS=0 is fine under set -e,
-# but FAIL=1 and BLOCKED=2 are legitimate outcomes that must not abort
-# the shell before we print the report path and propagate the code.
-set +e
-python3 "$SCRIPT_DIR/scripts/ir_drop_postprocess.py" \
+# PASS=0 is fine under set -e, but FAIL=1 and BLOCKED=2 are legitimate
+# outcomes that must not abort the shell before we print the report path.
+run_unchecked python3 "$SCRIPT_DIR/scripts/ir_drop_postprocess.py" \
     "$DOCKER_OUT" "$REPORTS_HOST" "$MODULE" \
     "$VDD_USED" "$BUDGET_FRACTION" "$ACTIVITY_USED" "$LOG"
 PY_RC=$?
-set -e
 
 echo ""
 echo "Report: $LOG"

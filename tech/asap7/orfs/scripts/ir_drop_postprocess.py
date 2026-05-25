@@ -47,13 +47,25 @@ class NetAnalysis:
     failures: list             # list[(drop_v, instance, layer, x, y)] above budget
 
 
+EXPECTED_CSV_HEADER = "Instance,Terminal,Layer,X location,Y location,Voltage"
+
+
 def read_voltage_csv(path: Path):
     """Yield NodeVoltage records from a psm voltage CSV. Skip malformed lines.
 
     Header: Instance,Terminal,Layer,X location,Y location,Voltage
+
+    Raises ValueError if the header doesn't match — column order is hardcoded
+    in NodeVoltage construction below, so a psm format change must trip here
+    rather than silently produce nonsense voltages.
     """
     with open(path) as f:
-        f.readline()  # header
+        header = f.readline().strip()
+        if header != EXPECTED_CSV_HEADER:
+            raise ValueError(
+                f"unexpected psm CSV header at {path}: {header!r} "
+                f"(expected {EXPECTED_CSV_HEADER!r})"
+            )
         for line in f:
             parts = [p.strip() for p in line.split(",")]
             if len(parts) < 6:
@@ -117,6 +129,12 @@ def detect_psm_status(rep_dir: Path, log_text: str, net: str) -> str:
         body = err.read_text()
         n = sum(1 for ln in body.splitlines() if "violation type" in ln)
         return f"{n} PSM violation(s)"
+    # Regex assumes psm's clean-grid message format:
+    #   "[INFO PSM-0040] All shapes on net VDD are connected."
+    # If a future OpenROAD changes the wording (e.g. quotes the net name
+    # like `net "VDD"`), this won't match and overall_status will flag the
+    # run BLOCKED. If you upgrade OpenROAD and every IR run goes BLOCKED,
+    # check the actual PSM-0040 wording in ir_drop.openroad.log first.
     if re.search(rf"PSM-0040.*net {net}\b", log_text):
         return "PSM-0040: grid connected"
     return "unknown"
@@ -198,9 +216,12 @@ def format_report(module: str, vdd: float, budget_frac: float,
         )
         lines.append("")
 
+    # Emit both mV and % so the worst_*/budget_* pair stays in matched
+    # units regardless of which the reader compares against.
     lines.append(
-        f"SUMMARY: module={module} worst_vdrop={worst_v*1000:.3f}mV "
-        f"worst_pct={worst_pct:.3f}% budget_mV={budget_v*1000:.2f} "
+        f"SUMMARY: module={module} "
+        f"worst_vdrop={worst_v*1000:.3f}mV worst_pct={worst_pct:.3f}% "
+        f"budget_mV={budget_v*1000:.2f} budget_pct={budget_frac*100:.3f}% "
         f"activity={activity} status={overall}"
     )
     return "\n".join(lines) + "\n"

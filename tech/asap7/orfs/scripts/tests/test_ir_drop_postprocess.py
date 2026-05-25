@@ -51,6 +51,18 @@ def test_read_voltage_csv_parses_valid_rows(tmp_path):
     assert rows[0].voltage == 0.695
 
 
+def test_read_voltage_csv_rejects_unexpected_header(tmp_path):
+    # Hand-write a CSV with a renamed column to simulate a future psm
+    # format change. _csv() uses the canonical header, so write directly.
+    p = tmp_path / "v.csv"
+    p.write_text(
+        "Instance,Terminal,Metal,X location,Y location,Voltage\n"
+        "u/A,VDD,M1,1.0,2.0,0.695\n"
+    )
+    with pytest.raises(ValueError, match="unexpected psm CSV header"):
+        list(read_voltage_csv(p))
+
+
 def test_read_voltage_csv_skips_malformed(tmp_path):
     p = _csv(tmp_path, "v.csv", [
         "u_inst/A,VDD,M1,1.0,2.0,0.695",
