@@ -299,7 +299,7 @@ ship broken silicon if left unaddressed.
 - [x] `antenna_check.sh` — one-command antenna sign-off for an
       ORFS-routed module. Reads tech + stdcell + macro LEFs and the
       post-route ODB, runs `check_antennas`, writes
-      `build/orfs/reports/asap7/<module>/antenna.log`. Exit 0 / 2 / 4
+      `build/orfs/reports/asap7/<module>/base/antenna.log`. Exit 0 / 2 / 4
       mean clean / violations / vacuous (no PDK rules). See
       `tech/asap7/PDK_GAPS.md`.
 - [x] `orfs/ir_drop.sh <module> [--budget F] [--activity A]` — static

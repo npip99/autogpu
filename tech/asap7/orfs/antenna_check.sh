@@ -34,7 +34,7 @@
 # tape-out gate — predictive numbers don't bind a foundry.
 #
 # Outputs:
-#   build/orfs/reports/asap7/<module>/antenna.log — full report
+#   build/orfs/reports/asap7/<module>/base/antenna.log — full report
 #   stdout — single-line summary
 #
 # Exit codes:
@@ -60,7 +60,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CONFIG_FILE="$SCRIPT_DIR/${MODULE}.config.mk"
 RESULTS_HOST="$REPO_ROOT/build/orfs/results/asap7/$MODULE/base"
-REPORT_DIR_HOST="$REPO_ROOT/build/orfs/reports/asap7/$MODULE"
+REPORT_DIR_HOST="$REPO_ROOT/build/orfs/reports/asap7/$MODULE/base"
 REPORT_HOST="$REPORT_DIR_HOST/antenna.log"
 ODB_HOST="$RESULTS_HOST/6_final.odb"
 
@@ -130,7 +130,7 @@ if [[ "$WITH_OVERLAY" == "1" ]]; then
 fi
 
 ODB_GUEST=/work/build/orfs/results/asap7/$MODULE/base/6_final.odb
-REPORT_GUEST=/work/build/orfs/reports/asap7/$MODULE/antenna.log
+REPORT_GUEST=/work/build/orfs/reports/asap7/$MODULE/base/antenna.log
 
 if [[ "$WITH_OVERLAY" == "1" ]]; then
     echo "antenna_check: $MODULE — running check_antennas with PREDICTIVE overlay against $ODB_HOST"
