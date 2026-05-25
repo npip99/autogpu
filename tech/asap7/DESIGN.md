@@ -311,3 +311,35 @@ ship broken silicon if left unaddressed.
       The `.log` ends with a one-line `SUMMARY:` for grepping. Failing
       instances (above budget) are listed by name + (x,y) + layer.
       Activity factor and supply voltage are documented in every report.
+
+### Sign-off tool exit-code conventions
+
+Each sign-off tool defines its own exit-code contract. The codes overlap
+numerically but encode different distinctions per tool — a future
+aggregator that runs several tools needs a per-tool mapping table to
+arrive at a single tape-out verdict.
+
+| exit | `verify_macro_power.tcl` | `antenna_check.sh`        | `ir_drop.sh`           |
+|------|--------------------------|---------------------------|------------------------|
+| 0    | CLEAN                    | CLEAN                     | PASS                   |
+| 1    | (real PDN bug)           | usage / artifact missing  | FAIL (Vdrop > budget)  |
+| 2    | —                        | VIOLATIONS                | BLOCKED (PSM-0069)     |
+| 3    | —                        | openroad invocation failed| tool / env failure     |
+| 4    | —                        | VACUOUS PASS (no PDK rules)| —                     |
+
+Why they differ (not a bug, but worth knowing):
+
+- `antenna_check.sh` has the extra **VACUOUS PASS** state because the
+  asap7 platform LEF ships with zero antenna properties; "0 violations"
+  is meaningless without rules and must be distinguished from a real
+  clean. There is no FAIL/BLOCKED distinction because the check itself
+  cannot tell those apart — any non-zero violation count is FAIL.
+- `ir_drop.sh` distinguishes **FAIL** (Vdrop computed and over budget,
+  fix the PDN density) from **BLOCKED** (psm couldn't compute Vdrop
+  because the grid is disconnected via PSM-0069, fix the PDN
+  *connectivity* — see A1). The remediation paths are different so the
+  exit codes have to be.
+
+Treat **exit 0 = green** as the only cross-tool invariant. Anything
+non-zero needs per-tool interpretation. When a tape-out aggregator
+script exists, the mapping above is its source of truth.
