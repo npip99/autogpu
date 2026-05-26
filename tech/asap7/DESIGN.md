@@ -159,27 +159,25 @@ wires but the worst-path WNS doesn't move — buffers added to non-worst
 paths only. We reproduced this on a 4×4 compute_array (`compute_array_tiny`)
 where total wire length is <500 µm, confirming it isn't wire delay.
 
-Current workaround: `HOLD_SLACK_MARGIN = -200` in
-`compute_array_tiny_bcast0.config.mk`. Tells `repair_timing` to terminate
-when hold violations are within 200 ps of zero instead of fighting to
-close them. The flow completes; the GDS is physically valid but ships
-~200 ps of negative hold slack — broadcast paths from `cmd_unit` to
-`skew_lane` would race ahead of the receiving clock edge on real
-silicon. Acceptable for renderable-GDS work in this repo; **not** for
-tape-out.
+Historic workarounds (now superseded by the A2 fix below — kept for
+contributors hitting the same shape on a different design):
 
-An older variant (`compute_array_clk1000.config.mk`) still uses the
-heavier `SKIP_CTS_REPAIR_TIMING=1` sledgehammer; the user has rejected
-that approach for tape-out work, so prefer `HOLD_SLACK_MARGIN` for any
-new variant.
+- `HOLD_SLACK_MARGIN = -200`: tells `repair_timing` to terminate when
+  hold violations are within 200 ps of zero. Flow completes but ships
+  ~200 ps of negative hold slack; chip would race on silicon. Was the
+  interim mitigation on `compute_array_tiny_bcast0` until A2.
+- `SKIP_CTS_REPAIR_TIMING = 1`: the heavier sledgehammer
+  `compute_array_clk1000.config.mk` still uses for sweep experiments.
+  Skips hold-fix entirely. The user has rejected this for tape-out
+  work; prefer the structural fix below for any new design.
 
-What would actually fix this (see `tech/asap7/problems/A2_hold_timing_rtl.md`
-for the active problem spec):
+Alternatives that would fix this structurally on other designs (the A2
+fix is the **RTL pipeline** option; the rest are listed for completeness):
 
-- **RTL pipeline** between `cmd_unit` and the `skew_lane` macros in
+- **RTL pipeline** between `cmd_unit` and `skew_lane` macros in
   `compute_array.sv`. Adds 1 cycle of issue latency; turns hold paths
   from macro-to-macro combinational into flop-to-flop with a full cycle
-  of breathing room. Cleanest in-repo path.
+  of breathing room. **This is the A2 fix — see next subsection.**
 - **Hierarchical CTS methodology** with leaf-level
   `set_clock_source_latency` matched across all leaves + top-level CTS
   compensation. ORFS doesn't automate this — typically a commercial-tool
@@ -189,8 +187,6 @@ for the active problem spec):
 - **Re-harden leaves with output flops** to absorb the hold time, then
   let parent route their now-relaxed-timing outputs. Substantial RTL work
   on every leaf.
-
-For now, the workaround stays in place; the active fix is tracked in A2.
 
 ### Mitigation in production: `BCAST_PIPE=1` + 2500 ps clock
 
