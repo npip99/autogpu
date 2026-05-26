@@ -21,7 +21,8 @@ matplotlib.use("Agg")
 import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 
-# Repo layout.
+# Repo layout. Derive from this file's location instead of hardcoding,
+# so checkout-of-the-repo to another path "just works".
 REPO = Path(__file__).resolve().parents[4]
 RESULTS = REPO / "build/orfs/results/asap7"
 OUT_DIR = REPO / "tech/asap7/orfs"

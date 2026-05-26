@@ -225,6 +225,7 @@ tech/asap7/
     ├── run.sh                      driver: docker → openroad/orfs (build flow)
     ├── antenna_check.sh            post-route antenna sign-off (A4)
     ├── ir_drop.sh                  post-route IR-drop sign-off (A5)
+    ├── lvs.sh                      post-route cell-instance LVS (A3)
     ├── <module>.config.mk          one per module (mac_tmem_cell, compute_array, ...)
     ├── <module>.sdc                clock + IO constraints
     ├── compute_array.pdn.tcl       custom channel-aligned PDN
@@ -244,6 +245,7 @@ tech/asap7/
         ├── ir_drop.tcl                     OpenROAD-side IR-drop driver
         ├── _ir_drop_env.mk                 ORFS env probe (include-only make file)
         ├── ir_drop_postprocess.py          IR-drop CSV → sign-off report
+        ├── lvs.py                          KLayout cell-instance LVS impl
         └── tests/
             ├── test_inject_antenna_gate_area.py
             └── test_ir_drop_postprocess.py
@@ -302,8 +304,13 @@ ship broken silicon if left unaddressed.
 
 ### Sign-off gaps (chip might not be verifiable as correct)
 
-- [ ] **No LVS.** Magic + netgen with asap7 is not set up. Currently no
-      schematic-vs-layout equivalence at any level.
+- [~] **LVS — cell-instance level shipped, transistor-level blocked.**
+      `tech/asap7/orfs/lvs.sh <module>` runs a KLayout-based equivalence
+      check on the post-route GDS vs. `6_final.v` for any hardened
+      block, treating standard cells and hardened macros as black-box
+      subcircuits. See "LVS infrastructure" below for what it catches
+      (and what the asap7 PDK gap — no transistor-level rule deck —
+      prevents).
 - [~] **Antenna sign-off — tooling shipped, PDK gap blocks.**
       `tech/asap7/orfs/antenna_check.sh <module>` invokes OpenROAD's
       `check_antennas` against the routed ODB and writes a per-module
@@ -356,6 +363,7 @@ ship broken silicon if left unaddressed.
       The `.log` ends with a one-line `SUMMARY:` for grepping. Failing
       instances (above budget) are listed by name + (x,y) + layer.
       Activity factor and supply voltage are documented in every report.
+- [x] `orfs/lvs.sh` — cell-instance LVS. See "LVS infrastructure" below.
 
 ### Sign-off tool exit-code conventions
 
@@ -364,13 +372,13 @@ numerically but encode different distinctions per tool — a future
 aggregator that runs several tools needs a per-tool mapping table to
 arrive at a single tape-out verdict.
 
-| exit | `verify_macro_power.tcl` | `antenna_check.sh`        | `ir_drop.sh`           |
-|------|--------------------------|---------------------------|------------------------|
-| 0    | CLEAN                    | CLEAN                     | PASS                   |
-| 1    | (real PDN bug)           | usage / artifact missing  | FAIL (Vdrop > budget)  |
-| 2    | —                        | VIOLATIONS                | BLOCKED (PSM-0069)     |
-| 3    | —                        | openroad invocation failed| tool / env failure     |
-| 4    | —                        | VACUOUS PASS (no PDK rules)| —                     |
+| exit | `verify_macro_power.tcl` | `antenna_check.sh`        | `ir_drop.sh`           | `lvs.sh`               |
+|------|--------------------------|---------------------------|------------------------|------------------------|
+| 0    | CLEAN                    | CLEAN                     | PASS                   | CLEAN                  |
+| 1    | (real PDN bug)           | usage / artifact missing  | FAIL (Vdrop > budget)  | FAIL (mismatch)        |
+| 2    | —                        | VIOLATIONS                | BLOCKED (PSM-0069)     | config / artifact error|
+| 3    | —                        | openroad invocation failed| tool / env failure     | —                      |
+| 4    | —                        | VACUOUS PASS (no PDK rules)| —                     | —                      |
 
 Why they differ (not a bug, but worth knowing):
 
@@ -384,7 +392,122 @@ Why they differ (not a bug, but worth knowing):
   because the grid is disconnected via PSM-0069, fix the PDN
   *connectivity* — see A1). The remediation paths are different so the
   exit codes have to be.
+- `lvs.sh` uses exit 2 for "config / artifact error" (missing GDS or
+  Verilog input), not for a tape-out-relevant pass/fail state. Its
+  pass/fail is binary at the cell-instance level: clean (0) or mismatch
+  (1). The PDN power-pin check is folded into the mismatch verdict.
 
 Treat **exit 0 = green** as the only cross-tool invariant. Anything
 non-zero needs per-tool interpretation. When a tape-out aggregator
 script exists, the mapping above is its source of truth.
+
+## LVS infrastructure
+
+`tech/asap7/orfs/lvs.sh <module>` runs a Layout-vs-Schematic check on a
+hardened block. Outputs exit code 0 on clean, nonzero on mismatch, and
+writes a report to `build/orfs/reports/asap7/<module>/base/lvs.log`.
+
+### What it does
+
+For a given module (e.g., `mac_tmem_cell`, `compute_array_tiny_bcast0`):
+
+1. Reads `build/orfs/results/asap7/<module>/base/6_final.gds`.
+2. Extracts a gate-level netlist from the GDS via KLayout's
+   `LayoutToNetlist`. Standard cells (`*_ASAP7_75t_*`) and hardened
+   macros are treated as black-box subcircuits — only the metal-stack
+   routing M1..M9 + via stack V1..V8 is traced, no transistor-level
+   extraction.
+3. Reads `6_final.v` and parses it into a `pya.Netlist` via a custom
+   structural-Verilog parser.
+4. Reconciles known asymmetries (physical-only cells in GDS but not
+   netlist, dangling CTS-load outputs, etc).
+5. Compares with `pya.NetlistComparer`.
+
+### What it catches
+
+Two independent checks must both pass to report LVS clean:
+
+1. **Structural cell-instance compare** (KLayout NetlistComparer)
+    - Misplaced or missing cells (GDS cell count ≠ Verilog instance count).
+    - Routing shorts and opens (two cell pins on the same M1 net where
+      the netlist says they should be separate, or vice versa).
+    - Pin swaps (a cell's `A` and `B` inputs wired the wrong way).
+    - Mis-routed buses (one bit of a bus connected to the wrong
+      destination).
+
+2. **Macro power-pin connectivity check**
+    - **Floating macro power pins** — the PSM-0069 failure mode. For
+      each subcircuit instance, the script verifies its VDD/VSS pins
+      land on a multi-fanout (global) net at the parent level. Any pin
+      on a 1-fanout dangling net flags a PDN bug. (This check has to
+      run *before* the structural simplify, which would otherwise purge
+      the dangling nets and mask the issue.)
+
+This sort of cleanly separates "did you wire the signal nets right?"
+(structural) from "did the PDN actually deliver power to every macro?"
+(PDN check).
+
+### What it does NOT catch (asap7 PDK gap — explicit limitation)
+
+- **Standard-cell-internal transistor-level bugs.** asap7 ships no
+  production-grade LVS rule deck:
+    - The volare-packaged asap7 has empty placeholder files at
+      `~/.volare/asap7/libs.tech/{magic,netgen}/*`
+    - `openroad/orfs:latest` does not have `magic` or `netgen` installed
+    - The ORFS asap7 platform dir has only `drc/` (DRC rules from
+      laurentc2), no `lvs/`
+    - KLayout LVS is installed (we use its `LayoutToNetlist`) but no
+      transistor-extraction rule deck exists for asap7 either
+  Writing one from scratch for production tape-out would mean porting
+  the asap7 LEF/GDS cell geometries into KLayout LVS DSL — a sizable
+  task and ultimately moot, since asap7 is itself an academic predictive
+  PDK with no fab path (see "Fundamental constraint" below).
+
+- **Stdcell substitution attacks.** If a stdcell GDS were swapped with
+  a malformed variant (same cell name, different transistor topology),
+  cell-instance LVS wouldn't notice. Out of scope; trust the PDK.
+
+### Hierarchy mode
+
+Cell-instance hierarchical: standard cells are black-box leaves; hardened
+macros (`mac_tmem_cell`, `skew_lane_a/b`, `cmd_unit` at compute_array
+level) are also black-box. At the leaf level, the lvs.sh on each
+hardened macro verifies that macro's own routing. At the parent level,
+those macros become black boxes so we only check the parent's routing.
+This is the same hierarchy mode used by commercial LVS flows for
+top-down tape-out sign-off — each level checks only what's new at that
+level.
+
+### Reproduction
+
+```bash
+# After the synthesis flow has produced 6_final.gds / .v:
+./tech/asap7/orfs/lvs.sh mac_tmem_cell                # PASS
+./tech/asap7/orfs/lvs.sh skew_lane_a                  # PASS
+./tech/asap7/orfs/lvs.sh skew_lane_b                  # PASS
+./tech/asap7/orfs/lvs.sh cmd_unit                     # PASS
+./tech/asap7/orfs/lvs.sh compute_array_tiny_bcast0    # FAIL (PSM-0069)
+```
+
+Uses the same `openroad/orfs:latest` Docker image as the synthesis
+flow; no additional tools required.
+
+The compute_array failure is the known PSM-0069 PDN bug (see
+"BLOCKER: PSM-0069 floating macro power pins" above) — the LVS PDN
+check independently rediscovered it (31 macro VDD/VSS pins land on
+dangling, single-fanout nets instead of the global VDD/VSS rail).
+After the A1 fix lands, this should report clean.
+
+### Files
+
+```
+tech/asap7/orfs/
+├── lvs.sh                          driver (this is what you invoke)
+├── scripts/
+│   └── lvs.py                      KLayout Python implementation
+└── ...
+build/orfs/reports/asap7/<module>/base/
+├── lvs.log                         full LVS report
+└── layout_netlist.cir              SPICE dump of the extracted netlist
+                                    (handy for grep / manual inspection)
+```
