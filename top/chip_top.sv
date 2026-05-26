@@ -19,10 +19,24 @@
 // cocotb end-to-end tests) and top/README.md for the future AXI4-Lite
 // plan.
 
+// MMA_{M,N,K} default to 32 but accept sv2v `-D MMA_M=...` overrides so
+// asap7 can harden a small (4×4) chip_top variant against the existing
+// hardened-leaf macros without rebuilding compute_array at 32×32. Same
+// pattern as compute_array.sv.
+`ifndef MMA_M
+`define MMA_M 32
+`endif
+`ifndef MMA_N
+`define MMA_N 32
+`endif
+`ifndef MMA_K
+`define MMA_K 32
+`endif
+
 module chip_top #(
-    parameter int MMA_M            = 32,
-    parameter int MMA_N            = 32,
-    parameter int MMA_K            = 32,
+    parameter int MMA_M            = `MMA_M,
+    parameter int MMA_N            = `MMA_N,
+    parameter int MMA_K            = `MMA_K,
     parameter int TMEM_SLOTS       = 4,
     parameter int SMEM_BYTES       = 16384,
     parameter int BEAT_BYTES       = 16,
@@ -268,6 +282,12 @@ module chip_top #(
     // column-major (stride = MMA_M bytes per column), B is row-major
     // (stride = MMA_N bytes per row), matching the old hardcoded mma.sv.
     // ------------------------------------------------------------------
+    // No parameter overrides: compute_array is consumed as a hardened
+    // LEF black-box at the asap7 chip_top harden, and yosys cannot pass
+    // parameter values into a LIB-only cell (it only knows the port
+    // interface, not the parameter declarations). The compute_array LEF
+    // is built with matching MMA_M/MMA_N/MMA_K/N_SLOTS values via the
+    // sv2v -D defines, so the port widths line up without overrides.
     compute_array u_compute_array (
         .clk             (clk),
         .reset           (chip_in_reset),
@@ -346,7 +366,11 @@ module chip_top #(
     // compute_array's accumulator row-by-row over the drain-stream
     // interface (Phase 7h-3).
     // ------------------------------------------------------------------
-    store u_store (
+    store #(
+        .MMA_M     (MMA_M),
+        .MMA_N     (MMA_N),
+        .BEAT_BYTES(BEAT_BYTES)
+    ) u_store (
         .clk             (clk),
         .reset           (chip_in_reset),
         .issue_en        (cp_store_en),
@@ -375,7 +399,12 @@ module chip_top #(
     // ------------------------------------------------------------------
     // SMEM (32 banks of sram_1rw).
     // ------------------------------------------------------------------
-    smem u_smem (
+    smem #(
+        .MMA_M     (MMA_M),
+        .MMA_N     (MMA_N),
+        .SMEM_BYTES(SMEM_BYTES),
+        .BEAT_BYTES(BEAT_BYTES)
+    ) u_smem (
         .clk        (clk),
         .reset      (chip_in_reset),
         .wr_en      (l_smem_wr_en),

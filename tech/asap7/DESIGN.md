@@ -192,13 +192,39 @@ tech/asap7/
 ├── render_layout.py                klayout PNG renderer (DEF or GDS)
 └── orfs/
     ├── run.sh                      driver: docker → openroad/orfs
-    ├── <module>.config.mk          one per module (mac_tmem_cell, compute_array, ...)
+    ├── <module>.config.mk          one per module (mac_tmem_cell, compute_array,
+    │                               cmdproc, smem, chip_top, …)
     ├── <module>.sdc                clock + IO constraints
     ├── compute_array.pdn.tcl       custom channel-aligned PDN
     ├── compute_array.macro_placement.tcl   1089 place_macro lines (auto-gen)
     ├── compute_array.floorplan_preview.png matplotlib preview (auto-gen)
+    ├── chip_top.config.mk          top-level integration (A6).
+    │                               First-pass uses compute_array_tiny_bcast0
+    │                               as the compute_array LEF (MMA_M=4 chip_top
+    │                               variant) — see "chip_top integration" below.
+    ├── chip_top.sdc                250 MHz clock (wire delay dominates
+    │                               at chip scale).
+    ├── chip_top.pdn.tcl            simple grid + M1/M2 followpins. Same
+    │                               PSM-0069 limitation as compute_array
+    │                               (no -macro grid welding rules yet).
+    ├── chip_top.macro_placement.tcl 37 place_macro lines (auto-gen) —
+    │                               1 compute_array + 4 hardened submods +
+    │                               32 inlined-smem fakeram banks.
+    ├── chip_top.floorplan_preview.png matplotlib preview (auto-gen)
     └── scripts/
         ├── gen_compute_array_floorplan.py  emit placement.tcl + preview.png
+        ├── gen_chip_top_floorplan.py       same, for chip_top (reads
+        │                                   submodule LEF dims, lays out
+        │                                   to a ~750×800 µm die).
+        ├── gen_lef_from_odb.tcl            re-emit LEF + LIB from an
+        ├── gen_lef.sh                      existing 6_final.odb without
+        │                                   re-running the full flow —
+        │                                   used to get chip_top's
+        │                                   submodule LEFs (cmdproc, load,
+        │                                   barrier, reset_seq,
+        │                                   compute_array_tiny) when the
+        │                                   original run skipped or failed
+        │                                   generate_abstract.
         ├── rewrite_abstract_lef.tcl        bloated abstract LEF
         ├── strip_lef_obs_layers.py         post-strip M6/M7 OBS
         └── render_odb.sh                   any ODB → PNG via klayout
@@ -246,11 +272,17 @@ ship broken silicon if left unaddressed.
 
 ### Integration gaps (chip is not fully assembled)
 
-- [ ] **chip_top not yet integrated.** No `chip_top.config.mk`, no SDC, no
-      floorplan, no IO ring. The full system (compute_array + smem +
-      tile_buf + cmdproc + load + store + barrier + reset_seq) has only
-      been built as separate hardened blocks. PSM-0069 will recur at
-      chip_top once it's added — same macro-grid fix applies.
+- [x] **chip_top integrated as first-pass.** A6 landed
+      `chip_top.config.mk` + `.sdc` + `.pdn.tcl` +
+      `scripts/gen_chip_top_floorplan.py` + macro_placement.tcl. Uses
+      `compute_array_tiny_bcast0` (4×4 mac grid, the only compute_array
+      variant that completed routing on asap7) as the compute_array
+      black-box, with chip_top synthesized at MMA_M=MMA_N=MMA_K=4. cmdproc,
+      load, barrier, reset_seq, and the compute_array variant are
+      hardened LEFs; smem is inlined → 32 fakeram7_256x32 banks; store is
+      inlined → flat FF logic. Die: ~750 × 800 µm. Still open: full-size
+      (MMA_M=32) chip_top depends on A1+A2 closing compute_array. See
+      "chip_top integration (A6)" section below for caveats.
 
 - [ ] **No IO pads / pad ring.** The ORFS asap7 platform doesn't ship pad
       cells. Tape-out needs pads (or a wafer-level format without them).
@@ -280,3 +312,76 @@ ship broken silicon if left unaddressed.
       after every parent-level run: `openroad -exit -db <path>/6_final.odb
       scripts/verify_macro_power.tcl`. Exit 0 = clean, exit 1 = real PDN
       bug. Caught PSM-0069 as a real bug rather than tool artifact.
+
+- [x] `scripts/gen_lef_from_odb.tcl` + `gen_lef.sh` — re-emit a leaf's
+      LEF + timing LIB from an existing `6_final.odb` without re-running
+      the whole flow. Used in A6 to harvest LEFs for `cmdproc`, `load`,
+      `barrier`, `reset_seq`, and `compute_array_tiny_bcast0` whose
+      original runs reached layout but skipped or failed
+      `generate_abstract`. Wraps `write_abstract_lef -bloat_occupied_layers`
+      and `write_timing_model` with the asap7 standard cell + RVT_TT
+      liberty files preloaded; then runs `strip_lef_obs_layers.py` to
+      strip M1/M2/M5/M6/M7 OBS so parent stripes can pass over.
+
+## chip_top integration (A6)
+
+First-pass `chip_top.config.mk` hardens a 4×4 (MMA_M=MMA_N=MMA_K=4)
+chip_top against the `compute_array_tiny_bcast0` LEF. The 32×32 version
+needs A1's PSM-0069 fix on `compute_array.pdn.tcl` *and* A2's hold
+closure before its `compute_array.lef` will exist.
+
+### Why MMA=4 not 32
+
+`compute_array_tiny_bcast0` is the only compute_array variant whose
+routing completed. The full 32×32 (`compute_array`) stops at the CTS
+hold-repair runaway (RSZ-0060); all `compute_array_bcastN` and
+`compute_array_clkN` variants stalled in the same place. The tiny LEF
+has MMA_M=4 port widths (rd_a_data[31:0] vs full's [255:0]), so
+chip_top must match. `chip_top.sv` got `\`ifndef MMA_M / \`define
+MMA_M 32 / \`endif` guards (mirroring the `compute_array.sv` pattern)
+plus explicit parameter passing on every submodule instantiation, so
+`sv2v -D MMA_M=4` is sufficient to specialize the whole netlist.
+
+Once compute_array hardens cleanly at 32×32, the same config files
+work — bump `MMA_DIM=32` on the sv2v target, swap
+`compute_array_tiny_bcast0` → `compute_array` in chip_top.config.mk's
+`ADDITIONAL_LEFS`/`LIBS`/`GDS`, and re-run `gen_chip_top_floorplan.py`.
+
+### What chip_top consumes
+
+| Submodule    | At chip_top                    | Source                                |
+|--------------|--------------------------------|---------------------------------------|
+| compute_array| hardened LEF (tiny)            | `compute_array_tiny_bcast0/base/`     |
+| cmdproc      | hardened LEF                   | `cmdproc/base/` (via `gen_lef.sh`)    |
+| load         | hardened LEF                   | `load/base/` (via `gen_lef.sh`)       |
+| barrier      | hardened LEF                   | `barrier/base/` (via `gen_lef.sh`)    |
+| reset_seq    | hardened LEF                   | `reset_seq/base/` (via `gen_lef.sh`)  |
+| smem         | inlined → 32 fakeram macros    | `fakeram7_256x32` from asap7 platform |
+| store        | inlined (FF logic only)        | RTL                                   |
+| tile_buf_8row| inlined inside store           | RTL (LEF ROW_W mismatch at MMA=4)     |
+
+### Known caveats at chip_top first-pass
+
+1. **PSM-0069 propagates.** `chip_top.pdn.tcl` does NOT yet contain a
+   `-macro` grid that welds parent stripes to leaf-macro VDD/VSS pins,
+   so all 37 hardened-macro instances (1 compute_array + 4 sub-block +
+   32 fakeram) will have floating power. Documented; same fix as A1.
+2. **compute_array GDS is empty.** `compute_array_tiny_bcast0` never
+   reached the KLayout merge step (PSM-0069 failed the final report
+   first). `GDS_ALLOW_EMPTY=(fakeram.*|compute_array)` lets chip_top's
+   streamout produce a `chip_top.gds` with a stub for compute_array.
+   Replace once the merge runs cleanly.
+3. **`HOLD_SLACK_MARGIN=-200`** at chip_top, same as A2's workaround at
+   compute_array. Broadcast nets cmdproc→engines have the same
+   hierarchical-CTS-skew pattern.
+4. **No IO pads.** Top-level ports are die-edge pins. Pad ring is a
+   separate follow-up.
+
+### How to re-run
+
+```
+# After any compute_array (or other submodule) re-harden:
+uv run python tech/asap7/orfs/scripts/gen_chip_top_floorplan.py
+make -C tech/sky130 build/sv2v/chip_top_asap7_tiny.v   # or MMA_DIM=32
+./tech/asap7/orfs/run.sh chip_top
+```
