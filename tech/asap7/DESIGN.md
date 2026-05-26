@@ -203,19 +203,41 @@ PDN sections above):
 ```
 tech/asap7/
 ├── DESIGN.md                       (you are here)
+├── PDK_GAPS.md                     what asap7 ships without (antenna, LVS, diode, ...)
 ├── render_layout.py                klayout PNG renderer (DEF or GDS)
+├── problems/                       problem specs for outstanding work (A1..A6)
+│   ├── A1_pdn_macro_grid.md
+│   ├── A2_hold_timing_rtl.md
+│   ├── A3_lvs.md
+│   ├── A4_antenna.md
+│   ├── A5_ir_drop.md
+│   └── A6_chip_top.md
 └── orfs/
-    ├── run.sh                      driver: docker → openroad/orfs
+    ├── run.sh                      driver: docker → openroad/orfs (build flow)
+    ├── antenna_check.sh            post-route antenna sign-off (A4)
+    ├── ir_drop.sh                  post-route IR-drop sign-off (A5)
     ├── <module>.config.mk          one per module (mac_tmem_cell, compute_array, ...)
     ├── <module>.sdc                clock + IO constraints
     ├── compute_array.pdn.tcl       custom channel-aligned PDN
-    ├── compute_array.macro_placement.tcl   1089 place_macro lines (auto-gen)
-    ├── compute_array.floorplan_preview.png matplotlib preview (auto-gen)
+    ├── <module>.macro_placement.tcl  place_macro lines (auto-gen; also _tiny + smem variants)
+    ├── <module>.floorplan_preview.png  matplotlib preview (auto-gen, same variants)
+    ├── asap7_antenna_overlay.lef   predictive antenna rules (A4 overlay mode)
+    ├── noop_tapcell.tcl            suppresses tap cells inside macro channels
     └── scripts/
         ├── gen_compute_array_floorplan.py  emit placement.tcl + preview.png
+        ├── gen_smem_floorplan.py           same, for smem
         ├── rewrite_abstract_lef.tcl        bloated abstract LEF
-        ├── strip_lef_obs_layers.py         post-strip M6/M7 OBS
-        └── render_odb.sh                   any ODB → PNG via klayout
+        ├── strip_lef_obs_layers.py         post-strip M1/M2/M5/M6/M7 OBS
+        ├── render_odb.sh                   any ODB → PNG via klayout
+        ├── verify_macro_power.tcl          parent-PDN ↔ macro-pin connectivity check
+        ├── antenna_check.tcl               OpenROAD-side antenna-check driver
+        ├── inject_antenna_gate_area.py     LEF patcher used by antenna overlay mode
+        ├── ir_drop.tcl                     OpenROAD-side IR-drop driver
+        ├── _ir_drop_env.mk                 ORFS env probe (include-only make file)
+        ├── ir_drop_postprocess.py          IR-drop CSV → sign-off report
+        └── tests/
+            ├── test_inject_antenna_gate_area.py
+            └── test_ir_drop_postprocess.py
 ```
 
 Build artifacts (all gitignored, all under `build/`):
