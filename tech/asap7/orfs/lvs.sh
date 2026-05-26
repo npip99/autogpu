@@ -18,8 +18,10 @@
 #
 # Exit code: 0 = LVS clean, 1 = LVS fail, 2 = configuration error.
 #
-# Report: reports/asap7/<module>/lvs.log (plus a one-line summary on
-# stdout).
+# Report: reports/asap7/<module>/base/lvs.log (plus a one-line summary
+# on stdout). Path matches the ORFS convention used by ir_drop.sh and
+# antenna_check.sh so all sign-off reports live under the same
+# <module>/base/ subtree.
 set -e
 
 MODULE="${1:?usage: $0 <module> [--gds path] [--verilog path]}"
@@ -65,11 +67,11 @@ if [[ -f "$CFG" ]]; then
     [[ -n "$cfg_top" ]] && TOP_CELL="$cfg_top"
 fi
 
-REPORT_HOST="$REPO_ROOT/build/orfs/reports/asap7/$MODULE/lvs.log"
-REPORT_GUEST="/work/build/orfs/reports/asap7/$MODULE/lvs.log"
+REPORT_HOST="$REPO_ROOT/build/orfs/reports/asap7/$MODULE/base/lvs.log"
+REPORT_GUEST="/work/build/orfs/reports/asap7/$MODULE/base/lvs.log"
 mkdir -p "$(dirname "$REPORT_HOST")"
-NETLIST_OUT_HOST="$REPO_ROOT/build/orfs/reports/asap7/$MODULE/layout_netlist.cir"
-NETLIST_OUT_GUEST="/work/build/orfs/reports/asap7/$MODULE/layout_netlist.cir"
+NETLIST_OUT_HOST="$REPO_ROOT/build/orfs/reports/asap7/$MODULE/base/layout_netlist.cir"
+NETLIST_OUT_GUEST="/work/build/orfs/reports/asap7/$MODULE/base/layout_netlist.cir"
 
 # Translate host paths under $REPO_ROOT into the in-container /work prefix.
 # We mount the entire repo, plus the build tree, plus the script into

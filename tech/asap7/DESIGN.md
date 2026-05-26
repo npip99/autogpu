@@ -322,7 +322,7 @@ ship broken silicon if left unaddressed.
 
 `tech/asap7/orfs/lvs.sh <module>` runs a Layout-vs-Schematic check on a
 hardened block. Outputs exit code 0 on clean, nonzero on mismatch, and
-writes a report to `build/orfs/reports/asap7/<module>/lvs.log`.
+writes a report to `build/orfs/reports/asap7/<module>/base/lvs.log`.
 
 ### What it does
 
@@ -423,7 +423,7 @@ tech/asap7/orfs/
 ├── scripts/
 │   └── lvs.py                      KLayout Python implementation
 └── ...
-build/orfs/reports/asap7/<module>/
+build/orfs/reports/asap7/<module>/base/
 ├── lvs.log                         full LVS report
 └── layout_netlist.cir              SPICE dump of the extracted netlist
                                     (handy for grep / manual inspection)
