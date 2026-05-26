@@ -1,5 +1,13 @@
 # A1 — PDN macro-grid fix (PSM-0069 floating macro power pins)
 
+> **Status: RESOLVED.** Fixed by adding a `define_pdn_grid -macro`
+> + `add_pdn_connect -grid macro_grid -layers {M5 M6}` and `{M6 M7}` to
+> `tech/asap7/orfs/compute_array.pdn.tcl`. Post-fix:
+> `verify_macro_power.tcl` reports `ok=264 fail=0` on
+> `compute_array_tiny_bcast0` and `ok=12752 fail=0` on the full 32×32
+> `compute_array` post-PDN ODB. Kept here as historical context for
+> future contributors investigating PSM-0069-class bugs.
+
 ## Problem
 
 After running `compute_array_tiny_bcast0` through ORFS with the existing
