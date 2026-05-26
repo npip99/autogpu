@@ -3,6 +3,15 @@
 What was learned hardening this repo on asap7 with OpenROAD-flow-scripts.
 Read before designing a new module or changing the hierarchy.
 
+> **Maintaining this doc.** Update DESIGN.md in the same PR whenever you:
+> add or remove a script under `tech/asap7/`, change a workaround
+> (e.g. swap `SKIP_CTS_REPAIR_TIMING` for `HOLD_SLACK_MARGIN`), add or
+> retire an ORFS-knob override, ship a new sign-off tool, or add /
+> resolve a `problems/` entry. The File map and "Known issues / TODO
+> toward tape-out" sections rot fastest; check those first. A stale
+> DESIGN.md sends future-you (and reviewers) chasing patterns that no
+> longer exist.
+
 ## Toolchain
 
 - **Flow**: ORFS (`openroad/orfs:latest` Docker image), invoked from
@@ -150,24 +159,38 @@ wires but the worst-path WNS doesn't move — buffers added to non-worst
 paths only. We reproduced this on a 4×4 compute_array (`compute_array_tiny`)
 where total wire length is <500 µm, confirming it isn't wire delay.
 
-Workaround used: `SKIP_CTS_REPAIR_TIMING=1` in compute_array's config.mk.
-The flow completes; the GDS is physically valid but has hold violations
-in PVT corners. Acceptable for proof-of-concept renderable GDS; not for
-real silicon.
+Current workaround: `HOLD_SLACK_MARGIN = -200` in
+`compute_array_tiny_bcast0.config.mk`. Tells `repair_timing` to terminate
+when hold violations are within 200 ps of zero instead of fighting to
+close them. The flow completes; the GDS is physically valid but ships
+~200 ps of negative hold slack — broadcast paths from `cmd_unit` to
+`skew_lane` would race ahead of the receiving clock edge on real
+silicon. Acceptable for renderable-GDS work in this repo; **not** for
+tape-out.
 
-What would actually fix this:
+An older variant (`compute_array_clk1000.config.mk`) still uses the
+heavier `SKIP_CTS_REPAIR_TIMING=1` sledgehammer; the user has rejected
+that approach for tape-out work, so prefer `HOLD_SLACK_MARGIN` for any
+new variant.
 
-- **Hierarchical CTS methodology** with leaf-level `set_clock_source_latency`
-  matched across all leaves + top-level CTS compensation. ORFS doesn't
-  automate this — typically a commercial-tool (Synopsys ICC2, Cadence
-  Innovus) capability.
+What would actually fix this (see `tech/asap7/problems/A2_hold_timing_rtl.md`
+for the active problem spec):
+
+- **RTL pipeline** between `cmd_unit` and the `skew_lane` macros in
+  `compute_array.sv`. Adds 1 cycle of issue latency; turns hold paths
+  from macro-to-macro combinational into flop-to-flop with a full cycle
+  of breathing room. Cleanest in-repo path.
+- **Hierarchical CTS methodology** with leaf-level
+  `set_clock_source_latency` matched across all leaves + top-level CTS
+  compensation. ORFS doesn't automate this — typically a commercial-tool
+  (Synopsys ICC2, Cadence Innovus) capability.
 - **Flatten the hierarchy** — let ORFS do flat CTS over all 50K+ stdcells.
   Loses all the value of hierarchical hardening (long ABC, long route).
 - **Re-harden leaves with output flops** to absorb the hold time, then
   let parent route their now-relaxed-timing outputs. Substantial RTL work
   on every leaf.
 
-For now, document the limitation and ship the GDS with the skip flag.
+For now, the workaround stays in place; the active fix is tracked in A2.
 
 ## ORFS knobs we override
 
@@ -189,19 +212,41 @@ PDN sections above):
 ```
 tech/asap7/
 ├── DESIGN.md                       (you are here)
+├── PDK_GAPS.md                     what asap7 ships without (antenna, LVS, diode, ...)
 ├── render_layout.py                klayout PNG renderer (DEF or GDS)
+├── problems/                       problem specs for outstanding work (A1..A6)
+│   ├── A1_pdn_macro_grid.md
+│   ├── A2_hold_timing_rtl.md
+│   ├── A3_lvs.md
+│   ├── A4_antenna.md
+│   ├── A5_ir_drop.md
+│   └── A6_chip_top.md
 └── orfs/
-    ├── run.sh                      driver: docker → openroad/orfs
+    ├── run.sh                      driver: docker → openroad/orfs (build flow)
+    ├── antenna_check.sh            post-route antenna sign-off (A4)
+    ├── ir_drop.sh                  post-route IR-drop sign-off (A5)
     ├── <module>.config.mk          one per module (mac_tmem_cell, compute_array, ...)
     ├── <module>.sdc                clock + IO constraints
     ├── compute_array.pdn.tcl       custom channel-aligned PDN
-    ├── compute_array.macro_placement.tcl   1089 place_macro lines (auto-gen)
-    ├── compute_array.floorplan_preview.png matplotlib preview (auto-gen)
+    ├── <module>.macro_placement.tcl  place_macro lines (auto-gen; also _tiny + smem variants)
+    ├── <module>.floorplan_preview.png  matplotlib preview (auto-gen, same variants)
+    ├── asap7_antenna_overlay.lef   predictive antenna rules (A4 overlay mode)
+    ├── noop_tapcell.tcl            suppresses tap cells inside macro channels
     └── scripts/
         ├── gen_compute_array_floorplan.py  emit placement.tcl + preview.png
+        ├── gen_smem_floorplan.py           same, for smem
         ├── rewrite_abstract_lef.tcl        bloated abstract LEF
-        ├── strip_lef_obs_layers.py         post-strip M6/M7 OBS
-        └── render_odb.sh                   any ODB → PNG via klayout
+        ├── strip_lef_obs_layers.py         post-strip M1/M2/M5/M6/M7 OBS
+        ├── render_odb.sh                   any ODB → PNG via klayout
+        ├── verify_macro_power.tcl          parent-PDN ↔ macro-pin connectivity check
+        ├── antenna_check.tcl               OpenROAD-side antenna-check driver
+        ├── inject_antenna_gate_area.py     LEF patcher used by antenna overlay mode
+        ├── ir_drop.tcl                     OpenROAD-side IR-drop driver
+        ├── _ir_drop_env.mk                 ORFS env probe (include-only make file)
+        ├── ir_drop_postprocess.py          IR-drop CSV → sign-off report
+        └── tests/
+            ├── test_inject_antenna_gate_area.py
+            └── test_ir_drop_postprocess.py
 ```
 
 Build artifacts (all gitignored, all under `build/`):
@@ -299,7 +344,7 @@ ship broken silicon if left unaddressed.
 - [x] `antenna_check.sh` — one-command antenna sign-off for an
       ORFS-routed module. Reads tech + stdcell + macro LEFs and the
       post-route ODB, runs `check_antennas`, writes
-      `build/orfs/reports/asap7/<module>/antenna.log`. Exit 0 / 2 / 4
+      `build/orfs/reports/asap7/<module>/base/antenna.log`. Exit 0 / 2 / 4
       mean clean / violations / vacuous (no PDK rules). See
       `tech/asap7/PDK_GAPS.md`.
 - [x] `orfs/ir_drop.sh <module> [--budget F] [--activity A]` — static
@@ -311,3 +356,35 @@ ship broken silicon if left unaddressed.
       The `.log` ends with a one-line `SUMMARY:` for grepping. Failing
       instances (above budget) are listed by name + (x,y) + layer.
       Activity factor and supply voltage are documented in every report.
+
+### Sign-off tool exit-code conventions
+
+Each sign-off tool defines its own exit-code contract. The codes overlap
+numerically but encode different distinctions per tool — a future
+aggregator that runs several tools needs a per-tool mapping table to
+arrive at a single tape-out verdict.
+
+| exit | `verify_macro_power.tcl` | `antenna_check.sh`        | `ir_drop.sh`           |
+|------|--------------------------|---------------------------|------------------------|
+| 0    | CLEAN                    | CLEAN                     | PASS                   |
+| 1    | (real PDN bug)           | usage / artifact missing  | FAIL (Vdrop > budget)  |
+| 2    | —                        | VIOLATIONS                | BLOCKED (PSM-0069)     |
+| 3    | —                        | openroad invocation failed| tool / env failure     |
+| 4    | —                        | VACUOUS PASS (no PDK rules)| —                     |
+
+Why they differ (not a bug, but worth knowing):
+
+- `antenna_check.sh` has the extra **VACUOUS PASS** state because the
+  asap7 platform LEF ships with zero antenna properties; "0 violations"
+  is meaningless without rules and must be distinguished from a real
+  clean. There is no FAIL/BLOCKED distinction because the check itself
+  cannot tell those apart — any non-zero violation count is FAIL.
+- `ir_drop.sh` distinguishes **FAIL** (Vdrop computed and over budget,
+  fix the PDN density) from **BLOCKED** (psm couldn't compute Vdrop
+  because the grid is disconnected via PSM-0069, fix the PDN
+  *connectivity* — see A1). The remediation paths are different so the
+  exit codes have to be.
+
+Treat **exit 0 = green** as the only cross-tool invariant. Anything
+non-zero needs per-tool interpretation. When a tape-out aggregator
+script exists, the mapping above is its source of truth.
