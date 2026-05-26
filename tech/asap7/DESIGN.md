@@ -3,6 +3,15 @@
 What was learned hardening this repo on asap7 with OpenROAD-flow-scripts.
 Read before designing a new module or changing the hierarchy.
 
+> **Maintaining this doc.** Update DESIGN.md in the same PR whenever you:
+> add or remove a script under `tech/asap7/`, change a workaround
+> (e.g. swap `SKIP_CTS_REPAIR_TIMING` for `HOLD_SLACK_MARGIN`), add or
+> retire an ORFS-knob override, ship a new sign-off tool, or add /
+> resolve a `problems/` entry. The File map and "Known issues / TODO
+> toward tape-out" sections rot fastest; check those first. A stale
+> DESIGN.md sends future-you (and reviewers) chasing patterns that no
+> longer exist.
+
 ## Toolchain
 
 - **Flow**: ORFS (`openroad/orfs:latest` Docker image), invoked from
