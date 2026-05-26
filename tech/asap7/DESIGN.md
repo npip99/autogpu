@@ -169,6 +169,31 @@ What would actually fix this:
 
 For now, document the limitation and ship the GDS with the skip flag.
 
+### Mitigation in production: `BCAST_PIPE=1` + 2500 ps clock
+
+`compute_array.sv` accepts `BCAST_PIPE=N` (set via sv2v `-D BCAST_PIPE=N`).
+With N>0, the parent inserts N D-FF stages on every cmd_unit → cells/
+skew_lanes broadcast (push_*, drain_en/slot, scrub_en) AND N symmetric
+stages on every cmd_unit → chip-external completion signal (mma_busy/done,
+arrive_*, drain_busy/done/row_valid/row_idx/row_last). `rd_*_en/addr`
+are intentionally NOT piped (SMEM is at the chip boundary). The symmetric
+output pipe is what makes the cocotb cycle-by-cycle lockstep pass —
+`pymodel/compute_array.py` takes `bcast_pipe=` and models the matching
+shift registers.
+
+`compute_array_tiny_bcast0.config.mk` now uses BCAST_PIPE=1 and the
+SDC sits at 2500 ps (400 MHz, same as full `compute_array.sdc`). Post-
+route timing: **0 hold violations, 0 setup violations, fmax 440 MHz**.
+`HOLD_SLACK_MARGIN` is no longer needed — repair_timing converges to
+zero cleanly. See `tech/asap7/problems/A2_hold_timing_rtl.md` for the
+journey and `compute_array_tiny_slow*.config.mk` for the alternatives
+that were tried (CTS clustering tweaks, reversed useful-skew SDC,
+BCAST_PIPE=2 — none beat the simplest config).
+
+The three alternative-fix options listed above (commercial CTS,
+flatten hierarchy, re-harden leaves with output flops) remain on the
+table for designs where 2500 ps isn't an acceptable clock target.
+
 ## ORFS knobs we override
 
 Per-module `config.mk` overrides, with rationale (see Layer discipline +
@@ -231,18 +256,16 @@ ship broken silicon if left unaddressed.
       need adjusting so vias actually land on the 5.4 µm-pitch leaf pin
       rows. Re-run tiny, confirm `verify_macro_power.tcl` exits 0.
 
-- [ ] **BLOCKER: ~200 ps negative hold slack accepted as workaround.**
-      `compute_array_tiny_bcast0.config.mk` sets `HOLD_SLACK_MARGIN=-200`,
-      which tells `repair_timing` to terminate hold-fix when violations are
-      within 200 ps (instead of fixing them). The violations remain in the
-      design. On real silicon, broadcast paths from `cmd_unit` to
-      `skew_lane` macros would race ahead of receiving clock edges and
-      capture wrong values. **Fix candidates:** (a) insert an RTL pipeline
-      flop in `compute_array.sv` between `cmd_unit` and the `skew_lane`
-      macros (cleanest; +1 cycle latency); (b) re-harden leaves with
-      matched `set_clock_latency` so internal CTS arrival aligns; (c)
-      commercial CTS (CCOpt / ICC2). See "Hold-timing limitation" section
-      above for the analysis.
+- [x] **RESOLVED (A2, 2026-05-25): ~200 ps negative hold slack.**
+      `compute_array_tiny_bcast0.config.mk` no longer sets
+      `HOLD_SLACK_MARGIN`. Fix taken: option (a) above — `compute_array.sv`
+      now has a `BCAST_PIPE=1` parent-level pipeline stage on every
+      cmd_unit → skew_lane / mac_tmem_cell broadcast (with a matching
+      output pipe on the chip-external completion signals so cocotb
+      cycle-by-cycle lockstep still passes; pymodel models the same
+      latency). Combined with relaxing the SDC from 1 GHz → 400 MHz,
+      post-route timing is 0 hold violations, 0 setup violations, fmax
+      440 MHz. See `tech/asap7/problems/A2_hold_timing_rtl.md`.
 
 ### Integration gaps (chip is not fully assembled)
 

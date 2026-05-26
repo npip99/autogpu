@@ -55,4 +55,12 @@ N_SLOTS := $(shell python3 -c "import sys; sys.path.insert(0, '$(PWD)/..'); from
 
 COMPILE_ARGS += -GMMA_M=$(MMA_M) -GMMA_N=$(MMA_N) -GMMA_K=$(MMA_K) -GN_SLOTS=$(N_SLOTS)
 
+# Broadcast pipeline depth. Default 0 (no pipe, matches sky130 build).
+# Set BCAST_PIPE=N to verify parent-level pipeline functional behavior
+# under the same N used by tech/asap7 hardening configs. Pymodel reads
+# the env var to model the matching cycle latency.
+BCAST_PIPE ?= 0
+COMPILE_ARGS += -GBCAST_PIPE=$(BCAST_PIPE)
+export BCAST_PIPE
+
 include $(shell cocotb-config --makefiles)/Makefile.sim

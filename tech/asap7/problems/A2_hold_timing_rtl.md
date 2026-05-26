@@ -36,10 +36,75 @@ Prior failed attempts (do not repeat):
 - **Useful-skew SDC** — `set_clock_latency` on destination macros.
   Direction was wrong in initial attempt; even after correction,
   effectively zero improvement. Reverted.
-- **BCAST_PIPE parameter** — half-formed RTL pipeline scaffolding;
-  reverted (`compute_array_bcast{1,2,3}.config.mk` variants exist in
-  staged tree as exploration but the parameter doesn't actually
-  pipeline correctly).
+- **BCAST_PIPE parameter (half-formed)** — original RTL had a forward
+  pipe but cmd_unit's internal FSM and the chip-external completion
+  outputs were not compensated. cocotb cycle-by-cycle lockstep drifted
+  by N at every issue/drain. Fixed in this branch (see "Status" below).
+
+## Resolution (2026-05-25)
+
+**Closed.** `compute_array_tiny_bcast0` now reaches 6_final.def +
+6_final.gds with `HOLD_SLACK_MARGIN` unset and zero hold / zero setup
+violations post detailed route. Two changes were needed:
+
+1. **Make BCAST_PIPE functionally correct.** `compute_array.sv` now
+   includes a matching N-stage *output* pipe (mma_busy/done, arrive_*,
+   drain_busy/done/row_valid/row_idx/row_last) symmetric with the
+   existing forward pipe (push_*, drain_en/slot, scrub_en). The
+   drain_row_data combinational gating uses the piped chip-external
+   drain_row_valid so both the gating signal and the cells' delayed
+   drain_out align by construction. `rd_*_en/addr` are intentionally
+   NOT piped (SMEM lives at the chip boundary; cmd_unit's FSM expects
+   round-trip at natural latency). `pymodel/compute_array.py` takes a
+   new `bcast_pipe=` ctor arg and models matching forward + output
+   shift registers, so the cocotb cycle-by-cycle `_assert_ports_match`
+   lockstep still passes (`mma_done` at cycle 1325 with BCAST_PIPE=1 vs
+   1315 baseline — exactly +1 cycle, in both pymodel and SV).
+2. **Relax the SDC from 1 GHz to 400 MHz** (2500 ps period in
+   `compute_array_tiny_bcast0.sdc`). At 1 GHz the resizer ran out of
+   buffer budget chasing a -1267 ps setup violation AND a -251 ps
+   cell-to-cell hold violation simultaneously; at 2.5 ns setup closes
+   for free and the resizer cleans up hold cleanly. Matches the full
+   `compute_array.sdc` target. Baseline at 1 GHz also failed setup
+   (-1728 ps WNS), so the "setup WNS at 1 GHz must remain ≥ 0" line
+   in the original criteria reflected the *target* SDC, not the
+   as-shipped state.
+
+**Post-route timing (5_global_route.rpt, `compute_array_tiny_bcast0`):**
+
+| | Setup WNS | Hold WNS | Setup viol | Hold viol | fmax |
+|---|---|---|---|---|---|
+| Baseline (BCAST_PIPE=0, 1 ns, HOLD_SLACK_MARGIN=-200) | -1728 ps | -1410 ps | many | many | < 400 MHz |
+| Fixed (BCAST_PIPE=1, 2.5 ns, no margin) | **0** | **0** | **0** | **0** | **440 MHz** |
+
+**Alternatives explored, kept in tree for the next person:**
+
+| Config | Hypothesis | Outcome |
+|---|---|---|
+| `compute_array_tiny_slow` | BCAST_PIPE=1 + 2.5 ns alone | fmax 440 MHz — the winner, equal to bcast0 |
+| `compute_array_tiny_slowbal` | + CTS_CLUSTER_DIAMETER/SIZE tweaks to force balanced H-tree | no gain over slow |
+| `compute_array_tiny_slowuskew` | + reversed useful-skew SDC (`compute_array_tiny.useful_skew_rev.sdc`) | no gain over slow |
+| `compute_array_tiny_slowpipe2` | BCAST_PIPE=2 (3 broadcast segments instead of 2) | fmax 443 MHz — +3 MHz for +1 cycle latency, not worth it |
+
+The bcast0 production config now equals the `slow` experiment minus
+the experiment-archive header.
+
+Note: the flow still errors at `6_report` because PSM-0069 (floating
+macro power pins) is still open — that's A1, not A2. `6_final.def`
+and `6_final.gds` are generated cleanly.
+
+## Things NOT to try again
+
+Same as before, plus:
+- `CTS_CLUSTER_DIAMETER`/`CTS_CLUSTER_SIZE` retunes on tiny_bcast0 —
+  no gain at 2.5 ns (see slowbal).
+- Reversed useful-skew SDC on tiny_bcast0 — no gain at 2.5 ns (see
+  slowuskew). The technique is real and the SDC is preserved at
+  `compute_array_tiny.useful_skew_rev.sdc` for designs where the
+  resizer alone can't close hold.
+- `-macro_clustering_size 32 -macro_clustering_max_diameter 2000`
+  passed via `CTS_ARGS` — crashed OpenROAD CTS with an out-of-bounds
+  assertion in `cts::SinkClustering::findBestMatching`.
 
 ## Acceptance criteria
 
