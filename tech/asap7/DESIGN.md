@@ -338,16 +338,18 @@ ship broken silicon if left unaddressed.
       evaluate. `antenna_check.sh` distinguishes "clean" from "vacuous
       pass" via exit code 4. See `tech/asap7/PDK_GAPS.md` for the data
       that'd need to be added.
-- [~] **IR-drop sign-off — tooling shipped, parent-level re-run pending.**
+- [x] **IR-drop sign-off — passing at leaf + parent.**
       `tech/asap7/orfs/ir_drop.sh <module>` runs psm (analyze_power_grid)
       post-route with a documented activity factor (default 0.10) and
       reports worst-case Vdrop vs 10% of VDD. Exit 0=PASS, 1=FAIL
-      (Vdrop > budget), 2=BLOCKED (PSM-0069), 3=tool/env failure. Leaf
-      `mac_tmem_cell` passes (2.3 mV / 70 mV budget). The previous
-      A1-PDN-bug BLOCKED status on `compute_array_tiny_bcast0` is
-      resolved (see Hard blockers above); re-run after a fresh
-      compute_array route to capture the real Vdrop number. chip_top
-      doesn't yet exist (A6).
+      (Vdrop > budget), 2=BLOCKED (PSM-0069), 3=tool/env failure.
+      Confirmed results:
+        - `mac_tmem_cell`: VDD 2.3 mV, well under 70 mV budget.
+        - `compute_array_tiny_bcast0` (post-A1, post-A2, post-bit-reverse-fix
+          route): VDD 17.95 mV (2.56%), VSS 10.45 mV (1.49%) — both
+          `PSM-0040: grid connected`, OVERALL PASS at ~25% of budget.
+      chip_top doesn't yet exist (A6); will need its own run once A6
+      lands.
 
 ### Fundamental constraint (outside this repo's reach)
 
