@@ -329,7 +329,7 @@ module compute_array #(
                 .clk        (clk),
                 .reset      (reset),
                 .push_now   (push_now_piped),
-                .push_byte  (push_a_bytes_piped[(MMA_M-1-gi_a)*8 +: 8]),
+                .push_byte  (push_a_bytes_piped[gi_a*8 +: 8]),
                 .push_slot  (push_slot_piped),
                 .push_accum (push_accum_piped),
                 .tap_index  (gi_a[$clog2(SKEW_DEPTH)-1:0]),
@@ -362,7 +362,7 @@ module compute_array #(
                 .clk        (clk),
                 .reset      (reset),
                 .push_now   (push_now_piped),
-                .push_byte  (push_b_bytes_piped[(MMA_N-1-gj_b)*8 +: 8]),
+                .push_byte  (push_b_bytes_piped[gj_b*8 +: 8]),
                 // push_slot / push_accum: functionally unused on b-side
                 // (b-skew's edge_slot / edge_accum outputs are dangling — the
                 // cell grid takes slot/accum from a-skew, not from here).
