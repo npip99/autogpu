@@ -257,15 +257,33 @@ ship broken silicon if left unaddressed.
 
 ### Sign-off gaps (chip might not be verifiable as correct)
 
-- [x] **LVS (cell-instance level).** `tech/asap7/orfs/lvs.sh <module>`
-      runs a KLayout-based equivalence check on the post-route GDS vs.
-      `6_final.v` for any hardened block, treating standard cells and
-      hardened macros as black-box subcircuits. See "LVS infrastructure"
-      below for what it catches (and what the asap7 PDK gap prevents).
-- [ ] **No antenna sign-off.** Neither asserted nor verified.
-- [ ] **No IR-drop sign-off.** `psm` runs but we've been working around its
-      false-failure mode (which on inspection turned out to be a real
-      failure — see PSM-0069 above).
+- [~] **LVS — cell-instance level shipped, transistor-level blocked.**
+      `tech/asap7/orfs/lvs.sh <module>` runs a KLayout-based equivalence
+      check on the post-route GDS vs. `6_final.v` for any hardened
+      block, treating standard cells and hardened macros as black-box
+      subcircuits. See "LVS infrastructure" below for what it catches
+      (and what the asap7 PDK gap — no transistor-level rule deck —
+      prevents).
+- [~] **Antenna sign-off — tooling shipped, PDK gap blocks.**
+      `tech/asap7/orfs/antenna_check.sh <module>` invokes OpenROAD's
+      `check_antennas` against the routed ODB and writes a per-module
+      report. ORFS's `repair_antennas` is already integrated into
+      `global_route.tcl` and `detail_route.tcl` (defaults
+      `SKIP_ANTENNA_REPAIR*=0`), so any fix-up has already happened by
+      the time the check runs. **However**, the asap7 platform LEF has
+      *zero* antenna properties (no `ANTENNAGATEAREA` on stdcell pins,
+      no `ANTENNAAREARATIO` on M1..M9), so the check has nothing to
+      evaluate. `antenna_check.sh` distinguishes "clean" from "vacuous
+      pass" via exit code 4. See `tech/asap7/PDK_GAPS.md` for the data
+      that'd need to be added.
+- [~] **IR-drop sign-off — tooling shipped, blocked on PDN.**
+      `tech/asap7/orfs/ir_drop.sh <module>` runs psm (analyze_power_grid)
+      post-route with a documented activity factor (default 0.10) and
+      reports worst-case Vdrop vs 10% of VDD. Exit 0=PASS, 1=FAIL
+      (Vdrop > budget), 2=BLOCKED (PSM-0069), 3=tool/env failure. Leaf
+      `mac_tmem_cell` passes (2.3 mV / 70 mV budget).
+      `compute_array_tiny_bcast0` is BLOCKED on the A1 PDN bug; chip_top
+      doesn't yet exist (A6). Unblocks once PSM-0069 is fixed.
 
 ### Fundamental constraint (outside this repo's reach)
 
@@ -283,7 +301,21 @@ ship broken silicon if left unaddressed.
       after every parent-level run: `openroad -exit -db <path>/6_final.odb
       scripts/verify_macro_power.tcl`. Exit 0 = clean, exit 1 = real PDN
       bug. Caught PSM-0069 as a real bug rather than tool artifact.
-
+- [x] `antenna_check.sh` — one-command antenna sign-off for an
+      ORFS-routed module. Reads tech + stdcell + macro LEFs and the
+      post-route ODB, runs `check_antennas`, writes
+      `build/orfs/reports/asap7/<module>/antenna.log`. Exit 0 / 2 / 4
+      mean clean / violations / vacuous (no PDK rules). See
+      `tech/asap7/PDK_GAPS.md`.
+- [x] `orfs/ir_drop.sh <module> [--budget F] [--activity A]` — static
+      IR-drop sign-off via psm. Loads `6_final.odb` + `.spef`, runs
+      `report_power` with `set_power_activity -global -activity 0.10`
+      (default), then `analyze_power_grid -voltage_file -error_file` for
+      both nets at the asap7 typical corner (VDD=0.70 V). Outputs
+      `build/orfs/reports/asap7/<module>/base/{ir_drop.log,VDD_voltage.csv,VSS_voltage.csv,VDD_error.rpt,VSS_error.rpt}`.
+      The `.log` ends with a one-line `SUMMARY:` for grepping. Failing
+      instances (above budget) are listed by name + (x,y) + layer.
+      Activity factor and supply voltage are documented in every report.
 - [x] `orfs/lvs.sh` — cell-instance LVS. See next section.
 
 ## LVS infrastructure
