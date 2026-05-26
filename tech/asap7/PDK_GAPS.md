@@ -100,7 +100,7 @@ In priority order:
 
 - Mechanical correctness: reads tech + stdcell + macro LEFs, the
   routed ODB, runs `check_antennas -verbose -report_file …`, writes
-  `build/orfs/reports/asap7/<module>/antenna.log`.
+  `build/orfs/reports/asap7/<module>/base/antenna.log`.
 - Honest exit code: distinguishes CLEAN (rules exist and check passes),
   FAIL (rules exist and violations remain), and VACUOUS PASS (no rules
   in the PDK — sign-off impossible).
