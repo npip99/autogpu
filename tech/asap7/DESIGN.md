@@ -150,24 +150,38 @@ wires but the worst-path WNS doesn't move — buffers added to non-worst
 paths only. We reproduced this on a 4×4 compute_array (`compute_array_tiny`)
 where total wire length is <500 µm, confirming it isn't wire delay.
 
-Workaround used: `SKIP_CTS_REPAIR_TIMING=1` in compute_array's config.mk.
-The flow completes; the GDS is physically valid but has hold violations
-in PVT corners. Acceptable for proof-of-concept renderable GDS; not for
-real silicon.
+Current workaround: `HOLD_SLACK_MARGIN = -200` in
+`compute_array_tiny_bcast0.config.mk`. Tells `repair_timing` to terminate
+when hold violations are within 200 ps of zero instead of fighting to
+close them. The flow completes; the GDS is physically valid but ships
+~200 ps of negative hold slack — broadcast paths from `cmd_unit` to
+`skew_lane` would race ahead of the receiving clock edge on real
+silicon. Acceptable for renderable-GDS work in this repo; **not** for
+tape-out.
 
-What would actually fix this:
+An older variant (`compute_array_clk1000.config.mk`) still uses the
+heavier `SKIP_CTS_REPAIR_TIMING=1` sledgehammer; the user has rejected
+that approach for tape-out work, so prefer `HOLD_SLACK_MARGIN` for any
+new variant.
 
-- **Hierarchical CTS methodology** with leaf-level `set_clock_source_latency`
-  matched across all leaves + top-level CTS compensation. ORFS doesn't
-  automate this — typically a commercial-tool (Synopsys ICC2, Cadence
-  Innovus) capability.
+What would actually fix this (see `tech/asap7/problems/A2_hold_timing_rtl.md`
+for the active problem spec):
+
+- **RTL pipeline** between `cmd_unit` and the `skew_lane` macros in
+  `compute_array.sv`. Adds 1 cycle of issue latency; turns hold paths
+  from macro-to-macro combinational into flop-to-flop with a full cycle
+  of breathing room. Cleanest in-repo path.
+- **Hierarchical CTS methodology** with leaf-level
+  `set_clock_source_latency` matched across all leaves + top-level CTS
+  compensation. ORFS doesn't automate this — typically a commercial-tool
+  (Synopsys ICC2, Cadence Innovus) capability.
 - **Flatten the hierarchy** — let ORFS do flat CTS over all 50K+ stdcells.
   Loses all the value of hierarchical hardening (long ABC, long route).
 - **Re-harden leaves with output flops** to absorb the hold time, then
   let parent route their now-relaxed-timing outputs. Substantial RTL work
   on every leaf.
 
-For now, document the limitation and ship the GDS with the skip flag.
+For now, the workaround stays in place; the active fix is tracked in A2.
 
 ## ORFS knobs we override
 
