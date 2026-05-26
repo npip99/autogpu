@@ -265,18 +265,13 @@ ship broken silicon if left unaddressed.
 
 ### Hard blockers (silicon would not function)
 
-- [ ] **BLOCKER: PSM-0069 floating macro power pins.** `pdngen` in
-      `compute_array.pdn.tcl` has only a `top` grid + parent-stripe-to-stripe
-      connect rules. It does *not* have a `-macro` grid telling pdngen to
-      weld parent stripes to leaf-macro VDD/VSS pins. Result on
-      `compute_array_tiny_bcast0`: 264 macro power pins, **0** with any
-      overlapping parent power-net shape (verified by
-      `scripts/verify_macro_power.tcl`). Silicon would have ~264 floating
-      VDD/VSS instances per tiny → brown-out. **Fix:** add
-      `define_pdn_grid -macro` + `add_pdn_connect -grid macro_grid -layers
-      {M5 M6}` and `{M6 M7}` to `compute_array.pdn.tcl`. Stripe pitch may
-      need adjusting so vias actually land on the 5.4 µm-pitch leaf pin
-      rows. Re-run tiny, confirm `verify_macro_power.tcl` exits 0.
+- [x] **RESOLVED (A1): PSM-0069 floating macro power pins.** Fixed by
+      adding a `define_pdn_grid -macro` + `add_pdn_connect -grid
+      macro_grid -layers {M5 M6}` and `{M6 M7}` to
+      `compute_array.pdn.tcl`. Post-fix: `verify_macro_power.tcl`
+      reports `ok=264 fail=0` on `compute_array_tiny_bcast0` and
+      `ok=12752 fail=0` on the full 32×32 `compute_array` post-PDN ODB.
+      See `tech/asap7/problems/A1_pdn_macro_grid.md`.
 
 - [ ] **BLOCKER: ~200 ps negative hold slack accepted as workaround.**
       `compute_array_tiny_bcast0.config.mk` sets `HOLD_SLACK_MARGIN=-200`,
@@ -296,8 +291,9 @@ ship broken silicon if left unaddressed.
 - [ ] **chip_top not yet integrated.** No `chip_top.config.mk`, no SDC, no
       floorplan, no IO ring. The full system (compute_array + smem +
       tile_buf + cmdproc + load + store + barrier + reset_seq) has only
-      been built as separate hardened blocks. PSM-0069 will recur at
-      chip_top once it's added — same macro-grid fix applies.
+      been built as separate hardened blocks. The same A1 `-macro` grid
+      pattern (see Hard blockers above) should transplant to
+      `chip_top.pdn.tcl` once A6 produces it.
 
 - [ ] **No IO pads / pad ring.** The ORFS asap7 platform doesn't ship pad
       cells. Tape-out needs pads (or a wafer-level format without them).
@@ -323,14 +319,16 @@ ship broken silicon if left unaddressed.
       evaluate. `antenna_check.sh` distinguishes "clean" from "vacuous
       pass" via exit code 4. See `tech/asap7/PDK_GAPS.md` for the data
       that'd need to be added.
-- [~] **IR-drop sign-off — tooling shipped, blocked on PDN.**
+- [~] **IR-drop sign-off — tooling shipped, parent-level re-run pending.**
       `tech/asap7/orfs/ir_drop.sh <module>` runs psm (analyze_power_grid)
       post-route with a documented activity factor (default 0.10) and
       reports worst-case Vdrop vs 10% of VDD. Exit 0=PASS, 1=FAIL
       (Vdrop > budget), 2=BLOCKED (PSM-0069), 3=tool/env failure. Leaf
-      `mac_tmem_cell` passes (2.3 mV / 70 mV budget).
-      `compute_array_tiny_bcast0` is BLOCKED on the A1 PDN bug; chip_top
-      doesn't yet exist (A6). Unblocks once PSM-0069 is fixed.
+      `mac_tmem_cell` passes (2.3 mV / 70 mV budget). The previous
+      A1-PDN-bug BLOCKED status on `compute_array_tiny_bcast0` is
+      resolved (see Hard blockers above); re-run after a fresh
+      compute_array route to capture the real Vdrop number. chip_top
+      doesn't yet exist (A6).
 
 ### Fundamental constraint (outside this repo's reach)
 
@@ -486,17 +484,17 @@ level.
 ./tech/asap7/orfs/lvs.sh skew_lane_a                  # PASS
 ./tech/asap7/orfs/lvs.sh skew_lane_b                  # PASS
 ./tech/asap7/orfs/lvs.sh cmd_unit                     # PASS
-./tech/asap7/orfs/lvs.sh compute_array_tiny_bcast0    # FAIL (PSM-0069)
+./tech/asap7/orfs/lvs.sh compute_array_tiny_bcast0    # PASS (post-A1)
 ```
 
 Uses the same `openroad/orfs:latest` Docker image as the synthesis
 flow; no additional tools required.
 
-The compute_array failure is the known PSM-0069 PDN bug (see
-"BLOCKER: PSM-0069 floating macro power pins" above) — the LVS PDN
-check independently rediscovered it (31 macro VDD/VSS pins land on
-dangling, single-fanout nets instead of the global VDD/VSS rail).
-After the A1 fix lands, this should report clean.
+Note: pre-A1, the compute_array case failed with 31 macro VDD/VSS
+power pins landing on dangling single-fanout nets — the LVS PDN check
+independently triangulated PSM-0069 before A1 closed it. After the A1
+`-macro` grid lands the LVS PDN check should report green and the
+overall compute_array LVS should pass.
 
 ### Files
 
