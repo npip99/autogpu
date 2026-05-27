@@ -247,6 +247,7 @@ tech/asap7/
     ├── antenna_check.sh            post-route antenna sign-off (A4)
     ├── ir_drop.sh                  post-route IR-drop sign-off (A5)
     ├── lvs.sh                      post-route cell-instance LVS (A3)
+    ├── density_check.sh            metal-density early-warning vs PDK-swap bands
     ├── <module>.config.mk          one per module (mac_tmem_cell, compute_array, ...)
     ├── <module>.sdc                clock + IO constraints
     ├── compute_array.pdn.tcl       custom channel-aligned PDN
@@ -267,6 +268,7 @@ tech/asap7/
         ├── _ir_drop_env.mk                 ORFS env probe (include-only make file)
         ├── ir_drop_postprocess.py          IR-drop CSV → sign-off report
         ├── lvs.py                          KLayout cell-instance LVS impl
+        ├── density_check.py                KLayout per-layer global density measurement
         └── tests/
             ├── test_inject_antenna_gate_area.py
             └── test_ir_drop_postprocess.py
@@ -383,21 +385,29 @@ ship broken silicon if left unaddressed.
       instances (above budget) are listed by name + (x,y) + layer.
       Activity factor and supply voltage are documented in every report.
 - [x] `orfs/lvs.sh` — cell-instance LVS. See "LVS infrastructure" below.
-
-### Sign-off tool exit-code conventions
+- [x] `orfs/density_check.sh <module>` — metal-density early-warning
+      check. Walks `6_final.gds`, computes global density per layer
+      (M1..M9), compares to conservative PDK-swap-ready bands (20/70%
+      thin-mid metals, 20/80% upper, ASAP7's M5 = 15/90). Default bands
+      baked in; override with `--bands <tsv>`. Output:
+      `build/orfs/reports/asap7/<module>/base/density.log`. Exit 0 =
+      within bands, 1 = OVER max (re-floorplan), 3 = UNDER min (needs
+      fill at tape-out). 12-block sweep: 0 OVER, all UNDER (expected
+      for small leaves). See `PDK_GAPS.md` "Metal density / fill
+      sign-off" for the bands derivation + observed numbers.
 
 Each sign-off tool defines its own exit-code contract. The codes overlap
 numerically but encode different distinctions per tool — a future
 aggregator that runs several tools needs a per-tool mapping table to
 arrive at a single tape-out verdict.
 
-| exit | `verify_macro_power.tcl` | `antenna_check.sh`        | `ir_drop.sh`           | `lvs.sh`               |
-|------|--------------------------|---------------------------|------------------------|------------------------|
-| 0    | CLEAN                    | CLEAN                     | PASS                   | CLEAN                  |
-| 1    | (real PDN bug)           | usage / artifact missing  | FAIL (Vdrop > budget)  | FAIL (mismatch)        |
-| 2    | —                        | VIOLATIONS                | BLOCKED (PSM-0069)     | config / artifact error|
-| 3    | —                        | openroad invocation failed| tool / env failure     | —                      |
-| 4    | —                        | VACUOUS PASS (no PDK rules)| —                     | —                      |
+| exit | `verify_macro_power.tcl` | `antenna_check.sh`        | `ir_drop.sh`           | `lvs.sh`               | `density_check.sh`     |
+|------|--------------------------|---------------------------|------------------------|------------------------|------------------------|
+| 0    | CLEAN                    | CLEAN                     | PASS                   | CLEAN                  | WITHIN BANDS           |
+| 1    | (real PDN bug)           | usage / artifact missing  | FAIL (Vdrop > budget)  | FAIL (mismatch)        | OVER max (re-floorplan)|
+| 2    | —                        | VIOLATIONS                | BLOCKED (PSM-0069)     | config / artifact error| config / artifact error|
+| 3    | —                        | openroad invocation failed| tool / env failure     | —                      | UNDER min (needs fill) |
+| 4    | —                        | VACUOUS PASS (no PDK rules)| —                     | —                      | —                      |
 
 Why they differ (not a bug, but worth knowing):
 
