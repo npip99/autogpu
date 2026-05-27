@@ -86,6 +86,17 @@
 //   mutually exclusive with wr_en / rd_a_en / rd_b_en (chip_in_reset
 //   gates those off upstream).
 
+// `SMEM_BANK_WORDS — single source of truth for the smem_bank's
+// hardened depth. Duplicated as `ifndef/`define in both smem_bank.sv
+// (where it parameterizes the macro at harden time) and here in
+// smem.sv (where smem's NUM_WORDS_PER_BANK is sanity-checked against
+// it). Override one of these with `-D SMEM_BANK_WORDS=N` to change
+// the bank depth — but you MUST re-harden smem_bank to match, since
+// the hardened LEF is depth-frozen.
+`ifndef SMEM_BANK_WORDS
+`define SMEM_BANK_WORDS 128
+`endif
+
 module smem #(
     parameter int SMEM_BYTES = 16384,
     parameter int BEAT_BYTES = 16,
@@ -134,6 +145,18 @@ module smem #(
     localparam int NUM_BANKS          = 32;
     localparam int BYTES_PER_DWORD    = 4;
     localparam int NUM_WORDS_PER_BANK = SMEM_BYTES / NUM_BANKS / BYTES_PER_DWORD;
+
+    // SAFETY CHECK: smem_bank is hardened with `SMEM_BANK_WORDS = 128
+    // (see smem/smem_bank.sv). The macro's LEF only describes the
+    // resulting 128-deep address pinout; if smem.sv's derived
+    // NUM_WORDS_PER_BANK ever drifts away from 128 (e.g. SMEM_BYTES
+    // bumped without re-hardening smem_bank), the addresses smem.sv
+    // drives reach beyond the SRAM's actual depth and silently corrupt.
+    // Re-harden smem_bank with the new value if you change SMEM_BYTES.
+    if (NUM_WORDS_PER_BANK != `SMEM_BANK_WORDS) begin : smem_bank_words_mismatch
+        $error("smem_bank is hardened for %0d words but smem.sv computed NUM_WORDS_PER_BANK=%0d. Re-harden smem_bank (edit `SMEM_BANK_WORDS in smem_bank.sv and re-run ./tech/asap7/orfs/run.sh smem_bank).",
+               `SMEM_BANK_WORDS, NUM_WORDS_PER_BANK);
+    end
     localparam int BANK_BITS          = 5;
     localparam int WORD_BITS          = $clog2(NUM_WORDS_PER_BANK);
 
