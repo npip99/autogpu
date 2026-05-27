@@ -238,12 +238,47 @@ module chip_top #(
     assign smem_scrub_addr = {{(32 - $clog2(SMEM_SCRUB_DEPTH)){1'b0}}, smem_scrub_addr_narrow};
 
     // ------------------------------------------------------------------
+    // External-input synchronizers — qualifier sync + data passthrough.
+    //
+    // Both `instr_push_en/data` (from external instruction injection)
+    // and `mc_rd_valid/data` (from off-chip memory controller) are
+    // chip-pin inputs and assumed asynchronous to `clk`. Real silicon
+    // would race if they transition near a clock edge.
+    //
+    // Pattern: 2-flop synchronize the qualifier (single-bit control —
+    // _en / _valid), pass the data bus through directly. Contract on
+    // the external driver: data must be HELD stable for at least 2
+    // clk cycles after the qualifier deasserts (until the synchronized
+    // version reaches the consumer). The standard handshake equivalent
+    // for memory-mapped testers / DRAM controllers.
+    //
+    // ASYNC_REG="TRUE" hint mirrors the reset synchronizer above.
+    // ------------------------------------------------------------------
+    (* ASYNC_REG = "TRUE" *) logic instr_push_en_meta;
+    (* ASYNC_REG = "TRUE" *) logic instr_push_en_sync;
+    (* ASYNC_REG = "TRUE" *) logic mc_rd_valid_meta;
+    (* ASYNC_REG = "TRUE" *) logic mc_rd_valid_sync;
+    always_ff @(posedge clk or posedge reset_in) begin
+        if (reset_in) begin
+            instr_push_en_meta <= 1'b0;
+            instr_push_en_sync <= 1'b0;
+            mc_rd_valid_meta   <= 1'b0;
+            mc_rd_valid_sync   <= 1'b0;
+        end else begin
+            instr_push_en_meta <= instr_push_en;
+            instr_push_en_sync <= instr_push_en_meta;
+            mc_rd_valid_meta   <= mc_rd_valid;
+            mc_rd_valid_sync   <= mc_rd_valid_meta;
+        end
+    end
+
+    // ------------------------------------------------------------------
     // cmdproc
     // ------------------------------------------------------------------
     cmdproc u_cmdproc (
         .clk                 (clk),
         .reset               (chip_in_reset),
-        .push_en             (instr_push_en),
+        .push_en             (instr_push_en_sync),
         .push_instr          (instr_push_data),
 
         .load_busy           (l_busy),
@@ -348,7 +383,7 @@ module chip_top #(
         .gmem_rd_en    (l_gmem_rd_en),
         .gmem_rd_addr  (l_gmem_rd_addr),
         .gmem_rd_data  (mc_rd_data),
-        .gmem_rd_valid (mc_rd_valid),
+        .gmem_rd_valid (mc_rd_valid_sync),
         .smem_wr_en    (l_smem_wr_en),
         .smem_wr_addr  (l_smem_wr_addr),
         .smem_wr_data  (l_smem_wr_data),
