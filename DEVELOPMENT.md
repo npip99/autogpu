@@ -123,6 +123,13 @@ The fix: `await NextTimeStep()` after sampling, before the next iteration writes
 - Parameter constants live in `config.py` (Python-readable) and a generated `common/config.svh` (Verilog `define) — never hardcode `32`, `16`, etc. in module code.
 - pymodel output attributes are named after the SV port (e.g. `dut.sum` ↔ `py.sum`). Drives the same uniformity.
 
+## Path conventions
+
+- **Never hardcode absolute repo paths.** Scripts, configs, and TCL must resolve the repo root from their own location (e.g. `Path(__file__).resolve().parents[N]` in Python, `cd "$(dirname "${BASH_SOURCE[0]}")/.."` in shell, `[file dirname [info script]]` in TCL). The repo is checked out as `gpu`, `gpu2`, `gpu3`, … as parallel worktrees on the same host; a hardcoded `/home/ubuntu/pipitone/gpu2` in any script silently makes that script useless in any other worktree (or worse — quietly writes outputs into the wrong worktree).
+- **The only acceptable absolute paths** are docker container mount points (`/work`, `/OpenROAD-flow-scripts/...`, `~/.volare/...`) and tool installation paths (`/usr/local/bin/sv2v`). These are not repo-relative.
+- **ORFS `config.mk` files reference `/work/...`** because the docker mount maps `$REPO_ROOT:/work` — that's a container path, not a host path, so it stays the same across worktrees. Don't replace these with host paths.
+- **Test before committing a new script** that you can run it from a different worktree without it touching the original worktree's tree. The check: `cd ../gpuN && /path/to/your/script.py` should write into `../gpuN`'s build tree, not the repo where the script lives.
+
 ## Toolchain notes
 
 - **Python**: `uv sync` installs from `pyproject.toml`. Target Python 3.12 (3.14 not yet supported by cocotb 2.0).
