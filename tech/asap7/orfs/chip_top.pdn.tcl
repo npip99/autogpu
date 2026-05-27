@@ -1,4 +1,6 @@
-# chip_top PDN — simple grid plus M1/M2 followpins.
+# chip_top PDN — simple grid plus M1/M2 followpins, plus A1's macro_grid
+# welding rules so the parent stripes connect to every hardened-leaf
+# VDD/VSS pin.
 #
 # chip_top has only ~37 macros (1 compute_array + 4 sub-block macros +
 # 32 fakeram banks), so ORFS's stock BLOCKS_grid_strategy.tcl O(stripes ×
@@ -6,16 +8,6 @@
 # the asap7 default `BLOCKS_grid_strategy.tcl` config caused PDN-0006
 # blocking errors during early experiments, so we ship our own minimal
 # PDN here for predictability.
-#
-# Known limitation (A1 / PSM-0069): this PDN does NOT include a
-# `-macro` grid that welds the parent stripes to the hardened-leaf
-# VDD/VSS pins. The same bug present in compute_array.pdn.tcl recurs
-# here. On `verify_macro_power.tcl` this will report ~37 macros with
-# zero overlapping parent power-net shapes. Will be fixed when A1 lands
-# (the same fix applies at both compute_array and chip_top scopes —
-# define_pdn_grid -macro with add_pdn_connect to weld stripes to the
-# leaf-macro VDD/VSS pins). For now: documented and accepted per
-# tech/asap7/problems/A6_chip_top.md.
 
 add_global_connection -net {VDD} -inst_pattern {.*} -pin_pattern {^VDD$} -power
 add_global_connection -net {VSS} -inst_pattern {.*} -pin_pattern {^VSS$} -ground
@@ -51,3 +43,14 @@ add_pdn_connect -grid {top} -layers {M1 M2}
 add_pdn_connect -grid {top} -layers {M2 M5}
 add_pdn_connect -grid {top} -layers {M5 M6}
 add_pdn_connect -grid {top} -layers {M6 M7}
+
+# Macro PDN grid — welds parent stripes to hardened-leaf VDD/VSS pins.
+# Same A1 fix applied at compute_array.pdn.tcl. Without this, pdngen
+# treats each leaf macro as unrelated geometry and never bridges the
+# parent grid onto leaf pins (PSM-0069). Halo matches MACRO_PLACE_HALO
+# in chip_top.config.mk so vias land cleanly in the inter-macro gap.
+# See tech/asap7/problems/A1_pdn_macro_grid.md.
+define_pdn_grid -macro -name {macro_grid} -voltage_domains {CORE} \
+    -halo {2.0 2.0 2.0 2.0} -default
+add_pdn_connect -grid {macro_grid} -layers {M5 M6}
+add_pdn_connect -grid {macro_grid} -layers {M6 M7}

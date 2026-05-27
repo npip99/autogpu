@@ -54,19 +54,16 @@ export ADDITIONAL_LIBS = \
     $(ASAP7_RESULTS)/reset_seq/base/reset_seq_typ.lib \
     $(ASAP7_PLAT)/lib/NLDM/fakeram7_256x32.lib
 
-# GDS for streamout merge. compute_array_tiny has no 6_final.gds (the
-# KLayout merge step never ran because PSM-0069 failed the final report
-# — see A6_chip_top.md). chip_top's KLayout streamout will report it as
-# missing; GDS_ALLOW_EMPTY catches it so the merge still produces a
-# chip_top.gds (with an empty compute_array cell stub). Real silicon
-# needs the GDS to be populated; this is part of the A1 follow-up.
+# GDS for streamout merge. Post-A1, compute_array_tiny_bcast0 now reaches
+# 6_final.gds cleanly, so it's included alongside the other leaves.
 export ADDITIONAL_GDS = \
+    $(ASAP7_RESULTS)/compute_array_tiny_bcast0/base/6_final.gds \
     $(ASAP7_RESULTS)/cmdproc/base/6_final.gds \
     $(ASAP7_RESULTS)/load/base/6_final.gds \
     $(ASAP7_RESULTS)/barrier/base/6_final.gds \
     $(ASAP7_RESULTS)/reset_seq/base/6_final.gds
-# fakeram7 macros + compute_array (missing GDS) are skipped at merge.
-export GDS_ALLOW_EMPTY = (fakeram.*|compute_array)
+# fakeram7 macros come from the asap7 platform with no GDS (LEF-only).
+export GDS_ALLOW_EMPTY = fakeram.*
 
 # Explicit macro placement.
 export MACRO_PLACEMENT_TCL = /work/tech/asap7/orfs/chip_top.macro_placement.tcl
@@ -90,13 +87,13 @@ export PDN_TCL = /work/tech/asap7/orfs/chip_top.pdn.tcl
 # Also covers cmdproc IMEM/loop_stack and store FF banks if they spill.
 export SYNTH_MEMORY_MAX_BITS = 524288
 
-# TEMPORARY WORKAROUND — NOT TAPE-OUT SHIPPABLE.
-# Same rationale as compute_array_tiny_bcast0.config.mk: chip_top has
-# the same hierarchical-CTS-skew → hold violation pattern from broadcast
-# nets across the die. -200 ps tolerance lets repair_timing terminate
-# instead of running away with hold-buffer insertion. The slack is real
-# and would race on silicon — A2's domain.
-export HOLD_SLACK_MARGIN = -200
+# HOLD_SLACK_MARGIN intentionally NOT set (default 0). The compute_array
+# A2 fix (BCAST_PIPE=1 + 2500 ps SDC) addressed the hierarchical-CTS-skew
+# hold violations at the compute_array scope; that fix is in the
+# compute_array_tiny_bcast0 LEF chip_top consumes here, so chip_top
+# doesn't inherit the runaway hold-buffer problem. If chip_top RE-introduces
+# the same shape on its own broadcast nets (cmdproc → engines), pipeline
+# them at the chip_top RTL level — don't reach for HOLD_SLACK_MARGIN.
 
 export SKIP_LAST_GASP ?= 1
 

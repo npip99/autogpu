@@ -485,21 +485,23 @@ chip_top can run at full MMA=32.
 
 ### Known caveats at chip_top first-pass
 
-1. **PSM-0069 needs the A1 `-macro` grid pattern.** `chip_top.pdn.tcl`
-   should mirror the same `define_pdn_grid -macro` + `add_pdn_connect`
-   rules A1 added to `compute_array.pdn.tcl`. Without this, all 37
-   hardened-macro instances (1 compute_array + 4 sub-block + 32
-   fakeram) will have floating power. Apply A1's pattern verbatim.
-2. **compute_array GDS exists post-A1.** Earlier runs failed before the
-   KLayout merge step because PSM-0069 stopped the final report. With
-   A1 merged + a fresh compute_array_tiny_bcast0 route producing a real
-   6_final.gds, the `GDS_ALLOW_EMPTY=(fakeram.*|compute_array)` hack at
-   chip_top streamout can be tightened to just `(fakeram.*)`.
-3. **`HOLD_SLACK_MARGIN=-200`** at chip_top is the historic A2 workaround.
-   A2 itself closed via BCAST_PIPE=1 + 2500ps SDC at compute_array; if
-   chip_top's hold issues come from the same hierarchical-CTS-skew
-   pattern, prefer that same structural fix over the SLACK_MARGIN
-   bandaid.
+1. **PSM-0069 fix applied** via A1's pattern: `chip_top.pdn.tcl` now
+   ships a `define_pdn_grid -macro -name {macro_grid}` with
+   `add_pdn_connect -layers {M5 M6}` and `{M6 M7}` so the parent
+   stripes weld to every hardened-leaf VDD/VSS pin (compute_array +
+   the 4 sub-block macros + 32 fakeram banks). Same mechanical fix as
+   `compute_array.pdn.tcl`. Verify with
+   `scripts/verify_macro_power.tcl` after a 6_final route.
+2. **compute_array GDS exists post-A1.** `ADDITIONAL_GDS` now includes
+   `compute_array_tiny_bcast0/base/6_final.gds`; `GDS_ALLOW_EMPTY` is
+   tightened to just `fakeram.*` (those macros are LEF-only from the
+   asap7 platform).
+3. **HOLD_SLACK_MARGIN intentionally NOT set.** A2's structural fix
+   (BCAST_PIPE=1 + 2500 ps SDC at compute_array) is baked into the
+   compute_array LEF chip_top consumes, so chip_top doesn't inherit
+   that hold-buffer runaway. If chip_top RE-introduces the same shape
+   on its own broadcast nets (cmdproc → engines), pipeline at the RTL
+   level — don't reach for `HOLD_SLACK_MARGIN`.
 4. **No IO pads.** Top-level ports are die-edge pins. Pad ring is a
    separate follow-up.
 5. **smem standalone is broken (GRT-0116 congestion).** chip_top inlines
