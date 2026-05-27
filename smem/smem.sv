@@ -366,27 +366,17 @@ module smem #(
     // (at edge T) and the bank rdata flopped at edge T; we are now between
     // edge T and edge T+1, building the beat for the registered output.
     // ------------------------------------------------------------------
-    function automatic logic [7:0] read_byte_from_banks(input logic [31:0] addr);
-        logic [BANK_BITS-1:0] b_idx;
-        logic [31:0]          word;
-        b_idx = bank_of(addr);
-        word  = bank_rdata[b_idx];
-        return word[(addr & 32'd3) * 8 +: 8];
-    endfunction
-
-    // Beat assembly. Same style as the bank arbitrator: all locals declared
-    // and pre-initialized at module scope; loop iterators are module-level
-    // ints. Each always_comb block has its own set of locals so neither
-    // sees the other as a multi-driver. See DEVELOPMENT.md §"Synthesis-
-    // friendly SV".
+    // Beat assembly is split into RDA_DWORDS + RDB_DWORDS explicit
+    // smem_dword_mux instances (4 bytes / 32 bits each). Each instance is
+    // kept_hierarchy so ORFS macro_placement can place them at distinct
+    // physical locations along the consumer edge — see
+    // tech/asap7/orfs/smem.macro_placement.tcl. Without this hierarchy
+    // discipline yosys flattens the 32-byte beat into a single central
+    // mux, the 1024 bank_rdata wires all converge there, and asap7
+    // detail-route can't escape the resulting congestion. See
+    // tech/asap7/problems/B1_smem_bank_rdata_congestion.md.
     logic [MMA_M*8-1:0] rd_a_beat;
     logic [MMA_N*8-1:0] rd_b_beat;
-    int          beat_a_i;
-    logic [31:0] beat_a_rb;
-    logic        beat_a_fwd;
-    int          beat_b_i;
-    logic [31:0] beat_b_rb;
-    logic        beat_b_fwd;
 
     // Write-forward mask: one barrel-shift instead of MMA comparators.
     //
@@ -438,38 +428,83 @@ module smem #(
         end
     end
 
+    // Pre-compute the per-byte byte_idx_in_wr for both ports. The dword
+    // mux is purely combinational on its inputs — keeping the byte_idx
+    // arithmetic at the parent means every dword instance sees the same
+    // wr_data + a tiny 4-bit index per byte, so yosys can't share the
+    // arithmetic ALU across instances (which would defeat the hierarchy).
+    logic [3:0] byte_idx_in_wr_a [MMA_M];
+    logic [3:0] byte_idx_in_wr_b [MMA_N];
+
     always_comb begin
-        beat_a_rb  = '0;
-        beat_a_fwd = 1'b0;
-        rd_a_beat = '0;
-        for (beat_a_i = 0; beat_a_i < MMA_M; beat_a_i++) begin
-            beat_a_rb  = rd_a_pending_addr + 32'(beat_a_i);
-            beat_a_fwd = fwd_mask_a[beat_a_i];
-            if (beat_a_fwd) begin
-                // byte_idx = (i - pos_a) mod 16; only need 4 LSBs.
-                rd_a_beat[beat_a_i*8 +: 8] =
-                    wr_data[((4'(beat_a_i) - pos_a[3:0]) & 4'hF) * 8 +: 8];
-            end else begin
-                rd_a_beat[beat_a_i*8 +: 8] = read_byte_from_banks(beat_a_rb);
-            end
+        for (int i = 0; i < MMA_M; i++) begin
+            byte_idx_in_wr_a[i] = (4'(i) - pos_a[3:0]) & 4'hF;
         end
     end
 
     always_comb begin
-        beat_b_rb  = '0;
-        beat_b_fwd = 1'b0;
-        rd_b_beat = '0;
-        for (beat_b_i = 0; beat_b_i < MMA_N; beat_b_i++) begin
-            beat_b_rb  = rd_b_pending_addr + 32'(beat_b_i);
-            beat_b_fwd = fwd_mask_b[beat_b_i];
-            if (beat_b_fwd) begin
-                rd_b_beat[beat_b_i*8 +: 8] =
-                    wr_data[((4'(beat_b_i) - pos_b[3:0]) & 4'hF) * 8 +: 8];
-            end else begin
-                rd_b_beat[beat_b_i*8 +: 8] = read_byte_from_banks(beat_b_rb);
-            end
+        for (int i = 0; i < MMA_N; i++) begin
+            byte_idx_in_wr_b[i] = (4'(i) - pos_b[3:0]) & 4'hF;
         end
     end
+
+    // RDA dword muxes: 8 instances at MMA_M=32, each emitting 4 bytes
+    // (one 32-bit dword) of rd_a_beat. The instance index `d` becomes
+    // part of the cell's hierarchical name (`gen_rda_dword_mux[d].u_mux`)
+    // so smem.macro_placement.tcl can place each one individually.
+    genvar d;
+    generate
+        for (d = 0; d < RDA_DWORDS; d++) begin : gen_rda_dword_mux
+            // Per-instance 4-byte slice of byte_idx_in_wr_a + fwd_mask_a
+            // assembled here (genvar context, no procedural code).
+            logic [3:0] dword_byte_idx [4];
+            logic [3:0] dword_fwd_mask;
+            assign dword_byte_idx[0]  = byte_idx_in_wr_a[d*4 + 0];
+            assign dword_byte_idx[1]  = byte_idx_in_wr_a[d*4 + 1];
+            assign dword_byte_idx[2]  = byte_idx_in_wr_a[d*4 + 2];
+            assign dword_byte_idx[3]  = byte_idx_in_wr_a[d*4 + 3];
+            assign dword_fwd_mask     = fwd_mask_a[d*4 +: 4];
+
+            smem_dword_mux #(
+                .NUM_BANKS  (NUM_BANKS),
+                .BANK_BITS  (BANK_BITS),
+                .BEAT_BYTES (BEAT_BYTES)
+            ) u_mux (
+                .bank_rdata    (bank_rdata),
+                .base_addr     (rd_a_pending_addr + 32'(d * 4)),
+                .fwd_mask      (dword_fwd_mask),
+                .byte_idx_in_wr(dword_byte_idx),
+                .wr_data       (wr_data),
+                .dword_out     (rd_a_beat[d*32 +: 32])
+            );
+        end
+    endgenerate
+
+    // RDB dword muxes — symmetric to RDA.
+    generate
+        for (d = 0; d < RDB_DWORDS; d++) begin : gen_rdb_dword_mux
+            logic [3:0] dword_byte_idx [4];
+            logic [3:0] dword_fwd_mask;
+            assign dword_byte_idx[0]  = byte_idx_in_wr_b[d*4 + 0];
+            assign dword_byte_idx[1]  = byte_idx_in_wr_b[d*4 + 1];
+            assign dword_byte_idx[2]  = byte_idx_in_wr_b[d*4 + 2];
+            assign dword_byte_idx[3]  = byte_idx_in_wr_b[d*4 + 3];
+            assign dword_fwd_mask     = fwd_mask_b[d*4 +: 4];
+
+            smem_dword_mux #(
+                .NUM_BANKS  (NUM_BANKS),
+                .BANK_BITS  (BANK_BITS),
+                .BEAT_BYTES (BEAT_BYTES)
+            ) u_mux (
+                .bank_rdata    (bank_rdata),
+                .base_addr     (rd_b_pending_addr + 32'(d * 4)),
+                .fwd_mask      (dword_fwd_mask),
+                .byte_idx_in_wr(dword_byte_idx),
+                .wr_data       (wr_data),
+                .dword_out     (rd_b_beat[d*32 +: 32])
+            );
+        end
+    endgenerate
 
     // ------------------------------------------------------------------
     // Sequential commit:

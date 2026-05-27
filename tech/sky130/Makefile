@@ -19,6 +19,7 @@ SV_SOURCES := \
     $(REPO_ROOT)/common/fp8_encode.sv \
     $(REPO_ROOT)/mem/sram_1rw.sv \
     $(REPO_ROOT)/cmdproc/cmdproc.sv \
+    $(REPO_ROOT)/smem/smem_dword_mux.sv \
     $(REPO_ROOT)/smem/smem.sv \
     $(REPO_ROOT)/barrier/barrier.sv \
     $(REPO_ROOT)/mac_tmem_cell/mac_tmem_cell.sv \
@@ -110,7 +111,7 @@ $(BUILD_DIR)/skew_lane_b.v: $(REPO_ROOT)/skew_lane/skew_lane.sv $(REPO_ROOT)/ske
 # Standalone sv2v output for smem — only depends on sram_1rw.sv.
 # Avoids parsing all of chip_top.v which makes yosys mem2reg + opt
 # passes ~10× slower (had smem stuck at stage 02 for 30+ min).
-$(BUILD_DIR)/smem.v: $(REPO_ROOT)/smem/smem.sv $(REPO_ROOT)/mem/sram_1rw.sv
+$(BUILD_DIR)/smem.v: $(REPO_ROOT)/smem/smem.sv $(REPO_ROOT)/smem/smem_dword_mux.sv $(REPO_ROOT)/mem/sram_1rw.sv
 	@mkdir -p $(BUILD_DIR)
 	sv2v -D USE_SKY130_MACRO --exclude=Always $^ --top=smem -w $@
 
@@ -118,7 +119,7 @@ $(BUILD_DIR)/smem.v: $(REPO_ROOT)/smem/smem.sv $(REPO_ROOT)/mem/sram_1rw.sv
 # ORFS-shipped fakeram7_256x32 macro in sram_1rw.sv. Distinct output path
 # because sky130 and asap7 macro names differ and the chip_top sv2v output
 # can't host both.
-$(BUILD_DIR)/smem_asap7.v: $(REPO_ROOT)/smem/smem.sv $(REPO_ROOT)/mem/sram_1rw.sv
+$(BUILD_DIR)/smem_asap7.v: $(REPO_ROOT)/smem/smem.sv $(REPO_ROOT)/smem/smem_dword_mux.sv $(REPO_ROOT)/mem/sram_1rw.sv
 	@mkdir -p $(BUILD_DIR)
 	sv2v -D USE_ASAP7_FAKERAM --exclude=Always $^ --top=smem -w $@
 
