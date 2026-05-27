@@ -343,9 +343,13 @@ module smem #(
     genvar gb;
     generate
         for (gb = 0; gb < NUM_BANKS; gb++) begin : gen_banks
-            smem_bank #(
-                .WORDS(NUM_WORDS_PER_BANK)
-            ) u_bank (
+            // No parameter override: smem_bank is consumed as a hardened
+            // LEF black-box, and yosys can't pass parameter values into
+            // a LIB-only cell. The macro is hardened with WORDS=128
+            // (matching the `SMEM_BANK_WORDS define in smem_bank.sv);
+            // SMEM_BYTES at chip_top must keep NUM_WORDS_PER_BANK at 128
+            // for the macro to bind cleanly.
+            smem_bank u_bank (
                 .clk            (clk),
                 .en             (bank_en[gb]),
                 .we             (bank_we[gb]),
