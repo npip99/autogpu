@@ -2,6 +2,37 @@
 
 How we work in this repo. Read this before writing pymodel or RTL.
 
+## asap7 hardening flow setup (Ubuntu)
+
+The cocotb simulation flow (`brew install verilator` + `uv sync`) is
+documented in [README.md](README.md). The asap7 ORFS hardening flow
+(`./tech/asap7/orfs/run.sh <module>`, `lvs.sh`, `ir_drop.sh`,
+`antenna_check.sh`, `density_check.sh`, `gen_lef.sh`) has additional
+host prereqs — all docker-based, no toolchain to install on the host
+beyond docker itself.
+
+```bash
+# 1. Docker (Ubuntu)
+sudo apt install -y docker.io
+sudo usermod -aG docker $USER       # log out + back in for the group to apply
+# verify: `groups` should list `docker`, and `docker run hello-world` should pass.
+# (`sg docker -c ...` is the fallback if you don't want to re-login —
+# every wrapper script uses it for portability.)
+
+# 2. openroad/orfs:latest image (~3 GB, one-time)
+docker pull openroad/orfs:latest
+# auto-pulls on first `docker run` if you skip this, but the first
+# invocation will look like it hangs while pulling.
+
+# 3. asap7 PDK via volare (provides ~/.volare/asap7/{libs.ref,libs.tech})
+.venv/bin/pip install volare        # or `uv pip install volare` if uv-managed
+.venv/bin/volare enable --pdk asap7 # downloads + activates the asap7 PDK
+```
+
+After these three steps, `./tech/asap7/orfs/run.sh mac_tmem_cell`
+should reach 6_final on its own (~5 min). If it errors before 6_final,
+that's a real bug — not a setup issue.
+
 ## Build philosophy
 
 **Pymodel-first, bottom-up.** Three artifacts per submodule, written in this order:
