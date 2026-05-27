@@ -17,7 +17,7 @@ matplotlib.use("Agg")
 import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 
-REPO = Path("/home/ubuntu/pipitone/gpu2")
+REPO = Path(__file__).resolve().parents[4]
 OUT_DIR = REPO / "tech/asap7/orfs"
 
 NUM_BANKS = 32
