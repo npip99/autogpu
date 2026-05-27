@@ -27,9 +27,9 @@ export FLOORPLAN_DEF =
 export DIE_AREA  = 0 0 60 80
 export CORE_AREA = 5 5 55 75
 
-# Explicit placement for the one fakeram (centered horizontally with
-# the bank's perimeter pins on east/west edges).
-export MACRO_PLACEMENT_TCL = /work/tech/asap7/orfs/smem_bank.macro_placement.tcl
+# Only one fakeram macro inside — let ORFS auto-place it. No need for
+# explicit macro_placement.tcl (which would be gitignored anyway by the
+# `*.macro_placement.tcl` rule meant for auto-gen variants).
 
 # Keep yosys from inlining the fakeram macro.
 export SYNTH_HIERARCHICAL = 1
