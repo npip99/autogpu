@@ -23,12 +23,14 @@ OUT_DIR = REPO / "tech/asap7/orfs"
 NUM_BANKS = 32
 COLS, ROWS = 8, 4
 
-# fakeram7_256x32 dimensions from /OpenROAD-flow-scripts/flow/platforms/asap7/lef/fakeram7_256x32.lef
-MACRO_W, MACRO_H = 8.36, 42.0
+# smem_bank macro dimensions (from tech/asap7/orfs/smem_bank.config.mk
+# DIE_AREA = 0 0 60 80). Wraps fakeram7_256x32 + per-output gating logic.
+# Replaced the prior bare fakeram macros after the B1 refactor.
+MACRO_W, MACRO_H = 60.0, 80.0
 
-CH_X = 40.0   # horizontal channel between adjacent columns of macros
-CH_Y = 30.0   # vertical channel between adjacent rows of macros
-MARGIN = 50.0 # die-edge margin (periphery for mux + decode + IO)
+CH_X = 20.0   # horizontal channel between adjacent columns of macros
+CH_Y = 20.0   # vertical channel between adjacent rows of macros
+MARGIN = 40.0 # die-edge margin (periphery for OR-tree + decode + IO)
 
 
 def main() -> None:
@@ -57,7 +59,7 @@ def main() -> None:
             y = y0 + r * (MACRO_H + CH_Y)
             placements.append((b, x, y))
             tcl.append(
-                f"place_macro -macro_name {{gen_banks\\[{b}\\].u_sram.u_macro}} "
+                f"place_macro -macro_name {{gen_banks\\[{b}\\].u_bank}} "
                 f"-location {{{x:.3f} {y:.3f}}} -orientation R0"
             )
     tcl_path = OUT_DIR / "smem.macro_placement.tcl"

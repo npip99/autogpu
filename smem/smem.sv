@@ -196,12 +196,14 @@ module smem #(
     // The per-bank word index within the bank is `addr[2+BANK_BITS +:
     // WORD_BITS]` (the dword-index above the bank-id bits).
     // ------------------------------------------------------------------
-    // Bank-driver signals.
+    // Bank-driver signals (bank_rdata is declared below alongside the
+    // smem_bank instantiation block, since bank_rdata now comes from
+    // the per-bank OR of the bank's gated outputs, not directly from
+    // the SRAM macro).
     logic                       bank_en   [NUM_BANKS];
     logic                       bank_we   [NUM_BANKS];
     logic [WORD_BITS-1:0]       bank_addr [NUM_BANKS];
     logic [31:0]                bank_wdata[NUM_BANKS];
-    logic [31:0]                bank_rdata[NUM_BANKS];
 
     // Per-bank arbitration. SCRUB > LOAD_WR > RD_A > RD_B. The stall logic
     // above guarantees only one port "covers" any given bank on a cycle
@@ -288,23 +290,93 @@ module smem #(
     end
 
     // ------------------------------------------------------------------
-    // 32 sram_1rw instances. In Phase 7g, tech/<process>/sram_1rw.sv
-    // replaces this with the vendor SRAM macro.
+    // Per-bank rd_a / rd_b "I'm contributing to dword d this cycle".
+    //
+    // For our cyclic access pattern (8 consecutive banks starting at
+    // bank_of(rd_*_pending_addr)), bank b contributes to output dword
+    //   d = (b - bank_of(rd_*_pending_addr)) mod 32
+    // when d < 8. We pass (active, dword_idx) to each smem_bank so the
+    // bank itself can decide which of its 8 gated outputs to drive.
+    //
+    // This computation is per-bank, combinational; precomputed here so
+    // the bank macros' inputs are clean per-bank signals.
     // ------------------------------------------------------------------
+    logic [BANK_BITS-1:0] rd_a_base_bank;
+    logic [BANK_BITS-1:0] rd_b_base_bank;
+    logic                 rd_a_valid_for_banks;
+    logic                 rd_b_valid_for_banks;
+    assign rd_a_base_bank       = bank_of(rd_a_pending_addr);
+    assign rd_b_base_bank       = bank_of(rd_b_pending_addr);
+    assign rd_a_valid_for_banks = rd_a_pending_valid;
+    assign rd_b_valid_for_banks = rd_b_pending_valid;
+
+    logic                 bank_rd_a_active   [NUM_BANKS];
+    logic [2:0]           bank_rd_a_dword_idx[NUM_BANKS];
+    logic                 bank_rd_b_active   [NUM_BANKS];
+    logic [2:0]           bank_rd_b_dword_idx[NUM_BANKS];
+
+    always_comb begin
+        logic [BANK_BITS-1:0] off_a, off_b;
+        for (int b = 0; b < NUM_BANKS; b++) begin
+            off_a = BANK_BITS'(b) - rd_a_base_bank;
+            off_b = BANK_BITS'(b) - rd_b_base_bank;
+            // Lower 3 bits are the dword position; high bits == 0 means
+            // bank b is in the 8-bank read window.
+            bank_rd_a_active[b]    = rd_a_valid_for_banks && (off_a[BANK_BITS-1:3] == 2'b00);
+            bank_rd_a_dword_idx[b] = off_a[2:0];
+            bank_rd_b_active[b]    = rd_b_valid_for_banks && (off_b[BANK_BITS-1:3] == 2'b00);
+            bank_rd_b_dword_idx[b] = off_b[2:0];
+        end
+    end
+
+    // ------------------------------------------------------------------
+    // 32 smem_bank macros. Each owns its own fakeram + per-output-dword
+    // gating logic. Hardened LEF (smem_bank.lef); chip-level OR-tree
+    // below consolidates per-dword contributions across all 32 banks.
+    //
+    // No central rdata mux at smem level — the 1024 bank-rdata wires
+    // that used to fan to a central mux are consumed inside each macro.
+    // ------------------------------------------------------------------
+    logic [31:0] bank_rd_a_out [NUM_BANKS][8];
+    logic [31:0] bank_rd_b_out [NUM_BANKS][8];
+
     genvar gb;
     generate
         for (gb = 0; gb < NUM_BANKS; gb++) begin : gen_banks
-            sram_1rw #(
-                .WORDS(NUM_WORDS_PER_BANK),
-                .W    (32)
-            ) u_sram (
-                .clk   (clk),
-                .en    (bank_en[gb]),
-                .we    (bank_we[gb]),
-                .addr  (bank_addr[gb]),
-                .wdata (bank_wdata[gb]),
-                .rdata (bank_rdata[gb])
+            smem_bank #(
+                .WORDS(NUM_WORDS_PER_BANK)
+            ) u_bank (
+                .clk            (clk),
+                .en             (bank_en[gb]),
+                .we             (bank_we[gb]),
+                .addr           (bank_addr[gb]),
+                .wdata          (bank_wdata[gb]),
+                .rd_a_active    (bank_rd_a_active[gb]),
+                .rd_a_dword_idx (bank_rd_a_dword_idx[gb]),
+                .rd_b_active    (bank_rd_b_active[gb]),
+                .rd_b_dword_idx (bank_rd_b_dword_idx[gb]),
+                .rd_a_out       (bank_rd_a_out[gb]),
+                .rd_b_out       (bank_rd_b_out[gb])
             );
+        end
+    endgenerate
+
+    // Backdoor read-path for the previous monolithic mux pattern (other
+    // smem internals reference `bank_rdata`). Kept for cocotb backdoor
+    // compatibility and for the bank_mem shadow consistency check below.
+    logic [31:0] bank_rdata [NUM_BANKS];
+    generate
+        for (gb = 0; gb < NUM_BANKS; gb++) begin : gen_bank_rdata_shim
+            // Pull the rdata from whichever output the bank just drove
+            // (only one of rd_a_out[0..7] / rd_b_out[0..7] is non-zero
+            // per cycle, and only when the bank is actively reading;
+            // OR them all together to get bank_rdata).
+            always_comb begin
+                bank_rdata[gb] = 32'd0;
+                for (int d = 0; d < 8; d++) begin
+                    bank_rdata[gb] |= bank_rd_a_out[gb][d] | bank_rd_b_out[gb][d];
+                end
+            end
         end
     endgenerate
 
@@ -448,63 +520,60 @@ module smem #(
         end
     end
 
-    // RDA dword muxes: 8 instances at MMA_M=32, each emitting 4 bytes
-    // (one 32-bit dword) of rd_a_beat. The instance index `d` becomes
-    // part of the cell's hierarchical name (`gen_rda_dword_mux[d].u_mux`)
-    // so smem.macro_placement.tcl can place each one individually.
-    genvar d;
-    generate
-        for (d = 0; d < RDA_DWORDS; d++) begin : gen_rda_dword_mux
-            // Per-instance 4-byte slice of byte_idx_in_wr_a + fwd_mask_a
-            // assembled here (genvar context, no procedural code).
-            logic [3:0] dword_byte_idx [4];
-            logic [3:0] dword_fwd_mask;
-            assign dword_byte_idx[0]  = byte_idx_in_wr_a[d*4 + 0];
-            assign dword_byte_idx[1]  = byte_idx_in_wr_a[d*4 + 1];
-            assign dword_byte_idx[2]  = byte_idx_in_wr_a[d*4 + 2];
-            assign dword_byte_idx[3]  = byte_idx_in_wr_a[d*4 + 3];
-            assign dword_fwd_mask     = fwd_mask_a[d*4 +: 4];
+    // Per-dword OR-tree consolidation: for each output dword d, OR all
+    // 32 banks' rd_*_out[d] contributions. Only the one bank that was
+    // selected for dword d this cycle has a non-zero contribution; the
+    // other 31 are 0 by the smem_bank gating. So OR ≡ mux without the
+    // central convergence point — yosys will synthesize this as a tree
+    // of OR gates that can be placed across the chip near the banks.
+    //
+    // After the OR, byte-level write-forwarding overlays wr_data bytes
+    // where fwd_mask_*[i] is 1 (same forwarding semantics as the prior
+    // dword_mux path).
+    logic [31:0] rda_or [RDA_DWORDS];
+    logic [31:0] rdb_or [RDB_DWORDS];
 
-            smem_dword_mux #(
-                .NUM_BANKS  (NUM_BANKS),
-                .BANK_BITS  (BANK_BITS),
-                .BEAT_BYTES (BEAT_BYTES)
-            ) u_mux (
-                .bank_rdata    (bank_rdata),
-                .base_addr     (rd_a_pending_addr + 32'(d * 4)),
-                .fwd_mask      (dword_fwd_mask),
-                .byte_idx_in_wr(dword_byte_idx),
-                .wr_data       (wr_data),
-                .dword_out     (rd_a_beat[d*32 +: 32])
-            );
+    always_comb begin
+        for (int d = 0; d < RDA_DWORDS; d++) begin
+            rda_or[d] = 32'd0;
+            for (int b = 0; b < NUM_BANKS; b++) begin
+                rda_or[d] |= bank_rd_a_out[b][d];
+            end
         end
-    endgenerate
+    end
 
-    // RDB dword muxes — symmetric to RDA.
-    generate
-        for (d = 0; d < RDB_DWORDS; d++) begin : gen_rdb_dword_mux
-            logic [3:0] dword_byte_idx [4];
-            logic [3:0] dword_fwd_mask;
-            assign dword_byte_idx[0]  = byte_idx_in_wr_b[d*4 + 0];
-            assign dword_byte_idx[1]  = byte_idx_in_wr_b[d*4 + 1];
-            assign dword_byte_idx[2]  = byte_idx_in_wr_b[d*4 + 2];
-            assign dword_byte_idx[3]  = byte_idx_in_wr_b[d*4 + 3];
-            assign dword_fwd_mask     = fwd_mask_b[d*4 +: 4];
-
-            smem_dword_mux #(
-                .NUM_BANKS  (NUM_BANKS),
-                .BANK_BITS  (BANK_BITS),
-                .BEAT_BYTES (BEAT_BYTES)
-            ) u_mux (
-                .bank_rdata    (bank_rdata),
-                .base_addr     (rd_b_pending_addr + 32'(d * 4)),
-                .fwd_mask      (dword_fwd_mask),
-                .byte_idx_in_wr(dword_byte_idx),
-                .wr_data       (wr_data),
-                .dword_out     (rd_b_beat[d*32 +: 32])
-            );
+    always_comb begin
+        for (int d = 0; d < RDB_DWORDS; d++) begin
+            rdb_or[d] = 32'd0;
+            for (int b = 0; b < NUM_BANKS; b++) begin
+                rdb_or[d] |= bank_rd_b_out[b][d];
+            end
         end
-    endgenerate
+    end
+
+    // Byte-level overlay: for each output byte i in 0..MMA_M-1, take the
+    // wr_data byte if fwd_mask_a[i] else the bank-OR-tree byte.
+    always_comb begin
+        for (int i = 0; i < MMA_M; i++) begin
+            if (fwd_mask_a[i]) begin
+                // byte_idx = (i - pos_a) mod 16; only need 4 LSBs.
+                rd_a_beat[i*8 +: 8] = wr_data[byte_idx_in_wr_a[i] * 8 +: 8];
+            end else begin
+                // Dword d = i / 4; byte position within dword = i % 4.
+                rd_a_beat[i*8 +: 8] = rda_or[i >> 2][(i & 32'h3) * 8 +: 8];
+            end
+        end
+    end
+
+    always_comb begin
+        for (int i = 0; i < MMA_N; i++) begin
+            if (fwd_mask_b[i]) begin
+                rd_b_beat[i*8 +: 8] = wr_data[byte_idx_in_wr_b[i] * 8 +: 8];
+            end else begin
+                rd_b_beat[i*8 +: 8] = rdb_or[i >> 2][(i & 32'h3) * 8 +: 8];
+            end
+        end
+    end
 
     // ------------------------------------------------------------------
     // Sequential commit:

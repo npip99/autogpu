@@ -19,6 +19,7 @@ SV_SOURCES := \
     $(REPO_ROOT)/common/fp8_encode.sv \
     $(REPO_ROOT)/mem/sram_1rw.sv \
     $(REPO_ROOT)/cmdproc/cmdproc.sv \
+    $(REPO_ROOT)/smem/smem_bank.sv \
     $(REPO_ROOT)/smem/smem_dword_mux.sv \
     $(REPO_ROOT)/smem/smem.sv \
     $(REPO_ROOT)/barrier/barrier.sv \
@@ -37,7 +38,7 @@ SV_SOURCES := \
 
 .PHONY: sv2v synth clean
 
-sv2v: $(BUILD_DIR)/chip_top.v $(BUILD_DIR)/mac_array_small.v $(BUILD_DIR)/tile_buf_8row.v $(BUILD_DIR)/cmd_unit.v $(BUILD_DIR)/skew_lane_a.v $(BUILD_DIR)/skew_lane_b.v $(BUILD_DIR)/smem.v $(BUILD_DIR)/smem_asap7.v $(BUILD_DIR)/chip_top_asap7_tiny.v
+sv2v: $(BUILD_DIR)/chip_top.v $(BUILD_DIR)/mac_array_small.v $(BUILD_DIR)/tile_buf_8row.v $(BUILD_DIR)/cmd_unit.v $(BUILD_DIR)/skew_lane_a.v $(BUILD_DIR)/skew_lane_b.v $(BUILD_DIR)/smem.v $(BUILD_DIR)/smem_asap7.v $(BUILD_DIR)/smem_bank_asap7.v $(BUILD_DIR)/chip_top_asap7_tiny.v
 
 $(BUILD_DIR)/chip_top.v: $(SV_SOURCES)
 	@mkdir -p $(BUILD_DIR)
@@ -111,7 +112,7 @@ $(BUILD_DIR)/skew_lane_b.v: $(REPO_ROOT)/skew_lane/skew_lane.sv $(REPO_ROOT)/ske
 # Standalone sv2v output for smem — only depends on sram_1rw.sv.
 # Avoids parsing all of chip_top.v which makes yosys mem2reg + opt
 # passes ~10× slower (had smem stuck at stage 02 for 30+ min).
-$(BUILD_DIR)/smem.v: $(REPO_ROOT)/smem/smem.sv $(REPO_ROOT)/smem/smem_dword_mux.sv $(REPO_ROOT)/mem/sram_1rw.sv
+$(BUILD_DIR)/smem.v: $(REPO_ROOT)/smem/smem.sv $(REPO_ROOT)/smem/smem_bank.sv $(REPO_ROOT)/smem/smem_dword_mux.sv $(REPO_ROOT)/mem/sram_1rw.sv
 	@mkdir -p $(BUILD_DIR)
 	sv2v -D USE_SKY130_MACRO --exclude=Always $^ --top=smem -w $@
 
@@ -119,9 +120,17 @@ $(BUILD_DIR)/smem.v: $(REPO_ROOT)/smem/smem.sv $(REPO_ROOT)/smem/smem_dword_mux.
 # ORFS-shipped fakeram7_256x32 macro in sram_1rw.sv. Distinct output path
 # because sky130 and asap7 macro names differ and the chip_top sv2v output
 # can't host both.
-$(BUILD_DIR)/smem_asap7.v: $(REPO_ROOT)/smem/smem.sv $(REPO_ROOT)/smem/smem_dword_mux.sv $(REPO_ROOT)/mem/sram_1rw.sv
+$(BUILD_DIR)/smem_asap7.v: $(REPO_ROOT)/smem/smem.sv $(REPO_ROOT)/smem/smem_bank.sv $(REPO_ROOT)/smem/smem_dword_mux.sv $(REPO_ROOT)/mem/sram_1rw.sv
 	@mkdir -p $(BUILD_DIR)
 	sv2v -D USE_ASAP7_FAKERAM --exclude=Always $^ --top=smem -w $@
+
+# Standalone sv2v output for smem_bank — single hardened bank macro
+# containing one fakeram7 + per-output-dword gating logic. Used by the
+# bank-side gating refactor of smem.sv to spread the bank_rdata mux
+# fanout across 32 hardened bank instances instead of a central mux.
+$(BUILD_DIR)/smem_bank_asap7.v: $(REPO_ROOT)/smem/smem_bank.sv $(REPO_ROOT)/mem/sram_1rw.sv
+	@mkdir -p $(BUILD_DIR)
+	sv2v -D USE_ASAP7_FAKERAM --exclude=Always $^ --top=smem_bank -w $@
 
 # asap7 chip_top variant — full design tree (sv2v output is the entire
 # flat netlist) with USE_ASAP7_FAKERAM (smem uses fakeram7 macros) and
