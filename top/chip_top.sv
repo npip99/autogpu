@@ -186,10 +186,39 @@ module chip_top #(
     logic                              st_busy, st_done;
 
     // ------------------------------------------------------------------
+    // Reset synchronizer (chip-boundary, tape-out grade).
+    // `reset_in` arrives from a chip pin and is asynchronous to `clk`.
+    // A 2-flop "async-assert, sync-release" synchronizer gives the
+    // downstream `reset_seq` (which uses synchronous reset semantics) a
+    // glitch-free `reset_in_sync` that's metastability-safe. Async-assert
+    // means reset propagates immediately even if `clk` is not yet stable
+    // at power-on; sync-release means the deassertion edge is filtered
+    // through two flop stages so no downstream flop sees it within its
+    // setup/hold window relative to the clock edge.
+    //
+    // ASYNC_REG="TRUE" is a synthesis hint (recognized by Vivado, DC,
+    // Genus, ICC2) that keeps these two flops adjacent and forbids
+    // retiming optimizations across them. Yosys ignores the attribute
+    // but the flop chain survives synthesis regardless because of the
+    // serial dependency.
+    // ------------------------------------------------------------------
+    (* ASYNC_REG = "TRUE" *) logic reset_meta;
+    (* ASYNC_REG = "TRUE" *) logic reset_in_sync;
+    always_ff @(posedge clk or posedge reset_in) begin
+        if (reset_in) begin
+            reset_meta    <= 1'b1;
+            reset_in_sync <= 1'b1;
+        end else begin
+            reset_meta    <= 1'b0;
+            reset_in_sync <= reset_meta;
+        end
+    end
+
+    // ------------------------------------------------------------------
     // reset_seq — power-on reset + on-chip memory scrubber.
-    // External `reset_in` is the pin reset. The sequencer drives the
-    // SMEM/TMEM scrub ports and only deasserts `chip_in_reset` once
-    // every bank-word has been zeroed.
+    // Driven by the synchronized `reset_in_sync`, not the raw pin.
+    // The sequencer drives the SMEM/TMEM scrub ports and only deasserts
+    // `chip_in_reset` once every bank-word has been zeroed.
     // ------------------------------------------------------------------
     localparam int SMEM_SCRUB_DEPTH = SMEM_BYTES / 32 / 4;
     logic                                       smem_scrub_en;
@@ -199,7 +228,7 @@ module chip_top #(
 
     reset_seq u_reset_seq (
         .clk            (clk),
-        .reset_in       (reset_in),
+        .reset_in       (reset_in_sync),
         .chip_in_reset  (chip_in_reset),
         .smem_scrub_en  (smem_scrub_en),
         .smem_scrub_addr(smem_scrub_addr_narrow),

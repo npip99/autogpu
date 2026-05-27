@@ -116,3 +116,74 @@ In priority order:
 When a real (foundry-verified) PDK gap closure ships, the overlay path
 can be removed and the script will return meaningful CLEAN/FAIL results
 from the platform LEFs alone with no further changes.
+
+## Metal density / fill sign-off — `tech/asap7/orfs/problems/B2_density.md` (TBD)
+
+### Evidence
+
+```
+$ grep -c -iE "density|cmp|dummy|fill|planariz" \
+    ~/.volare/asap7/docs/asap7_drm_201207a.pdf  # ASAP7 r1p7 DRM
+2  # both unrelated (marker layers + diagonal hatching)
+
+$ grep -cE "MINIMUMDENSITY|MAXIMUMDENSITY" \
+    /OpenROAD-flow-scripts/flow/platforms/asap7/lef/asap7_tech_1x_201209.lef
+4  # M5 only (15% / 90% over 20×20 µm) + Pad (20% / 80% over 100×100 µm)
+```
+
+The ASAP7 DRM publishes **no** density methodology. The tech LEF carries
+density rules on only 2 of 11 routing/pad layers. The Microelectronics
+Journal paper (Clark et al. 2016) and the ICCAD 2017 follow-up have no
+density / CMP / fill sections. There is also no documented metal-fill
+methodology in the ASAP7 release.
+
+### What's missing
+
+| Data item                                  | Why it's needed                                          | Where it'd live          |
+|--------------------------------------------|----------------------------------------------------------|--------------------------|
+| `MINIMUMDENSITY` / `MAXIMUMDENSITY` per layer M1..M4, M6..M9 | Foundry CMP requires per-layer density bands (typically 20–80% per ~20 µm window). Without them, the CMP step at fab will planarize unevenly → topography variation → yield loss | tech LEF, in each `LAYER M*` block |
+| Metal-fill methodology + fill cell        | Post-route dummy-metal insertion to bring sparse layers up to min density | A `fill.tcl` step in the ORFS flow + a dummy-metal cell in the PDK |
+| Density-aware DRC rules                   | A sign-off DRC deck that checks density alongside spacing / width | `asap7.lydrc` would need density sections |
+
+### Consequence
+
+ASAP7 GDS produced today has **no** density verification at all. On real
+silicon a density-band miss causes CMP dishing/erosion → opens or shorts
+on the affected layer. For ASAP7-as-academic-PDK this is a known
+limitation. For tape-out: the destination PDK (sky130, IHP130, TSMC
+N7, etc.) must supply density rules + fill methodology.
+
+### Tape-out paths
+
+In priority order:
+
+1. **Port to a PDK with documented density rules.** sky130 ships
+   `sky130_fd_pr` density rules + a `metal_fill` step. IHP130 ships
+   analogous data. ASAP7 is by design a *predictive* PDK without
+   foundry CMP data — there is no path to "add density rules to ASAP7"
+   short of measuring CMP behavior on actual fab silicon (impossible —
+   no fab makes ASAP7).
+2. **(Future tooling, not implemented)** A `density_check.sh` script
+   analogous to `antenna_check.sh` that runs KLayout density analysis
+   against a configurable rule deck. Default deck would be the
+   ASAP7-supplied M5-only rules (vacuous on other layers). A
+   `--with-overlay` mode could attach a predictive deck inferred from
+   the M5 numbers (20/70% M1-M7, 20/80% M8-M9, 20 µm window) —
+   same shape as the antenna overlay.
+
+### What ASAP7 *does* ship
+
+| Layer | min width | min spacing | min area | min density | max density |
+|-------|-----------|-------------|----------|-------------|-------------|
+| M1    | 0.018 µm  | 0.018       | 0.000666 µm² | — | — |
+| M2..M3| 0.018     | 0.018       | 0.000666     | — | — |
+| M4    | 0.024     | 0.024       | 0.002        | — | — |
+| **M5**| 0.024     | 0.024       | 0.002        | **15%** | **90%** |
+| M6..M7| 0.032     | 0.032       | 0.0021875    | — | — |
+| M8..M9| 0.040     | 0.040*      | 0.00752      | — | — |
+| Pad   | 2.0       | —           | —            | **20%** | **80%** |
+
+(*M8/M9 spacing is width-dependent per DRM §3.18.)
+
+Min-width / min-spacing / min-area are enforced by the KLayout DRC deck
+(`asap7.lydrc`). Density isn't, on layers other than M5/Pad.
