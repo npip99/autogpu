@@ -3,6 +3,15 @@
 What was learned hardening this repo on asap7 with OpenROAD-flow-scripts.
 Read before designing a new module or changing the hierarchy.
 
+> **Maintaining this doc.** Update DESIGN.md in the same PR whenever you:
+> add or remove a script under `tech/asap7/`, change a workaround
+> (e.g. swap `SKIP_CTS_REPAIR_TIMING` for `HOLD_SLACK_MARGIN`), add or
+> retire an ORFS-knob override, ship a new sign-off tool, or add /
+> resolve a `problems/` entry. The File map and "Known issues / TODO
+> toward tape-out" sections rot fastest; check those first. A stale
+> DESIGN.md sends future-you (and reviewers) chasing patterns that no
+> longer exist.
+
 ## Toolchain
 
 - **Flow**: ORFS (`openroad/orfs:latest` Docker image), invoked from
@@ -150,24 +159,59 @@ wires but the worst-path WNS doesn't move — buffers added to non-worst
 paths only. We reproduced this on a 4×4 compute_array (`compute_array_tiny`)
 where total wire length is <500 µm, confirming it isn't wire delay.
 
-Workaround used: `SKIP_CTS_REPAIR_TIMING=1` in compute_array's config.mk.
-The flow completes; the GDS is physically valid but has hold violations
-in PVT corners. Acceptable for proof-of-concept renderable GDS; not for
-real silicon.
+Historic workarounds (now superseded by the A2 fix below — kept for
+contributors hitting the same shape on a different design):
 
-What would actually fix this:
+- `HOLD_SLACK_MARGIN = -200`: tells `repair_timing` to terminate when
+  hold violations are within 200 ps of zero. Flow completes but ships
+  ~200 ps of negative hold slack; chip would race on silicon. Was the
+  interim mitigation on `compute_array_tiny_bcast0` until A2.
+- `SKIP_CTS_REPAIR_TIMING = 1`: the heavier sledgehammer
+  `compute_array_clk1000.config.mk` still uses for sweep experiments.
+  Skips hold-fix entirely. The user has rejected this for tape-out
+  work; prefer the structural fix below for any new design.
 
-- **Hierarchical CTS methodology** with leaf-level `set_clock_source_latency`
-  matched across all leaves + top-level CTS compensation. ORFS doesn't
-  automate this — typically a commercial-tool (Synopsys ICC2, Cadence
-  Innovus) capability.
+Alternatives that would fix this structurally on other designs (the A2
+fix is the **RTL pipeline** option; the rest are listed for completeness):
+
+- **RTL pipeline** between `cmd_unit` and `skew_lane` macros in
+  `compute_array.sv`. Adds 1 cycle of issue latency; turns hold paths
+  from macro-to-macro combinational into flop-to-flop with a full cycle
+  of breathing room. **This is the A2 fix — see next subsection.**
+- **Hierarchical CTS methodology** with leaf-level
+  `set_clock_source_latency` matched across all leaves + top-level CTS
+  compensation. ORFS doesn't automate this — typically a commercial-tool
+  (Synopsys ICC2, Cadence Innovus) capability.
 - **Flatten the hierarchy** — let ORFS do flat CTS over all 50K+ stdcells.
   Loses all the value of hierarchical hardening (long ABC, long route).
 - **Re-harden leaves with output flops** to absorb the hold time, then
   let parent route their now-relaxed-timing outputs. Substantial RTL work
   on every leaf.
 
-For now, document the limitation and ship the GDS with the skip flag.
+### Mitigation in production: `BCAST_PIPE=1` + 2500 ps clock
+
+`compute_array.sv` accepts `BCAST_PIPE=N` (set via sv2v `-D BCAST_PIPE=N`).
+With N>0, the parent inserts N D-FF stages on every cmd_unit → cells/
+skew_lanes broadcast (push_*, drain_en/slot, scrub_en) AND N symmetric
+stages on every cmd_unit → chip-external completion signal (mma_busy/done,
+arrive_*, drain_busy/done/row_valid/row_idx/row_last). `rd_*_en/addr`
+are intentionally NOT piped (SMEM is at the chip boundary). The symmetric
+output pipe is what makes the cocotb cycle-by-cycle lockstep pass —
+`pymodel/compute_array.py` takes `bcast_pipe=` and models the matching
+shift registers.
+
+`compute_array_tiny_bcast0.config.mk` now uses BCAST_PIPE=1 and the
+SDC sits at 2500 ps (400 MHz, same as full `compute_array.sdc`). Post-
+route timing: **0 hold violations, 0 setup violations, fmax 440 MHz**.
+`HOLD_SLACK_MARGIN` is no longer needed — repair_timing converges to
+zero cleanly. See `tech/asap7/problems/A2_hold_timing_rtl.md` for the
+journey and `compute_array_tiny_slow*.config.mk` for the alternatives
+that were tried (CTS clustering tweaks, reversed useful-skew SDC,
+BCAST_PIPE=2 — none beat the simplest config).
+
+The three alternative-fix options listed above (commercial CTS,
+flatten hierarchy, re-harden leaves with output flops) remain on the
+table for designs where 2500 ps isn't an acceptable clock target.
 
 ## ORFS knobs we override
 
@@ -189,45 +233,53 @@ PDN sections above):
 ```
 tech/asap7/
 ├── DESIGN.md                       (you are here)
+├── PDK_GAPS.md                     what asap7 ships without (antenna, LVS, diode, ...)
 ├── render_layout.py                klayout PNG renderer (DEF or GDS)
+├── problems/                       problem specs for outstanding work (A1..A6)
+│   ├── A1_pdn_macro_grid.md
+│   ├── A2_hold_timing_rtl.md
+│   ├── A3_lvs.md
+│   ├── A4_antenna.md
+│   ├── A5_ir_drop.md
+│   └── A6_chip_top.md
 └── orfs/
-    ├── run.sh                      driver: docker → openroad/orfs
+    ├── run.sh                      driver: docker → openroad/orfs (build flow)
+    ├── antenna_check.sh            post-route antenna sign-off (A4)
+    ├── ir_drop.sh                  post-route IR-drop sign-off (A5)
+    ├── lvs.sh                      post-route cell-instance LVS (A3)
     ├── <module>.config.mk          one per module (mac_tmem_cell, compute_array,
     │                               cmdproc, smem, chip_top, …)
     ├── <module>.sdc                clock + IO constraints
     ├── compute_array.pdn.tcl       custom channel-aligned PDN
-    ├── compute_array.macro_placement.tcl   1089 place_macro lines (auto-gen)
-    ├── compute_array.floorplan_preview.png matplotlib preview (auto-gen)
-    ├── chip_top.config.mk          top-level integration (A6).
-    │                               First-pass uses compute_array_tiny_bcast0
-    │                               as the compute_array LEF (MMA_M=4 chip_top
-    │                               variant) — see "chip_top integration" below.
-    ├── chip_top.sdc                250 MHz clock (wire delay dominates
-    │                               at chip scale).
-    ├── chip_top.pdn.tcl            simple grid + M1/M2 followpins. Same
-    │                               PSM-0069 limitation as compute_array
-    │                               (no -macro grid welding rules yet).
-    ├── chip_top.macro_placement.tcl 37 place_macro lines (auto-gen) —
-    │                               1 compute_array + 4 hardened submods +
-    │                               32 inlined-smem fakeram banks.
-    ├── chip_top.floorplan_preview.png matplotlib preview (auto-gen)
+    ├── chip_top.pdn.tcl            simple grid + M1/M2 followpins (A6).
+    │                               Inherits A1's -macro grid pattern.
+    ├── <module>.macro_placement.tcl  place_macro lines (auto-gen; tiny + smem + chip_top variants)
+    ├── <module>.floorplan_preview.png  matplotlib preview (auto-gen, same variants)
+    ├── asap7_antenna_overlay.lef   predictive antenna rules (A4 overlay mode)
+    ├── noop_tapcell.tcl            suppresses tap cells inside macro channels
     └── scripts/
         ├── gen_compute_array_floorplan.py  emit placement.tcl + preview.png
-        ├── gen_chip_top_floorplan.py       same, for chip_top (reads
-        │                                   submodule LEF dims, lays out
-        │                                   to a ~750×800 µm die).
+        ├── gen_smem_floorplan.py           same, for smem
+        ├── gen_chip_top_floorplan.py       same, for chip_top (A6)
         ├── gen_lef_from_odb.tcl            re-emit LEF + LIB from an
         ├── gen_lef.sh                      existing 6_final.odb without
-        │                                   re-running the full flow —
-        │                                   used to get chip_top's
-        │                                   submodule LEFs (cmdproc, load,
-        │                                   barrier, reset_seq,
-        │                                   compute_array_tiny) when the
-        │                                   original run skipped or failed
-        │                                   generate_abstract.
+        │                                   re-running the full flow (A6).
+        │                                   Used in A6 to harvest LEFs
+        │                                   for cmdproc/load/barrier/
+        │                                   reset_seq/compute_array_tiny.
         ├── rewrite_abstract_lef.tcl        bloated abstract LEF
-        ├── strip_lef_obs_layers.py         post-strip M6/M7 OBS
-        └── render_odb.sh                   any ODB → PNG via klayout
+        ├── strip_lef_obs_layers.py         post-strip M1/M2/M5/M6/M7 OBS
+        ├── render_odb.sh                   any ODB → PNG via klayout
+        ├── verify_macro_power.tcl          parent-PDN ↔ macro-pin connectivity check
+        ├── antenna_check.tcl               OpenROAD-side antenna-check driver
+        ├── inject_antenna_gate_area.py     LEF patcher used by antenna overlay mode
+        ├── ir_drop.tcl                     OpenROAD-side IR-drop driver
+        ├── _ir_drop_env.mk                 ORFS env probe (include-only make file)
+        ├── ir_drop_postprocess.py          IR-drop CSV → sign-off report
+        ├── lvs.py                          KLayout cell-instance LVS impl
+        └── tests/
+            ├── test_inject_antenna_gate_area.py
+            └── test_ir_drop_postprocess.py
 ```
 
 Build artifacts (all gitignored, all under `build/`):
@@ -244,57 +296,75 @@ ship broken silicon if left unaddressed.
 
 ### Hard blockers (silicon would not function)
 
-- [ ] **BLOCKER: PSM-0069 floating macro power pins.** `pdngen` in
-      `compute_array.pdn.tcl` has only a `top` grid + parent-stripe-to-stripe
-      connect rules. It does *not* have a `-macro` grid telling pdngen to
-      weld parent stripes to leaf-macro VDD/VSS pins. Result on
-      `compute_array_tiny_bcast0`: 264 macro power pins, **0** with any
-      overlapping parent power-net shape (verified by
-      `scripts/verify_macro_power.tcl`). Silicon would have ~264 floating
-      VDD/VSS instances per tiny → brown-out. **Fix:** add
-      `define_pdn_grid -macro` + `add_pdn_connect -grid macro_grid -layers
-      {M5 M6}` and `{M6 M7}` to `compute_array.pdn.tcl`. Stripe pitch may
-      need adjusting so vias actually land on the 5.4 µm-pitch leaf pin
-      rows. Re-run tiny, confirm `verify_macro_power.tcl` exits 0.
+- [x] **RESOLVED (A1): PSM-0069 floating macro power pins.** Fixed by
+      adding a `define_pdn_grid -macro` + `add_pdn_connect -grid
+      macro_grid -layers {M5 M6}` and `{M6 M7}` to
+      `compute_array.pdn.tcl`. Post-fix: `verify_macro_power.tcl`
+      reports `ok=264 fail=0` on `compute_array_tiny_bcast0` and
+      `ok=12752 fail=0` on the full 32×32 `compute_array` post-PDN ODB.
+      See `tech/asap7/problems/A1_pdn_macro_grid.md`.
 
-- [ ] **BLOCKER: ~200 ps negative hold slack accepted as workaround.**
-      `compute_array_tiny_bcast0.config.mk` sets `HOLD_SLACK_MARGIN=-200`,
-      which tells `repair_timing` to terminate hold-fix when violations are
-      within 200 ps (instead of fixing them). The violations remain in the
-      design. On real silicon, broadcast paths from `cmd_unit` to
-      `skew_lane` macros would race ahead of receiving clock edges and
-      capture wrong values. **Fix candidates:** (a) insert an RTL pipeline
-      flop in `compute_array.sv` between `cmd_unit` and the `skew_lane`
-      macros (cleanest; +1 cycle latency); (b) re-harden leaves with
-      matched `set_clock_latency` so internal CTS arrival aligns; (c)
-      commercial CTS (CCOpt / ICC2). See "Hold-timing limitation" section
-      above for the analysis.
+- [x] **RESOLVED (A2, 2026-05-25): ~200 ps negative hold slack.**
+      `compute_array_tiny_bcast0.config.mk` no longer sets
+      `HOLD_SLACK_MARGIN`. Fix taken: option (a) above — `compute_array.sv`
+      now has a `BCAST_PIPE=1` parent-level pipeline stage on every
+      cmd_unit → skew_lane / mac_tmem_cell broadcast (with a matching
+      output pipe on the chip-external completion signals so cocotb
+      cycle-by-cycle lockstep still passes; pymodel models the same
+      latency). Combined with relaxing the SDC from 1 GHz → 400 MHz,
+      post-route timing is 0 hold violations, 0 setup violations, fmax
+      440 MHz. See `tech/asap7/problems/A2_hold_timing_rtl.md`.
 
 ### Integration gaps (chip is not fully assembled)
 
-- [x] **chip_top integrated as first-pass.** A6 landed
+- [x] **chip_top integrated as first-pass (A6).** Lands
       `chip_top.config.mk` + `.sdc` + `.pdn.tcl` +
       `scripts/gen_chip_top_floorplan.py` + macro_placement.tcl. Uses
-      `compute_array_tiny_bcast0` (4×4 mac grid, the only compute_array
-      variant that completed routing on asap7) as the compute_array
-      black-box, with chip_top synthesized at MMA_M=MMA_N=MMA_K=4. cmdproc,
-      load, barrier, reset_seq, and the compute_array variant are
-      hardened LEFs; smem is inlined → 32 fakeram7_256x32 banks; store is
-      inlined → flat FF logic. Die: ~750 × 800 µm. Still open: full-size
-      (MMA_M=32) chip_top depends on A1+A2 closing compute_array. See
-      "chip_top integration (A6)" section below for caveats.
+      `compute_array_tiny_bcast0` (4×4 mac grid) as the compute_array
+      black-box, with chip_top synthesized at MMA_M=MMA_N=MMA_K=4.
+      cmdproc, load, barrier, reset_seq, and the compute_array variant
+      are hardened LEFs; smem is inlined → 32 fakeram7_256x32 banks;
+      store is inlined → flat FF logic. Die: ~750 × 800 µm. Still open:
+      full-size (MMA_M=32) chip_top — with A1 + A2 closed in master,
+      the full 32×32 `compute_array` can now harden; bumping `MMA_DIM=32`
+      and swapping the compute_array LEF reference is the only delta.
+      Currently stuck in detail route iterations on smem's bank_rdata
+      mux congestion (see caveats below). See `tech/asap7/problems/A6_chip_top.md`.
 
 - [ ] **No IO pads / pad ring.** The ORFS asap7 platform doesn't ship pad
       cells. Tape-out needs pads (or a wafer-level format without them).
 
 ### Sign-off gaps (chip might not be verifiable as correct)
 
-- [ ] **No LVS.** Magic + netgen with asap7 is not set up. Currently no
-      schematic-vs-layout equivalence at any level.
-- [ ] **No antenna sign-off.** Neither asserted nor verified.
-- [ ] **No IR-drop sign-off.** `psm` runs but we've been working around its
-      false-failure mode (which on inspection turned out to be a real
-      failure — see PSM-0069 above).
+- [~] **LVS — cell-instance level shipped, transistor-level blocked.**
+      `tech/asap7/orfs/lvs.sh <module>` runs a KLayout-based equivalence
+      check on the post-route GDS vs. `6_final.v` for any hardened
+      block, treating standard cells and hardened macros as black-box
+      subcircuits. See "LVS infrastructure" below for what it catches
+      (and what the asap7 PDK gap — no transistor-level rule deck —
+      prevents).
+- [~] **Antenna sign-off — tooling shipped, PDK gap blocks.**
+      `tech/asap7/orfs/antenna_check.sh <module>` invokes OpenROAD's
+      `check_antennas` against the routed ODB and writes a per-module
+      report. ORFS's `repair_antennas` is already integrated into
+      `global_route.tcl` and `detail_route.tcl` (defaults
+      `SKIP_ANTENNA_REPAIR*=0`), so any fix-up has already happened by
+      the time the check runs. **However**, the asap7 platform LEF has
+      *zero* antenna properties (no `ANTENNAGATEAREA` on stdcell pins,
+      no `ANTENNAAREARATIO` on M1..M9), so the check has nothing to
+      evaluate. `antenna_check.sh` distinguishes "clean" from "vacuous
+      pass" via exit code 4. See `tech/asap7/PDK_GAPS.md` for the data
+      that'd need to be added.
+- [~] **IR-drop sign-off — tooling shipped, parent-level re-run pending.**
+      `tech/asap7/orfs/ir_drop.sh <module>` runs psm (analyze_power_grid)
+      post-route with a documented activity factor (default 0.10) and
+      reports worst-case Vdrop vs 10% of VDD. Exit 0=PASS, 1=FAIL
+      (Vdrop > budget), 2=BLOCKED (PSM-0069), 3=tool/env failure. Leaf
+      `mac_tmem_cell` passes (2.3 mV / 70 mV budget). The previous
+      A1-PDN-bug BLOCKED status on `compute_array_tiny_bcast0` is
+      resolved (see Hard blockers above); re-run after a fresh
+      compute_array route to capture the real Vdrop number. chip_top
+      doesn't yet exist (A6).
 
 ### Fundamental constraint (outside this repo's reach)
 
@@ -312,7 +382,6 @@ ship broken silicon if left unaddressed.
       after every parent-level run: `openroad -exit -db <path>/6_final.odb
       scripts/verify_macro_power.tcl`. Exit 0 = clean, exit 1 = real PDN
       bug. Caught PSM-0069 as a real bug rather than tool artifact.
-
 - [x] `scripts/gen_lef_from_odb.tcl` + `gen_lef.sh` — re-emit a leaf's
       LEF + timing LIB from an existing `6_final.odb` without re-running
       the whole flow. Used in A6 to harvest LEFs for `cmdproc`, `load`,
@@ -323,29 +392,83 @@ ship broken silicon if left unaddressed.
       liberty files preloaded; then runs `strip_lef_obs_layers.py` to
       strip M1/M2/M5/M6/M7 OBS so parent stripes can pass over.
 
+- [x] `antenna_check.sh` — one-command antenna sign-off for an
+      ORFS-routed module. Reads tech + stdcell + macro LEFs and the
+      post-route ODB, runs `check_antennas`, writes
+      `build/orfs/reports/asap7/<module>/base/antenna.log`. Exit 0 / 2 / 4
+      mean clean / violations / vacuous (no PDK rules). See
+      `tech/asap7/PDK_GAPS.md`.
+- [x] `orfs/ir_drop.sh <module> [--budget F] [--activity A]` — static
+      IR-drop sign-off via psm. Loads `6_final.odb` + `.spef`, runs
+      `report_power` with `set_power_activity -global -activity 0.10`
+      (default), then `analyze_power_grid -voltage_file -error_file` for
+      both nets at the asap7 typical corner (VDD=0.70 V). Outputs
+      `build/orfs/reports/asap7/<module>/base/{ir_drop.log,VDD_voltage.csv,VSS_voltage.csv,VDD_error.rpt,VSS_error.rpt}`.
+      The `.log` ends with a one-line `SUMMARY:` for grepping. Failing
+      instances (above budget) are listed by name + (x,y) + layer.
+      Activity factor and supply voltage are documented in every report.
+- [x] `orfs/lvs.sh` — cell-instance LVS. See "LVS infrastructure" below.
+
+### Sign-off tool exit-code conventions
+
+Each sign-off tool defines its own exit-code contract. The codes overlap
+numerically but encode different distinctions per tool — a future
+aggregator that runs several tools needs a per-tool mapping table to
+arrive at a single tape-out verdict.
+
+| exit | `verify_macro_power.tcl` | `antenna_check.sh`        | `ir_drop.sh`           | `lvs.sh`               |
+|------|--------------------------|---------------------------|------------------------|------------------------|
+| 0    | CLEAN                    | CLEAN                     | PASS                   | CLEAN                  |
+| 1    | (real PDN bug)           | usage / artifact missing  | FAIL (Vdrop > budget)  | FAIL (mismatch)        |
+| 2    | —                        | VIOLATIONS                | BLOCKED (PSM-0069)     | config / artifact error|
+| 3    | —                        | openroad invocation failed| tool / env failure     | —                      |
+| 4    | —                        | VACUOUS PASS (no PDK rules)| —                     | —                      |
+
+Why they differ (not a bug, but worth knowing):
+
+- `antenna_check.sh` has the extra **VACUOUS PASS** state because the
+  asap7 platform LEF ships with zero antenna properties; "0 violations"
+  is meaningless without rules and must be distinguished from a real
+  clean. There is no FAIL/BLOCKED distinction because the check itself
+  cannot tell those apart — any non-zero violation count is FAIL.
+- `ir_drop.sh` distinguishes **FAIL** (Vdrop computed and over budget,
+  fix the PDN density) from **BLOCKED** (psm couldn't compute Vdrop
+  because the grid is disconnected via PSM-0069, fix the PDN
+  *connectivity* — see A1). The remediation paths are different so the
+  exit codes have to be.
+- `lvs.sh` uses exit 2 for "config / artifact error" (missing GDS or
+  Verilog input), not for a tape-out-relevant pass/fail state. Its
+  pass/fail is binary at the cell-instance level: clean (0) or mismatch
+  (1). The PDN power-pin check is folded into the mismatch verdict.
+
+Treat **exit 0 = green** as the only cross-tool invariant. Anything
+non-zero needs per-tool interpretation. When a tape-out aggregator
+script exists, the mapping above is its source of truth.
+
 ## chip_top integration (A6)
 
 First-pass `chip_top.config.mk` hardens a 4×4 (MMA_M=MMA_N=MMA_K=4)
-chip_top against the `compute_array_tiny_bcast0` LEF. The 32×32 version
-needs A1's PSM-0069 fix on `compute_array.pdn.tcl` *and* A2's hold
-closure before its `compute_array.lef` will exist.
+chip_top against the `compute_array_tiny_bcast0` LEF. Once A1+A2 close
+compute_array at 32×32 (now possible since both are merged on master),
+bumping `MMA_DIM=32` and swapping the `compute_array_tiny_bcast0` →
+`compute_array` LEF reference in chip_top.config.mk is the only delta.
 
-### Why MMA=4 not 32
+### Why MMA=4 first-pass
 
-`compute_array_tiny_bcast0` is the only compute_array variant whose
-routing completed. The full 32×32 (`compute_array`) stops at the CTS
-hold-repair runaway (RSZ-0060); all `compute_array_bcastN` and
-`compute_array_clkN` variants stalled in the same place. The tiny LEF
-has MMA_M=4 port widths (rd_a_data[31:0] vs full's [255:0]), so
-chip_top must match. `chip_top.sv` got `\`ifndef MMA_M / \`define
-MMA_M 32 / \`endif` guards (mirroring the `compute_array.sv` pattern)
-plus explicit parameter passing on every submodule instantiation, so
-`sv2v -D MMA_M=4` is sufficient to specialize the whole netlist.
+When this PR was authored, `compute_array_tiny_bcast0` was the only
+compute_array variant whose routing completed. The full 32×32
+(`compute_array`) stopped at the CTS hold-repair runaway (RSZ-0060);
+all `compute_array_bcastN` and `compute_array_clkN` variants stalled in
+the same place. The tiny LEF has MMA_M=4 port widths (rd_a_data[31:0]
+vs full's [255:0]), so chip_top must match. `chip_top.sv` got
+`\`ifndef MMA_M / \`define MMA_M 32 / \`endif` guards (mirroring the
+`compute_array.sv` pattern) plus explicit parameter passing on every
+submodule instantiation, so `sv2v -D MMA_M=4` is sufficient to
+specialize the whole netlist.
 
-Once compute_array hardens cleanly at 32×32, the same config files
-work — bump `MMA_DIM=32` on the sv2v target, swap
-`compute_array_tiny_bcast0` → `compute_array` in chip_top.config.mk's
-`ADDITIONAL_LEFS`/`LIBS`/`GDS`, and re-run `gen_chip_top_floorplan.py`.
+A1 (PDN macro_grid) + A2 (BCAST_PIPE=1 + 2500ps SDC) have since merged.
+The full 32×32 compute_array should now harden cleanly. Once it does,
+chip_top can run at full MMA=32.
 
 ### What chip_top consumes
 
@@ -362,20 +485,26 @@ work — bump `MMA_DIM=32` on the sv2v target, swap
 
 ### Known caveats at chip_top first-pass
 
-1. **PSM-0069 propagates.** `chip_top.pdn.tcl` does NOT yet contain a
-   `-macro` grid that welds parent stripes to leaf-macro VDD/VSS pins,
-   so all 37 hardened-macro instances (1 compute_array + 4 sub-block +
-   32 fakeram) will have floating power. Documented; same fix as A1.
-2. **compute_array GDS is empty.** `compute_array_tiny_bcast0` never
-   reached the KLayout merge step (PSM-0069 failed the final report
-   first). `GDS_ALLOW_EMPTY=(fakeram.*|compute_array)` lets chip_top's
-   streamout produce a `chip_top.gds` with a stub for compute_array.
-   Replace once the merge runs cleanly.
-3. **`HOLD_SLACK_MARGIN=-200`** at chip_top, same as A2's workaround at
-   compute_array. Broadcast nets cmdproc→engines have the same
-   hierarchical-CTS-skew pattern.
+1. **PSM-0069 needs the A1 `-macro` grid pattern.** `chip_top.pdn.tcl`
+   should mirror the same `define_pdn_grid -macro` + `add_pdn_connect`
+   rules A1 added to `compute_array.pdn.tcl`. Without this, all 37
+   hardened-macro instances (1 compute_array + 4 sub-block + 32
+   fakeram) will have floating power. Apply A1's pattern verbatim.
+2. **compute_array GDS exists post-A1.** Earlier runs failed before the
+   KLayout merge step because PSM-0069 stopped the final report. With
+   A1 merged + a fresh compute_array_tiny_bcast0 route producing a real
+   6_final.gds, the `GDS_ALLOW_EMPTY=(fakeram.*|compute_array)` hack at
+   chip_top streamout can be tightened to just `(fakeram.*)`.
+3. **`HOLD_SLACK_MARGIN=-200`** at chip_top is the historic A2 workaround.
+   A2 itself closed via BCAST_PIPE=1 + 2500ps SDC at compute_array; if
+   chip_top's hold issues come from the same hierarchical-CTS-skew
+   pattern, prefer that same structural fix over the SLACK_MARGIN
+   bandaid.
 4. **No IO pads.** Top-level ports are die-edge pins. Pad ring is a
    separate follow-up.
+5. **smem standalone is broken (GRT-0116 congestion).** chip_top inlines
+   smem to dodge the broken LEF. Real fix: per-block smem follow-up to
+   either retune its floorplan or fix the bank_rdata mux RTL.
 
 ### How to re-run
 
@@ -384,4 +513,115 @@ work — bump `MMA_DIM=32` on the sv2v target, swap
 uv run python tech/asap7/orfs/scripts/gen_chip_top_floorplan.py
 make -C tech/sky130 build/sv2v/chip_top_asap7_tiny.v   # or MMA_DIM=32
 ./tech/asap7/orfs/run.sh chip_top
+```
+
+## LVS infrastructure
+
+`tech/asap7/orfs/lvs.sh <module>` runs a Layout-vs-Schematic check on a
+hardened block. Outputs exit code 0 on clean, nonzero on mismatch, and
+writes a report to `build/orfs/reports/asap7/<module>/base/lvs.log`.
+
+### What it does
+
+For a given module (e.g., `mac_tmem_cell`, `compute_array_tiny_bcast0`):
+
+1. Reads `build/orfs/results/asap7/<module>/base/6_final.gds`.
+2. Extracts a gate-level netlist from the GDS via KLayout's
+   `LayoutToNetlist`. Standard cells (`*_ASAP7_75t_*`) and hardened
+   macros are treated as black-box subcircuits — only the metal-stack
+   routing M1..M9 + via stack V1..V8 is traced, no transistor-level
+   extraction.
+3. Reads `6_final.v` and parses it into a `pya.Netlist` via a custom
+   structural-Verilog parser.
+4. Reconciles known asymmetries (physical-only cells in GDS but not
+   netlist, dangling CTS-load outputs, etc).
+5. Compares with `pya.NetlistComparer`.
+
+### What it catches
+
+Two independent checks must both pass to report LVS clean:
+
+1. **Structural cell-instance compare** (KLayout NetlistComparer)
+    - Misplaced or missing cells (GDS cell count ≠ Verilog instance count).
+    - Routing shorts and opens (two cell pins on the same M1 net where
+      the netlist says they should be separate, or vice versa).
+    - Pin swaps (a cell's `A` and `B` inputs wired the wrong way).
+    - Mis-routed buses (one bit of a bus connected to the wrong
+      destination).
+
+2. **Macro power-pin connectivity check**
+    - **Floating macro power pins** — the PSM-0069 failure mode. For
+      each subcircuit instance, the script verifies its VDD/VSS pins
+      land on a multi-fanout (global) net at the parent level. Any pin
+      on a 1-fanout dangling net flags a PDN bug. (This check has to
+      run *before* the structural simplify, which would otherwise purge
+      the dangling nets and mask the issue.)
+
+This sort of cleanly separates "did you wire the signal nets right?"
+(structural) from "did the PDN actually deliver power to every macro?"
+(PDN check).
+
+### What it does NOT catch (asap7 PDK gap — explicit limitation)
+
+- **Standard-cell-internal transistor-level bugs.** asap7 ships no
+  production-grade LVS rule deck:
+    - The volare-packaged asap7 has empty placeholder files at
+      `~/.volare/asap7/libs.tech/{magic,netgen}/*`
+    - `openroad/orfs:latest` does not have `magic` or `netgen` installed
+    - The ORFS asap7 platform dir has only `drc/` (DRC rules from
+      laurentc2), no `lvs/`
+    - KLayout LVS is installed (we use its `LayoutToNetlist`) but no
+      transistor-extraction rule deck exists for asap7 either
+  Writing one from scratch for production tape-out would mean porting
+  the asap7 LEF/GDS cell geometries into KLayout LVS DSL — a sizable
+  task and ultimately moot, since asap7 is itself an academic predictive
+  PDK with no fab path (see "Fundamental constraint" below).
+
+- **Stdcell substitution attacks.** If a stdcell GDS were swapped with
+  a malformed variant (same cell name, different transistor topology),
+  cell-instance LVS wouldn't notice. Out of scope; trust the PDK.
+
+### Hierarchy mode
+
+Cell-instance hierarchical: standard cells are black-box leaves; hardened
+macros (`mac_tmem_cell`, `skew_lane_a/b`, `cmd_unit` at compute_array
+level) are also black-box. At the leaf level, the lvs.sh on each
+hardened macro verifies that macro's own routing. At the parent level,
+those macros become black boxes so we only check the parent's routing.
+This is the same hierarchy mode used by commercial LVS flows for
+top-down tape-out sign-off — each level checks only what's new at that
+level.
+
+### Reproduction
+
+```bash
+# After the synthesis flow has produced 6_final.gds / .v:
+./tech/asap7/orfs/lvs.sh mac_tmem_cell                # PASS
+./tech/asap7/orfs/lvs.sh skew_lane_a                  # PASS
+./tech/asap7/orfs/lvs.sh skew_lane_b                  # PASS
+./tech/asap7/orfs/lvs.sh cmd_unit                     # PASS
+./tech/asap7/orfs/lvs.sh compute_array_tiny_bcast0    # PASS (post-A1)
+```
+
+Uses the same `openroad/orfs:latest` Docker image as the synthesis
+flow; no additional tools required.
+
+Note: pre-A1, the compute_array case failed with 31 macro VDD/VSS
+power pins landing on dangling single-fanout nets — the LVS PDN check
+independently triangulated PSM-0069 before A1 closed it. After the A1
+`-macro` grid lands the LVS PDN check should report green and the
+overall compute_array LVS should pass.
+
+### Files
+
+```
+tech/asap7/orfs/
+├── lvs.sh                          driver (this is what you invoke)
+├── scripts/
+│   └── lvs.py                      KLayout Python implementation
+└── ...
+build/orfs/reports/asap7/<module>/base/
+├── lvs.log                         full LVS report
+└── layout_netlist.cir              SPICE dump of the extracted netlist
+                                    (handy for grep / manual inspection)
 ```

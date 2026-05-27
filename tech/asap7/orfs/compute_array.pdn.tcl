@@ -52,4 +52,19 @@ add_pdn_stripe -grid {top} -layer {M7} -width {0.288} -spacing {0.096} \
 add_pdn_connect -grid {top} -layers {M1 M2}     ;# stdcell rail crossings
 add_pdn_connect -grid {top} -layers {M2 M5}     ;# followpin up to intermediate
 add_pdn_connect -grid {top} -layers {M5 M6}     ;# intermediate to channel grid
-add_pdn_connect -grid {top} -layers {M6 M7}     ;# channel intersections + leaf VDD/VSS
+add_pdn_connect -grid {top} -layers {M6 M7}     ;# channel intersections
+
+# Macro PDN grid — welds parent stripes to hardened-leaf VDD/VSS pins.
+# Leaf abstract LEFs expose power pins on M6 as horizontal stripes at
+# y = mac_y + {2.529, 2.913, 7.929, 8.313, ...} (5.4 µm period), spanning
+# the full macro x-width (~2.05 to 32.51). Parent verticals (M5 at x =
+# 8.54+k*27.5 and M7 at the same x-positions) cross over each macro at
+# least once and drop M5/M6 and M6/M7 vias onto every leaf pin row.
+#
+# Without this -macro grid + connect rules, pdngen treats leaf macros as
+# unrelated geometry and never welds parent power to leaf pins
+# (PSM-0069). See tech/asap7/problems/A1_pdn_macro_grid.md.
+define_pdn_grid -macro -name {macro_grid} -voltage_domains {CORE} \
+    -halo {2.0 2.0 2.0 2.0} -default
+add_pdn_connect -grid {macro_grid} -layers {M5 M6}
+add_pdn_connect -grid {macro_grid} -layers {M6 M7}

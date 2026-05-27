@@ -21,8 +21,10 @@ matplotlib.use("Agg")
 import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 
-# Repo layout.
-REPO = Path("/home/ubuntu/pipitone/gpu2")
+# Repo layout. Resolve from this script's location so the floorplan can
+# regenerate from a checkout at any path (was hardcoded to a sibling
+# clone earlier, which made the script unusable from a fresh worktree).
+REPO = Path(__file__).resolve().parents[4]
 RESULTS = REPO / "build/orfs/results/asap7"
 OUT_DIR = REPO / "tech/asap7/orfs"
 
