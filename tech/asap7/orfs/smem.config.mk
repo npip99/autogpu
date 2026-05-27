@@ -30,6 +30,11 @@ export MACRO_PLACEMENT_TCL = /work/tech/asap7/orfs/smem.macro_placement.tcl
 export MACRO_PLACE_HALO    = 5 5
 export MACRO_PLACE_CHANNEL = 10 10
 
+# Custom PDN that welds parent stripes to smem_bank M6 power pins.
+# ORFS default BLOCKS_grid_strategy doesn't include macro_grid welding,
+# which leaves smem_bank power pins floating (PSM-0069 / PDN-0233).
+export PDN_TCL = /work/tech/asap7/orfs/smem.pdn.tcl
+
 # Keep yosys from inlining the 32 smem_bank wrappers — each is its own
 # hardened LEF and the macro placer needs them as discrete instances.
 export SYNTH_HIERARCHICAL = 1
