@@ -20,8 +20,17 @@ import matplotlib.pyplot as plt
 REPO = Path(__file__).resolve().parents[4]
 OUT_DIR = REPO / "tech/asap7/orfs"
 
-NUM_BANKS = 32
-COLS, ROWS = 8, 4
+# Post-B1 region-partitioned smem only ACTUALLY USES banks 0-15 (A region
+# banks 0-7, B region banks 8-15). Banks 16-31 (regions 2-3, addr 8192+)
+# exist in the SMEM address space but no consumer reads them in the
+# current asm convention. Yosys DCE's their smem_bank instances since
+# bank_en[16..31] is always 0 — so the macro_placement.tcl must not
+# reference banks 16-31 (would fail MPL-0020: macro not found).
+#
+# Lay out only the 16 USED banks. Future asm extension can re-enable
+# banks 16-31 by adding consumers that target regions 2-3.
+NUM_BANKS = 16
+COLS, ROWS = 8, 2
 
 # smem_bank macro dimensions (from tech/asap7/orfs/smem_bank.config.mk
 # DIE_AREA = 0 0 60 80). Wraps fakeram7_256x32 + per-output gating logic.

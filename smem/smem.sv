@@ -142,7 +142,7 @@ module smem #(
     // ------------------------------------------------------------------
     // Bank-storage parameters.
     // ------------------------------------------------------------------
-    localparam int NUM_BANKS          = 32;
+    localparam int NUM_BANKS          = 16;
     localparam int BYTES_PER_DWORD    = 4;
     localparam int NUM_WORDS_PER_BANK = SMEM_BYTES / NUM_BANKS / BYTES_PER_DWORD;
 
@@ -157,7 +157,7 @@ module smem #(
         $error("smem_bank is hardened for %0d words but smem.sv computed NUM_WORDS_PER_BANK=%0d. Re-harden smem_bank (edit `SMEM_BANK_WORDS in smem_bank.sv and re-run ./tech/asap7/orfs/run.sh smem_bank).",
                `SMEM_BANK_WORDS, NUM_WORDS_PER_BANK);
     end
-    localparam int BANK_BITS          = 5;
+    localparam int BANK_BITS          = 4;
     localparam int WORD_BITS          = $clog2(NUM_WORDS_PER_BANK);
 
     localparam int WR_DWORDS          = BEAT_BYTES / 4;   // 4
@@ -167,18 +167,16 @@ module smem #(
     // ------------------------------------------------------------------
     // Bank decode helpers — REGION-PARTITIONED LAYOUT.
     //
-    // SMEM is divided into 4 regions of 8 banks each, picked by
-    // addr[13:12]. Within a region, addr[4:2] selects one of 8 banks
+    // SMEM is divided into 2 regions of 8 banks each, picked by
+    // addr[12]. Within a region, addr[4:2] selects one of 8 banks
     // cyclically. addr[11:5] is the word index (128 words per bank).
     //
-    //   bank[4:3] = region (addr[13:12])
+    //   bank[3]   = region (addr[12])
     //   bank[2:0] = bank-within-region (addr[4:2])
     //
     // Region usage (convention enforced at the asm/test level):
-    //   region 0 (banks 0-7,   addr 0..4095):    OPERAND A
-    //   region 1 (banks 8-15,  addr 4096..8191): OPERAND B
-    //   region 2 (banks 16-23, addr 8192..12287): scratch / future
-    //   region 3 (banks 24-31, addr 12288..16383): scratch / future
+    //   region 0 (banks 0-7,  addr 0..4095):    OPERAND A
+    //   region 1 (banks 8-15, addr 4096..8191): OPERAND B
     //
     // Consequence: rd_a always touches banks 0-7 (its 8 dwords come
     // from exactly those 8 banks with no cyclic shift); rd_b always
@@ -187,14 +185,13 @@ module smem #(
     // ------------------------------------------------------------------
     /* verilator lint_off UNUSEDSIGNAL */
     function automatic logic [BANK_BITS-1:0] bank_of(input logic [31:0] addr);
-        return {addr[13:12], addr[4:2]};
+        return {addr[12], addr[4:2]};
     endfunction
 
-    // Region index — used to tell consumers which 8-bank set the addr
-    // targets. Replaces the old `group_of(addr) = addr[6:5]` (which was
-    // an 8-bank group inside the cyclic 32-bank layout).
-    function automatic logic [1:0] region_of(input logic [31:0] addr);
-        return addr[13:12];
+    // Region index — 0 or 1 (A or B region). Replaces the old
+    // `group_of(addr) = addr[6:5]` from the cyclic 32-bank layout.
+    function automatic logic region_of(input logic [31:0] addr);
+        return addr[12];
     endfunction
 
     // Word index inside a bank. addr[11:5] is the 7-bit word number
@@ -373,19 +370,17 @@ module smem #(
     logic [2:0]  bank_rd_b_dword_idx[NUM_BANKS];
 
     always_comb begin
-        logic [1:0]             rd_a_region, rd_b_region;
+        logic                   rd_a_region, rd_b_region;
         logic [BANK_BITS-1:0]   b_id;
         rd_a_region = region_of(rd_a_pending_addr);
         rd_b_region = region_of(rd_b_pending_addr);
         for (int b = 0; b < NUM_BANKS; b++) begin
-            // bank b is in region b[4:3]. If pending read targets that
+            // bank b is in region b[3]. If the pending read targets that
             // region, the bank is active and its dword_idx is b[2:0].
             b_id = BANK_BITS'(b);
-            bank_rd_a_active[b]    = rd_a_pending_valid &&
-                                     (rd_a_region == b_id[4:3]);
+            bank_rd_a_active[b]    = rd_a_pending_valid && (rd_a_region == b_id[3]);
             bank_rd_a_dword_idx[b] = b_id[2:0];
-            bank_rd_b_active[b]    = rd_b_pending_valid &&
-                                     (rd_b_region == b_id[4:3]);
+            bank_rd_b_active[b]    = rd_b_pending_valid && (rd_b_region == b_id[3]);
             bank_rd_b_dword_idx[b] = b_id[2:0];
         end
     end
@@ -478,11 +473,11 @@ module smem #(
     /* verilator lint_on UNUSEDSIGNAL */
     always_comb begin
         for (int i = 0; i < SMEM_BYTES; i++) begin
-            // Region-partitioned layout: bank = {addr[13:12], addr[4:2]},
+            // Region-partitioned layout: bank = {addr[12], addr[4:2]},
             // word = addr[11:5]. (Was bank = addr[6:2], word = addr[13:7]
-            // under the cyclic layout.)
+            // under the cyclic 32-bank layout.)
             mem[i] = bank_mem
-                [{i[13:12], i[4:2]}]
+                [{i[12], i[4:2]}]
                 [i[11:5]]
                 [(i & 3) * 8 +: 8];
         end

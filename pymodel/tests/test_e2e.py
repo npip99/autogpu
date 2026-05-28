@@ -24,7 +24,7 @@ def test_single_tile_matmul_random():
     # Post-B1 region-partitioned smem: A in region 0 (addr 0..4095), B in
     # region 1 (addr 4096..8191). bank = {addr[13:12], addr[4:2]}; rd_a
     # wires direct from banks 0-7, rd_b from banks 8-15.
-    B_smem = SMEM_BYTES // 4  # = 4096 = start of region 1
+    B_smem = SMEM_BYTES // 2  # = 4096 = start of region 1
 
     sim = Sim()
     sim.load_gmem(A_gmem, A_bytes)

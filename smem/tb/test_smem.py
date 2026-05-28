@@ -94,7 +94,7 @@ class SMEMAdapter:
 # rd_a only reads region 0; rd_b only reads region 1. LOAD writes to
 # whichever region the destination address falls in. Random tests must
 # respect this so the OR-tree-free read path returns valid data.
-_REGION_SIZE = SMEM_BYTES // 4  # = 4096 for the default 16KB SMEM
+_REGION_SIZE = SMEM_BYTES // 2  # 2 regions of 4 KB each (8 KB SMEM, 16 banks)
 
 
 def _rand_wr_addr(rng: random.Random, region: int = 0) -> int:
@@ -149,12 +149,13 @@ def _backdoor_load_dut(dut, addr: int, data: bytes) -> None:
     per (bank, word) before issuing writes — cocotb hierarchical writes
     are NBA, so successive read-modify-write of the same word would race.
     """
-    NUM_BANKS = 32
+    NUM_BANKS = 16
 
     # Region-partitioned bank decode (post-B1 refactor):
     #   bank = {addr[13:12], addr[4:2]}, word = addr[11:5]
     def _bank_of(byte_addr: int) -> int:
-        return ((byte_addr >> 7) & 0x18) | ((byte_addr >> 2) & 0x7)
+        # bank = {addr[12], addr[4:2]}  (1-bit region + 3-bit bank-within-region)
+        return ((byte_addr >> 9) & 0x8) | ((byte_addr >> 2) & 0x7)
     def _word_of(byte_addr: int) -> int:
         return (byte_addr >> 5) & 0x7F
 
@@ -205,7 +206,7 @@ async def test_scrub_clears_all_banks(dut):
     # Poison every bank-word with a non-zero pattern via back-door so we can
     # detect the scrub actually doing work. Writes go to both the sram_1rw
     # storage and the shadow.
-    NUM_BANKS = 32
+    NUM_BANKS = 16
     NUM_WORDS_PER_BANK = SMEM_BYTES // NUM_BANKS // 4
     for b in range(NUM_BANKS):
         for w in range(NUM_WORDS_PER_BANK):
@@ -249,7 +250,7 @@ async def test_directed_load_then_read_a(dut):
 
     # Zero bank storage (`initial` blocks only run at sim startup; if this
     # test ran a second time on the same sim, contents could be stale).
-    NUM_BANKS = 32
+    NUM_BANKS = 16
     NUM_WORDS_PER_BANK = SMEM_BYTES // NUM_BANKS // 4
     for b in range(NUM_BANKS):
         for w in range(NUM_WORDS_PER_BANK):
@@ -299,7 +300,7 @@ async def test_random_vs_pymodel(dut):
 
     # Zero bank storage to match pymodel's fresh state (reset preserves
     # memory).
-    NUM_BANKS = 32
+    NUM_BANKS = 16
     NUM_WORDS_PER_BANK = SMEM_BYTES // NUM_BANKS // 4
     for b in range(NUM_BANKS):
         for w in range(NUM_WORDS_PER_BANK):
@@ -398,7 +399,7 @@ async def test_bank_conflict_random(dut):
     # gmem/tmem convention). Since the previous test left random data
     # behind, we zero contents explicitly so both pymodel and DUT start
     # with the same all-zero memory.
-    NUM_BANKS = 32
+    NUM_BANKS = 16
     NUM_WORDS_PER_BANK = SMEM_BYTES // NUM_BANKS // 4
     for b in range(NUM_BANKS):
         for w in range(NUM_WORDS_PER_BANK):

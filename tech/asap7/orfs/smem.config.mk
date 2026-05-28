@@ -23,8 +23,8 @@ export ADDITIONAL_GDS  = $(ASAP7_RESULTS)/smem_bank/base/6_final.gds
 # that previously needed wide channels — modest 20 µm channels suffice.
 # DIE/CORE values come from gen_smem_floorplan.py.
 export FLOORPLAN_DEF =
-export DIE_AREA  = 0 0 750 500
-export CORE_AREA = 20 20 730 480
+export DIE_AREA  = 0 0 750 300
+export CORE_AREA = 20 20 730 280
 export MACRO_PLACEMENT_TCL = /work/tech/asap7/orfs/smem.macro_placement.tcl
 
 export MACRO_PLACE_HALO    = 5 5

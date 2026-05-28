@@ -13,7 +13,11 @@ MMA_N = 32
 MMA_K = 32
 
 # --- On-chip memory sizes ---
-SMEM_BYTES = 16 * 1024          # scratchpad: barriers + operand tiles
+SMEM_BYTES = 8 * 1024           # scratchpad: barriers + operand tiles.
+                                # Post-B1: 2 regions × 8 banks × 128 words × 4 B
+                                # = 8 KB. Region 0 (addr 0..4095) is A operand,
+                                # region 1 (addr 4096..8191) is B operand. Each
+                                # bank is one fakeram7_256x32 (depth 128 used).
 TMEM_SLOTS = 4                  # number of MMA_M x MMA_N fp32 accumulator tiles
 GMEM_BYTES = 1 << 24            # 16 MB DRAM model (TB-side only)
 
