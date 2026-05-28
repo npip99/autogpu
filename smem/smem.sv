@@ -67,7 +67,7 @@
 //
 // BACKDOOR (cocotb)
 // =================
-//   Per-bank storage lives inside `gen_banks[b].u_sram.mem[w]` (the
+//   Per-bank storage lives inside `gen_banks[b].u_bank.u_sram.mem[w]` (the
 //   sram_1rw instance). A read-only `mem[]` byte view is exposed at the
 //   smem.sv level for cocotb hierarchical reads
 //   (dut.u_smem.mem[byte_idx].value). The view samples bank rdata via
@@ -81,7 +81,7 @@
 //   reset is dominant: clears pending state + registered outputs. Bank
 //   contents preserved (matches gmem.sv / tmem.sv semantics). The
 //   post-power-on zeroing of bank contents is performed by the SCRUB
-//   PORT (driven by reset_seq) — when scrub_en=1, ALL 32 banks are
+//   PORT (driven by reset_seq) — when scrub_en=1, ALL 16 banks are
 //   written to 0 at scrub_addr (the per-bank word index). scrub_en is
 //   mutually exclusive with wr_en / rd_a_en / rd_b_en (chip_in_reset
 //   gates those off upstream).
@@ -98,7 +98,7 @@
 `endif
 
 module smem #(
-    parameter int SMEM_BYTES = 16384,
+    parameter int SMEM_BYTES = 8192,
     parameter int BEAT_BYTES = 16,
     parameter int MMA_M      = 32,
     parameter int MMA_N      = 32
@@ -385,13 +385,33 @@ module smem #(
         end
     end
 
+    // The hardened read-beat assembly below pulls rd_a's dwords from
+    // banks 0-7 (region 0) and rd_b's from banks 8-15 (region 1). That
+    // wiring is only valid if the operand partition holds: A tiles always
+    // live in region 0, B tiles always in region 1. The active-flag logic
+    // above is region-general, so a stray read into the wrong region would
+    // silently return zeros. Catch it in sim. (sv2v drops immediate
+    // assertions, so this is sim-only and never reaches synthesis.)
+    always_ff @(posedge clk) begin
+        if (!reset) begin
+            if (rd_a_pending_valid)
+                assert (region_of(rd_a_pending_addr) == 1'b0)
+                    else $error("smem: rd_a read into region 1 (addr=%h); read-beat assembly only wires banks 0-7 for rd_a.", rd_a_pending_addr);
+            if (rd_b_pending_valid)
+                assert (region_of(rd_b_pending_addr) == 1'b1)
+                    else $error("smem: rd_b read into region 0 (addr=%h); read-beat assembly only wires banks 8-15 for rd_b.", rd_b_pending_addr);
+        end
+    end
+
     // ------------------------------------------------------------------
-    // 32 smem_bank macros. Each owns its own fakeram + per-output-dword
-    // gating logic. Hardened LEF (smem_bank.lef); chip-level OR-tree
-    // below consolidates per-dword contributions across all 32 banks.
+    // 16 smem_bank macros (2 regions x 8). Each owns its own fakeram +
+    // per-output-dword gating logic. Hardened LEF (smem_bank.lef).
     //
-    // No central rdata mux at smem level — the 1024 bank-rdata wires
-    // that used to fan to a central mux are consumed inside each macro.
+    // No central rdata mux or OR-tree at smem level — under the region
+    // partition each bank drives exactly one dword of one read port, so
+    // the read beat is wired straight from the per-bank gated outputs.
+    // The 512 bank-rdata wires that used to fan to a central mux are
+    // consumed inside each macro.
     // ------------------------------------------------------------------
     logic [31:0] bank_rd_a_out [NUM_BANKS][8];
     logic [31:0] bank_rd_b_out [NUM_BANKS][8];
@@ -421,24 +441,6 @@ module smem #(
         end
     endgenerate
 
-    // Backdoor read-path for the previous monolithic mux pattern (other
-    // smem internals reference `bank_rdata`). Kept for cocotb backdoor
-    // compatibility and for the bank_mem shadow consistency check below.
-    logic [31:0] bank_rdata [NUM_BANKS];
-    generate
-        for (gb = 0; gb < NUM_BANKS; gb++) begin : gen_bank_rdata_shim
-            // Pull the rdata from whichever output the bank just drove
-            // (only one of rd_a_out[0..7] / rd_b_out[0..7] is non-zero
-            // per cycle, and only when the bank is actively reading;
-            // OR them all together to get bank_rdata).
-            always_comb begin
-                bank_rdata[gb] = 32'd0;
-                for (int d = 0; d < 8; d++) begin
-                    bank_rdata[gb] |= bank_rd_a_out[gb][d] | bank_rd_b_out[gb][d];
-                end
-            end
-        end
-    endgenerate
 
     // ------------------------------------------------------------------
     // Sim-only shadow `bank_mem[NUM_BANKS][NUM_WORDS_PER_BANK]` used for
@@ -449,7 +451,7 @@ module smem #(
     // real sram_1rw rdata outputs.
     //
     // For cocotb backdoor writes from a TB, write to bank_mem[b][w]
-    // directly AND also to gen_banks[b].u_sram.mem[w] (a helper does
+    // directly AND also to gen_banks[b].u_bank.u_sram.mem[w] (a helper does
     // both). The shadow is needed because Verilator + cocotb access
     // through generate blocks is fiddly and the mma/smem testbenches
     // already rely on the bank_mem[b][w] handle.
@@ -501,15 +503,14 @@ module smem #(
     // (at edge T) and the bank rdata flopped at edge T; we are now between
     // edge T and edge T+1, building the beat for the registered output.
     // ------------------------------------------------------------------
-    // Beat assembly is split into RDA_DWORDS + RDB_DWORDS explicit
-    // smem_dword_mux instances (4 bytes / 32 bits each). Each instance is
-    // kept_hierarchy so ORFS macro_placement can place them at distinct
-    // physical locations along the consumer edge — see
-    // tech/asap7/orfs/smem.macro_placement.tcl. Without this hierarchy
-    // discipline yosys flattens the 32-byte beat into a single central
-    // mux, the 1024 bank_rdata wires all converge there, and asap7
-    // detail-route can't escape the resulting congestion. See
-    // tech/asap7/problems/B1_smem_bank_rdata_congestion.md.
+    // Beat assembly reads directly from the per-bank gated outputs.
+    // Region partitioning (rd_a -> banks 0-7, rd_b -> banks 8-15) plus
+    // the per-dword gating inside each hardened smem_bank means only the
+    // already-selected dwords leave each bank, so the read beat is wired
+    // straight from bank outputs with no central mux. This is the B1 fix:
+    // the prior monolithic mux made all 16x32 = 512 bank-data wires
+    // converge on one region, which asap7 detail-route could not escape.
+    // See tech/asap7/problems/B1_smem_bank_rdata_congestion.md.
     logic [MMA_M*8-1:0] rd_a_beat;
     logic [MMA_N*8-1:0] rd_b_beat;
 

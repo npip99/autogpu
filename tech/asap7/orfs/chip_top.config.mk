@@ -8,7 +8,7 @@
 #     so chip_top's `compute_array u_compute_array` instantiation binds
 #     to it as a black-box.)
 #   - cmdproc, load, barrier, reset_seq — hardened LEFs (no MMA_M dep).
-#   - smem inlined → 32 fakeram7_256x32 macros from the asap7 platform.
+#   - smem inlined → 16 fakeram7_256x32 macros from the asap7 platform.
 #   - store inlined → flat FF banks (tile_buf_8row not used as a macro
 #     here because its hardened LEF was sized for the 32×32 chip_top's
 #     ROW_W=1024; tiny ROW_W=128 doesn't match).

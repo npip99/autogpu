@@ -1,7 +1,7 @@
 // chip_top.sv — synthesizable top of the toy fp8-matmul GPU.
 //
 // What's INSIDE the die (this file):
-//   cmdproc, smem (32 sram_1rw banks), compute_array (1024 mac_tmem_cell
+//   cmdproc, smem (16 sram_1rw banks), compute_array (1024 mac_tmem_cell
 //   leaves: 1 fp32 FMA + per-cell N_SLOTS register file at each (i, j)
 //   position; replaces the old monolithic mma + tmem pair as of Phase
 //   7h-3), load, store, barrier, reset_seq.
@@ -38,7 +38,7 @@ module chip_top #(
     parameter int MMA_N            = `MMA_N,
     parameter int MMA_K            = `MMA_K,
     parameter int TMEM_SLOTS       = 4,
-    parameter int SMEM_BYTES       = 16384,
+    parameter int SMEM_BYTES       = 8192,
     parameter int BEAT_BYTES       = 16,
     parameter int NUM_BARRIERS     = 8,
     // cmdproc instruction memory depth (max asm program length).
@@ -461,7 +461,7 @@ module chip_top #(
     assign mc_wr_data = st_wr_data;
 
     // ------------------------------------------------------------------
-    // SMEM (32 banks of sram_1rw).
+    // SMEM (16 banks: 2 regions x 8, hardened smem_bank macros).
     // ------------------------------------------------------------------
     smem #(
         .MMA_M     (MMA_M),

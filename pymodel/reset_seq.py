@@ -14,11 +14,11 @@ PURPOSE
     TMEM, plus any future fpnew pipeline regs) are scrubbed here.
 
 SCRUB DESIGN CHOICE
-    SMEM has 32 banks of 128 dwords each (NUM_WORDS_PER_BANK = SMEM_BYTES /
-    NUM_BANKS / 4 = 16384 / 32 / 4 = 128 dwords/bank, 4096 dwords / 16384B
-    total). The scrub port drives all 32 banks in parallel via a separate
+    SMEM has 16 banks of 128 dwords each (NUM_WORDS_PER_BANK = SMEM_BYTES /
+    NUM_BANKS / 4 = 8192 / 16 / 4 = 128 dwords/bank, 2048 dwords / 8192B
+    total). The scrub port drives all 16 banks in parallel via a separate
     write port that's not the LOAD_WR port (LOAD_WR only writes 4 banks per
-    cycle). Each scrub cycle writes one per-bank word index across all 32
+    cycle). Each scrub cycle writes one per-bank word index across all 16
     banks. Total scrub depth = NUM_WORDS_PER_BANK = 128 cycles. After the
     final cycle, every dword in every bank has been written to 0.
 
@@ -152,7 +152,7 @@ class ResetSeqConfig(BaseModel):
 
     `scrub_depth` is the number of cycles required to scrub the entire
     on-chip SMEM. It equals NUM_WORDS_PER_BANK because the scrub port
-    drives all 32 banks in parallel.
+    drives all 16 banks in parallel.
     """
 
     model_config = ConfigDict(frozen=True)

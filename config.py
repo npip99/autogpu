@@ -15,9 +15,20 @@ MMA_K = 32
 # --- On-chip memory sizes ---
 SMEM_BYTES = 8 * 1024           # scratchpad: barriers + operand tiles.
                                 # Post-B1: 2 regions × 8 banks × 128 words × 4 B
-                                # = 8 KB. Region 0 (addr 0..4095) is A operand,
-                                # region 1 (addr 4096..8191) is B operand. Each
-                                # bank is one fakeram7_256x32 (depth 128 used).
+                                # = 8 KB (was 16 KB / 32 banks pre-B1; the
+                                # region-partition halved it). Region 0 (addr
+                                # 0..4095) is A operand, region 1 (addr
+                                # 4096..8191) is B operand. Each bank is one
+                                # fakeram7_256x32 (depth 128 used).
+                                #
+                                # Double-buffer fit: A and B tiles are fp8,
+                                # MMA_M*MMA_K = MMA_K*MMA_N = 1024 B each. Region
+                                # 0 holds the 128 B barrier region + A tiles:
+                                # 2 ping-pong A tiles = 2048 B ≤ 3968 B free.
+                                # Region 1 holds B tiles: 2048 B ≤ 4096 B. Both
+                                # fit with room for a 3rd buffer. The 4096 B
+                                # fp32 D tile lives in TMEM (TMEM_BYTES), not
+                                # SMEM, so the halving does not constrain it.
 TMEM_SLOTS = 4                  # number of MMA_M x MMA_N fp32 accumulator tiles
 GMEM_BYTES = 1 << 24            # 16 MB DRAM model (TB-side only)
 

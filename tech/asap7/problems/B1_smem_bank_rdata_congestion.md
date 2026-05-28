@@ -311,6 +311,39 @@ is what this chip is for.
 **Defer Options 3 and 7** as long-term cleanup — both are larger
 engineering investments that aren't needed if Option 1 works.
 
+## Chosen approach (as shipped)
+
+**Region-partition — a variant of Option 1 that keeps the
+fakeram7_256x32 primitive.** Rather than build physically 4× wider banks
+(which asap7's fakeram library doesn't offer at the right depth), the 16
+narrow 32-bit banks are split into 2 fixed regions of 8 banks:
+
+- Region 0 (banks 0-7, addr `[0, 4096)`) serves **operand A** reads.
+- Region 1 (banks 8-15, addr `[4096, 8192)`) serves **operand B** reads.
+
+`region_of(addr) = addr[12]`. An `MMA_M=32`-byte A read spans all 8 banks
+of region 0; an `MMA_N=32`-byte B read spans all 8 banks of region 1.
+Because each bank feeds exactly one dword of exactly one read port, the
+smem-level read beat is wired straight from the per-bank gated outputs —
+**no central mux and no OR-tree**. The 512 (16 × 32) bank-data wires
+split into two independent 8-bank fan-outs that route locally to their
+consumer edge, which is what deletes the congestion.
+
+Why this over Option 1's 4-wide banks:
+- Keeps `sram_1rw` / `fakeram7_256x32` unchanged — no new macro, no
+  width parameterization churn through `smem_bank`/`smem`.
+- Conflict detection collapses to a 1-bit region compare (`addr[12]`)
+  instead of bank-group indices (see `pymodel/smem.py`).
+- Same congestion win as Option 1: the mux is gone.
+
+Costs / constraints this introduces:
+- **A and B operands must live in separate regions.** The read path
+  hardcodes rd_a→banks 0-7 and rd_b→banks 8-15; `smem.sv` carries a
+  sim-only assertion that fires if a read targets the wrong region.
+- **SMEM is 8 KB, not 16 KB** (2 regions × 8 banks × 128 words × 4 B).
+  See the SMEM_BYTES change in `config.py` and the double-buffer-fit
+  note there.
+
 ## Out of scope
 
 - IO pads / pad ring (chip_top follow-up, not smem)

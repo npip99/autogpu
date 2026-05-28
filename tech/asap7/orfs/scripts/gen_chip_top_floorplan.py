@@ -31,9 +31,9 @@ cmdproc/barrier/reset_seq in north strip), scaled to the tiny dies.
   └──────────────────────────────────────────────────────────────┘
 
 Outputs into tech/asap7/orfs/:
-  - chip_top.macro_placement.tcl   (place_macro lines for the 37 hard
+  - chip_top.macro_placement.tcl   (place_macro lines for the 21 hard
                                     macros — compute_array, 4 submodule
-                                    blocks, 32 fakeram banks)
+                                    blocks, 16 fakeram banks)
   - chip_top.floorplan_preview.png (visual sanity check)
 
 The DIE_AREA values used here should be pasted into chip_top.config.mk.
@@ -59,15 +59,15 @@ CHANNEL_INNER = 40.0      # mac/smem/store/load gap to compute_array
 CHANNEL_NORTH = 50.0      # gap between center cluster and north strip
 CHANNEL_DIE   = 50.0      # die-edge margin
 
-# Smem layout: 32 fakerams in an 8-col × 4-row grid. Pitch matches the
-# standalone smem.config.mk (40 µm horizontal channels, 30 µm vertical
-# inter-bank channels). First-pass chip_top used tighter 28/60 µm pitch
-# and DRT got stuck on ~7000 bank_rdata congestion violations in the
-# middle horizontal channel — confirming what smem.config.mk's comment
-# already documents about 32 bank-output buses needing vertical escape
-# room. Don't deviate.
+# Smem layout: 16 fakerams in an 8-col × 2-row grid (B1 region-partition
+# dropped NUM_BANKS 32→16). Pitch matches the standalone smem.config.mk
+# (40 µm horizontal channels, 30 µm vertical inter-bank channels).
+# First-pass chip_top used tighter 28/60 µm pitch and DRT got stuck on
+# ~7000 bank_rdata congestion violations in the middle horizontal channel
+# — confirming what smem.config.mk's comment already documents about
+# bank-output buses needing vertical escape room. Don't deviate.
 SMEM_BANKS_X        = 8
-SMEM_BANKS_Y        = 4
+SMEM_BANKS_Y        = 2
 SMEM_FAKERAM_W      = 8.36
 SMEM_FAKERAM_H      = 42.0
 SMEM_BANK_PITCH_X   = 48.36   # 8.36 macro + 40 µm horizontal channel
@@ -166,9 +166,9 @@ def main() -> None:
     tcl.append(f"place_macro -macro_name u_barrier            -location {{{br_x:.2f} {north_band_y:.2f}}} -orientation R0")
     tcl.append(f"place_macro -macro_name u_reset_seq          -location {{{rs_x:.2f} {north_band_y:.2f}}} -orientation R0")
     tcl.append("")
-    tcl.append("# smem fakeram7 banks — 32 instances in an 8-col × 4-row grid.")
+    tcl.append("# smem fakeram7 banks — 16 instances in an 8-col × 2-row grid.")
     tcl.append("# Instance name format inside chip_top netlist:")
-    tcl.append("#   u_smem.gen_banks[<n>].u_sram.u_macro")
+    tcl.append("#   u_smem.gen_banks[<n>].u_bank.u_sram.u_macro")
     tcl.append("# (smem.sv uses `for ... begin : gen_banks`; sram_1rw.sv")
     tcl.append("#  under USE_ASAP7_FAKERAM wraps fakeram7_256x32 as u_macro.)")
     for ridx in range(SMEM_BANKS_Y):
@@ -177,7 +177,7 @@ def main() -> None:
             bx = smem_x0 + cidx * SMEM_BANK_PITCH_X
             by = smem_y0 + ridx * SMEM_BANK_PITCH_Y
             tcl.append(
-                f"place_macro -macro_name {{u_smem.gen_banks\\[{bank_idx}\\].u_sram.u_macro}}"
+                f"place_macro -macro_name {{u_smem.gen_banks\\[{bank_idx}\\].u_bank.u_sram.u_macro}}"
                 f" -location {{{bx:.2f} {by:.2f}}} -orientation R0"
             )
 
@@ -217,7 +217,7 @@ def main() -> None:
             by = smem_y0 + ridx * SMEM_BANK_PITCH_Y
             draw(bx, by, fr_w, fr_h, "#7fcdcd", "")
     ax.text(smem_x0 + smem_block_w / 2, smem_y0 + smem_block_h + 8,
-            "smem (32 × fakeram7_256x32)", ha="center", va="bottom", fontsize=7)
+            "smem (16 × fakeram7_256x32)", ha="center", va="bottom", fontsize=7)
     # store placeholder (no macros).
     draw(store_x, store_y, store_w, store_h, "#ffe082", "store\n(inlined, FF logic)")
 

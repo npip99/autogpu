@@ -5,7 +5,7 @@
 //   1. While reset_in is high, hold chip_in_reset=1, do nothing else.
 //   2. After reset_in deasserts, walk smem_scrub_addr through every
 //      per-bank word index (0..NUM_WORDS_PER_BANK-1), driving
-//      smem_scrub_en=1 each cycle. SMEM writes all 32 banks in parallel
+//      smem_scrub_en=1 each cycle. SMEM writes all 16 banks in parallel
 //      at the addressed per-bank word. Simultaneously pulse tmem_scrub_en
 //      for exactly the first scrub cycle (TMEM is a flop array — a single
 //      parallel clear is enough).

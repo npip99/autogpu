@@ -4,7 +4,7 @@
 //   - we=1: mem[addr] <= wdata.
 //   - we=0: rdata <= mem[addr]  (1-cycle read latency).
 //
-// Why this exists: SMEM's 32 banks each need a 1RW macro. Wrapping bank
+// Why this exists: SMEM's 16 banks each need a 1RW macro. Wrapping bank
 // storage behind this module lets `tech/<process>/sram_1rw.sv` swap in the
 // vendor SRAM macro at synth time (sky130, GF180, etc.) without touching
 // any pipeline logic. This file is the behavioral fallback used during

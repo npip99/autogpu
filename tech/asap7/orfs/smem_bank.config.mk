@@ -1,7 +1,7 @@
 # smem_bank — one fakeram7_256x32 + per-output-dword gating logic.
 #
-# Hardened as a leaf macro so 32 instances inside smem.sv each carry
-# their own internalized output gating. The 1024 bank_rdata wires that
+# Hardened as a leaf macro so 16 instances inside smem.sv each carry
+# their own internalized output gating. The 512 bank_rdata wires that
 # used to fan to a central mux are now consumed inside each bank;
 # only the already-gated dword outputs leave the macro.
 #

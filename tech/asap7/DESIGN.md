@@ -337,7 +337,7 @@ ship broken silicon if left unaddressed.
       `compute_array_tiny_bcast0` (4×4 mac grid) as the compute_array
       black-box, with chip_top synthesized at MMA_M=MMA_N=MMA_K=4.
       cmdproc, load, barrier, reset_seq, and the compute_array variant
-      are hardened LEFs; smem is inlined → 32 fakeram7_256x32 banks;
+      are hardened LEFs; smem is inlined → 16 fakeram7_256x32 banks;
       store is inlined → flat FF logic. Die: ~750 × 800 µm. Still open:
       full-size (MMA_M=32) chip_top — with A1 + A2 closed in master,
       the full 32×32 `compute_array` can now harden; bumping `MMA_DIM=32`
@@ -503,7 +503,7 @@ chip_top can run at full MMA=32.
 | load         | hardened LEF                   | `load/base/` (via `gen_lef.sh`)       |
 | barrier      | hardened LEF                   | `barrier/base/` (via `gen_lef.sh`)    |
 | reset_seq    | hardened LEF                   | `reset_seq/base/` (via `gen_lef.sh`)  |
-| smem         | inlined → 32 fakeram macros    | `fakeram7_256x32` from asap7 platform |
+| smem         | inlined → 16 fakeram macros    | `fakeram7_256x32` from asap7 platform |
 | store        | inlined (FF logic only)        | RTL                                   |
 | tile_buf_8row| inlined inside store           | RTL (LEF ROW_W mismatch at MMA=4)     |
 
@@ -513,7 +513,7 @@ chip_top can run at full MMA=32.
    ships a `define_pdn_grid -macro -name {macro_grid}` with
    `add_pdn_connect -layers {M5 M6}` and `{M6 M7}` so the parent
    stripes weld to every hardened-leaf VDD/VSS pin (compute_array +
-   the 4 sub-block macros + 32 fakeram banks). Same mechanical fix as
+   the 4 sub-block macros + 16 fakeram banks). Same mechanical fix as
    `compute_array.pdn.tcl`. Verify with
    `scripts/verify_macro_power.tcl` after a 6_final route.
 2. **compute_array GDS exists post-A1.** `ADDITIONAL_GDS` now includes

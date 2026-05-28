@@ -5,15 +5,20 @@ PURPOSE
     Holds operand tiles. Written by LOAD (gmem→smem). Read by MMA (one column
     of A and one row of B per K-cycle). Barriers do NOT live in SMEM in this
     pymodel — they're internal to the barrier unit. SMEM is purely a byte array
-    structured as 32 banks of 4 bytes each (B200-style banking).
+    structured as 16 banks of 4 bytes each, partitioned into 2 regions of 8
+    banks (the B1 region-partition; see smem.sv and B1_smem_bank_rdata_congestion.md).
 
 LAYOUT
-    Conceptually a flat byte array of length SMEM_BYTES. Bank decode:
-        bank_of(addr) = (addr / 4) % 32 = addr[6:2]
-    A "wide" port access spans multiple banks:
-        LOAD_WR  (BEAT_BYTES=16 → 4 dwords) → 4 banks
-        MMA_RD_A (MMA_M=32      → 8 dwords) → 8 banks
-        MMA_RD_B (MMA_N=32      → 8 dwords) → 8 banks
+    Conceptually a flat byte array of length SMEM_BYTES. The 16 banks split
+    into 2 contiguous-address regions of 8 banks each:
+        region_of(addr) = addr[12]   # 0 → banks 0-7, 1 → banks 8-15
+    Within a region, the dword index selects the bank:
+        bank_in_region(addr) = (addr / 4) % 8 = addr[4:2]
+    By convention OPERAND A tiles live in region 0, OPERAND B tiles in region 1.
+    A "wide" port access spans a full 8-bank region:
+        LOAD_WR  (BEAT_BYTES=16 → 4 dwords) → 4 banks within one region
+        MMA_RD_A (MMA_M=32      → 8 dwords) → all 8 banks of region 0
+        MMA_RD_B (MMA_N=32      → 8 dwords) → all 8 banks of region 1
 
     Operand tiles begin at SMEM_TILE_BASE; tile placement chosen by host.
 
@@ -34,7 +39,7 @@ PORTS
 SCRUB PORT (reset-only)
     Driven by reset_seq during the post-power-on scrub window. Replaces the
     simulation-only `initial begin` zero-init in smem.sv with a real reset
-    sequence usable on silicon. Drives ALL 32 banks in parallel at the
+    sequence usable on silicon. Drives ALL 16 banks in parallel at the
     addressed per-bank word index.
 
     INPUTS: scrub_en, scrub_addr (per-bank word index, 0..NUM_WORDS_PER_BANK-1)
@@ -50,23 +55,22 @@ SCRUB PORT (reset-only)
     catch real driver bugs.
 
 BANK CONFLICTS and STALLS
-    Each of the 32 banks is a 1RW SRAM (1 read OR 1 write per cycle). When
+    Each of the 16 banks is a 1RW SRAM (1 read OR 1 write per cycle). When
     two or more ports want overlapping banks in the same cycle, only the
     highest-priority port wins; the others STALL.
 
     PRIORITY (fixed): LOAD_WR > MMA_RD_A > MMA_RD_B.
 
-    Because LOAD_WR (16B aligned) occupies 4 banks within one 8-bank group
-    and MMA_RD_A / MMA_RD_B (32B aligned) each occupy a full 8-bank group,
-    conflict detection reduces to comparing the 8-bank-group index
-    `addr[6:5]`:
+    Because LOAD_WR (16B aligned) occupies 4 banks within one region and
+    MMA_RD_A / MMA_RD_B (32B aligned) each occupy a full 8-bank region,
+    conflict detection reduces to comparing the region index `addr[12]`:
 
         load_wr_stall_out  = 0                                      # top
         mma_rd_a_stall_out = rd_a_en & wr_en
-                             & (rd_a_addr[6:5] == wr_addr[6:5])
+                             & (rd_a_addr[12] == wr_addr[12])
         mma_rd_b_stall_out = rd_b_en & (
-                                (wr_en   & (rd_b_addr[6:5] == wr_addr[6:5]))
-                              | (rd_a_en & (rd_b_addr[6:5] == rd_a_addr[6:5]))
+                                (wr_en   & (rd_b_addr[12] == wr_addr[12]))
+                              | (rd_a_en & (rd_b_addr[12] == rd_a_addr[12]))
                              )
 
     Stall outputs are COMBINATIONAL on the same cycle's inputs. A consumer
@@ -84,7 +88,7 @@ OUTPUTS (combinational, this cycle's inputs)
 
 INTERNAL STATE
     mem            : np.uint8[SMEM_BYTES], zero-init
-                     (semantically the union of 32 banks × NUM_WORDS_PER_BANK
+                     (semantically the union of 16 banks × NUM_WORDS_PER_BANK
                      × 4 bytes — exposed as a flat byte array for testbench
                      simplicity)
     rd_a_pending   : addr | None — captured cycle T-1, drained cycle T
@@ -154,17 +158,17 @@ def _overlap(a0: int, a1: int, b0: int, b1: int) -> bool:
 
 
 def _region_of(addr: int) -> int:
-    """4-way region (8-bank set) index of an address (= addr[13:12]).
+    """2-way region (8-bank set) index of an address (= addr[12]).
 
-    Region 0 (addr 0..4095) → banks 0-7   (OPERAND A region by convention)
-    Region 1 (addr 4096..8191) → banks 8-15 (OPERAND B region by convention)
-    Region 2 (addr 8192..12287) → banks 16-23 (scratch / future)
-    Region 3 (addr 12288..16383) → banks 24-31 (scratch / future)
+    Region 0 (addr 0..4095)    → banks 0-7   (OPERAND A region by convention)
+    Region 1 (addr 4096..8191) → banks 8-15  (OPERAND B region by convention)
 
-    Was previously `_group_of(addr) = (addr >> 5) & 0x3` under the
-    cyclic-32-bank layout (groups of 8 banks within the cyclic mapping).
+    Matches smem.sv `region_of(addr) = addr[12]`. Was previously
+    `(addr >> 5) & 0x3` under the cyclic-32-bank layout (groups of 8 banks
+    within the cyclic mapping); the B1 region-partition dropped to 16 banks
+    / 2 regions.
     """
-    return (addr >> 12) & 0x3
+    return (addr >> 12) & 0x1
 
 
 # Back-compat shim for any external caller that still imports the old name.
@@ -206,7 +210,7 @@ class SMEM:
             assert not rd_a_en, "scrub_en + MMA_RD_A concurrent (chip_in_reset should gate)"
             assert not rd_b_en, "scrub_en + MMA_RD_B concurrent (chip_in_reset should gate)"
             # scrub_addr is a per-bank word index (0..NUM_WORDS_PER_BANK-1).
-            num_words_per_bank = SMEM_BYTES // 32 // 4
+            num_words_per_bank = SMEM_BYTES // 16 // 4
             assert 0 <= scrub_addr < num_words_per_bank, (
                 f"scrub_addr {scrub_addr} OOR (max {num_words_per_bank - 1})"
             )
@@ -237,10 +241,10 @@ class SMEM:
             ), "LOAD_WR + MMA_RD_B overlap"
 
         # Combinational stall outputs (priority LOAD_WR > RD_A > RD_B).
-        wr_rd_a_conflict = bool(wr_en and rd_a_en and _group_of(wr_addr) == _group_of(rd_a_addr))
-        wr_rd_b_conflict = bool(wr_en and rd_b_en and _group_of(wr_addr) == _group_of(rd_b_addr))
+        wr_rd_a_conflict = bool(wr_en and rd_a_en and _region_of(wr_addr) == _region_of(rd_a_addr))
+        wr_rd_b_conflict = bool(wr_en and rd_b_en and _region_of(wr_addr) == _region_of(rd_b_addr))
         rd_a_rd_b_conflict = bool(
-            rd_a_en and rd_b_en and _group_of(rd_a_addr) == _group_of(rd_b_addr)
+            rd_a_en and rd_b_en and _region_of(rd_a_addr) == _region_of(rd_b_addr)
         )
         self.load_wr_stall_out = 0
         self.mma_rd_a_stall_out = 1 if wr_rd_a_conflict else 0

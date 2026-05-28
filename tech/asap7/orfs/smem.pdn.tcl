@@ -1,5 +1,5 @@
 # smem PDN — channel-aligned grid + macro_grid welding rules for the
-# 32 smem_bank hardened-leaf macros.
+# 16 smem_bank hardened-leaf macros.
 #
 # Each smem_bank exposes VDD/VSS pins on M6. The parent grid here lays
 # M5/M6/M7 stripes in the inter-bank channels and welds them to the

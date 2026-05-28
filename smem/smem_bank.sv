@@ -4,15 +4,16 @@
 // the local logic that decides which output dword (0..RDA_DWORDS-1 or
 // 0..RDB_DWORDS-1) this bank is contributing to in the current cycle.
 //
-// EXISTS so the smem-level output-assembly OR-tree wires stay LOCAL —
-// each bank emits one already-gated 32-bit contribution per read port,
-// and the OR-tree at smem.sv combines those contributions per output
-// dword. The 1024 bank_rdata wires that used to fan out to a central
-// mux are gone; the gating happens inside the hardened bank macro
-// next to where bank_rdata is produced.
+// EXISTS so the smem-level read-beat wires stay LOCAL — each bank emits
+// one already-gated 32-bit contribution per read port, and smem.sv reads
+// each bank's gated dword directly (no central mux, no OR-tree: under the
+// B1 region partition each bank feeds exactly one dword of one port). The
+// 512 bank_rdata wires that used to fan out to a central mux are gone;
+// the gating happens inside the hardened bank macro next to where
+// bank_rdata is produced.
 //
 // HARDENED INTO ITS OWN LEF — see tech/asap7/orfs/smem_bank.config.mk.
-// 32 instances of this macro replace 32 sram_1rw + central mux in
+// 16 instances of this macro replace 16 sram_1rw + central mux in
 // smem.sv.
 //
 // PORT CONTRACT
@@ -30,13 +31,14 @@
 //     rd_a_out  : bank_rdata if rd_a_active else 0
 //     rd_b_out  : bank_rdata if rd_b_active else 0
 //
-//   The "which dword" routing happens at smem.sv level via a 32:1 OR
-//   network per dword position (one bank contributes per cycle per
-//   dword, others are 0 — so OR is correct).
+//   Under the region partition each bank feeds exactly one dword of one
+//   read port, so smem.sv reads the bank's gated output directly (the
+//   8-wide rd_*_out vector keeps the bank generic; only the matching
+//   index is consumed). No OR network.
 //
 // PARAMETERS
 //   WORDS : depth of the SRAM bank (smem.SMEM_BYTES / NUM_BANKS / 4).
-//   For chip_top defaults (16 KB total, 32 banks, 4 B/dword): 128 words.
+//   For chip_top defaults (8 KB total, 16 banks, 4 B/dword): 128 words.
 
 `ifndef SMEM_BANK_WORDS
 `define SMEM_BANK_WORDS 128
@@ -61,8 +63,8 @@ module smem_bank #(
     input  logic [2:0]                 rd_b_dword_idx,
 
     // 8 outputs per read port — exactly one is non-zero per cycle when
-    // active; the other 7 are zero. The smem-level OR-tree consolidates
-    // contributions from all 32 banks per output dword position.
+    // active; the other 7 are zero. smem.sv reads this bank's gated dword
+    // directly into the read beat (no OR-tree across banks).
     output logic [31:0]                rd_a_out [8],
     output logic [31:0]                rd_b_out [8]
 );

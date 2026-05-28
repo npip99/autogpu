@@ -2,8 +2,8 @@
 # welding rules so the parent stripes connect to every hardened-leaf
 # VDD/VSS pin.
 #
-# chip_top has only ~37 macros (1 compute_array + 4 sub-block macros +
-# 32 fakeram banks), so ORFS's stock BLOCKS_grid_strategy.tcl O(stripes ×
+# chip_top has only ~21 macros (1 compute_array + 4 sub-block macros +
+# 16 fakeram banks), so ORFS's stock BLOCKS_grid_strategy.tcl O(stripes ×
 # macros) cost is fine here (unlike compute_array's 1089 macros). But
 # the asap7 default `BLOCKS_grid_strategy.tcl` config caused PDN-0006
 # blocking errors during early experiments, so we ship our own minimal
