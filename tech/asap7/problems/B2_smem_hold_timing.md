@@ -54,7 +54,12 @@ now folded into the canonical `smem.config.mk`/`smem.sdc`):
 | | setup WNS | hold WNS | fmax | DRC |
 |---|---|---|---|---|
 | 1 GHz (old smem.sdc) | −253 ps | −217 ps (−400 margin) | — | 0 |
-| 2500 ps (current) | **+196 ps** | **+58 ps** | 434 MHz | 0 |
+| 2500 ps (current) | **+219 ps** | **+58 ps** | 438 MHz | 0 |
+
+(Numbers re-validated on the corrected 8 KB / 128-word build — the
+earlier figures were measured at the mis-sized 16384/256-word config;
+hold is identical at +58 ps, setup and slew improved slightly with the
+smaller address-decode logic.)
 
 Mechanism for hold: hold-check arithmetic is period-independent, but the
 *ability to repair* hold is not. At 2500 ps setup has hundreds of ps of
@@ -69,9 +74,9 @@ it stays as a fast-exit aid, not a slack compromise. The
 candidate BCAST_PIPE RTL fix below is therefore **no longer needed** for
 hold closure; kept for reference only.
 
-### Residual: max-slew (218 violations) — minor, smem-internal
+### Residual: max-slew (139 violations) — minor, smem-internal
 
-The 2500 ps run leaves **218 max-slew (max-transition) violations** vs
+The 2500 ps run leaves **139 max-slew (max-transition) violations** vs
 the asap7 320 ps library limit (worst ~417 ps), on `/B` inputs of
 `AND3x1` cells in the bank address/enable-decode logic. The 1 GHz run
 had 46; the relaxed clock made it *worse* because the resizer, flush
