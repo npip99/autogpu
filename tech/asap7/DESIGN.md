@@ -317,6 +317,18 @@ ship broken silicon if left unaddressed.
       post-route timing is 0 hold violations, 0 setup violations, fmax
       440 MHz. See `tech/asap7/problems/A2_hold_timing_rtl.md`.
 
+- [x] **RESOLVED (B2, 2026-05-28): smem hold + setup slack.** Root cause
+      was an SDC outlier: `smem.sdc` targeted 1 GHz while the chip-wide
+      target is 2500 ps (compute_array) / 4000 ps (chip_top). At 1 GHz,
+      setup was −253 ps and the resizer couldn't fix hold (every hold
+      buffer broke a tight setup path), leaving −217 ps. Relaxing
+      `smem.sdc` to 2500 ps closes **both** — verified post-route:
+      setup +196 ps, hold +58 ps, fmax 434 MHz, 0 DRC. No RTL change.
+      `HOLD_SLACK_MARGIN=-400` is retained only as a CTS-stage fast-exit
+      aid (does not appear in final slack). Residual: 218 smem-internal
+      max-slew violations (does not propagate to chip_top — black-box
+      macro). See `tech/asap7/problems/B2_smem_hold_timing.md`.
+
 ### Integration gaps (chip is not fully assembled)
 
 - [x] **chip_top integrated as first-pass (A6).** Lands
