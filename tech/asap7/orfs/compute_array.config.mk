@@ -12,7 +12,12 @@
 export PLATFORM     = asap7
 export DESIGN_NAME  = compute_array
 
-export VERILOG_FILES = /work/build/sv2v/chip_top.v
+# MMA=32 + BCAST_PIPE=1 netlist. The plain chip_top.v has BCAST_PIPE=0,
+# which reintroduces the A2 broadcast-hold runaway at full 32×32 scale;
+# the proven A2 fix needs BCAST_PIPE=1 (same as compute_array_tiny_bcast0,
+# which consumes compute_array_tiny_bcast1.v). Build with:
+#   make -C tech/sky130 $(REPO)/build/sv2v/chip_top_bcast1.v
+export VERILOG_FILES = /work/build/sv2v/chip_top_bcast1.v
 export SDC_FILE      = /work/tech/asap7/orfs/compute_array.sdc
 
 # Absolute floorplan (must match macro_placement.tcl numbers).
