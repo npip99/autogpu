@@ -7,7 +7,7 @@ in Phase 4/5 is an RTL-vs-pymodel disagreement, not an architectural question.
 
 import numpy as np
 
-from config import MMA_K, MMA_M, MMA_N, SMEM_TILE_BASE
+from config import MMA_K, MMA_M, MMA_N, SMEM_BYTES, SMEM_TILE_BASE
 from golden.matmul_reference import generate
 from pymodel.cmdproc import BAR_INIT, LOAD, MMA, STORE, WAIT
 from pymodel.sim import Sim
@@ -21,9 +21,10 @@ def test_single_tile_matmul_random():
     B_gmem = len(A_bytes)
     C_gmem = 16 * 1024  # well past A/B
     A_smem = SMEM_TILE_BASE
-    # +32 puts B in a different 8-bank group from A, avoiding RD_A/RD_B
-    # bank conflicts during the K-loop. See pymodel/smem.py §BANK CONFLICTS.
-    B_smem = SMEM_TILE_BASE + len(A_bytes) + 32
+    # Post-B1 region-partitioned smem: A in region 0 (addr 0..4095), B in
+    # region 1 (addr 4096..8191). bank = {addr[13:12], addr[4:2]}; rd_a
+    # wires direct from banks 0-7, rd_b from banks 8-15.
+    B_smem = SMEM_BYTES // 4  # = 4096 = start of region 1
 
     sim = Sim()
     sim.load_gmem(A_gmem, A_bytes)

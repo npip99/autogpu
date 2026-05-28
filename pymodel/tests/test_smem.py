@@ -2,7 +2,7 @@
 
 import pytest
 
-from config import BEAT_BYTES, MMA_M, MMA_N, SMEM_TILE_BASE
+from config import BEAT_BYTES, MMA_M, MMA_N, SMEM_BYTES, SMEM_TILE_BASE
 from pymodel.smem import SMEM
 
 
@@ -21,14 +21,17 @@ def test_load_then_read_a():
 
 
 def test_parallel_reads_different_ports():
+    """Post-B1: rd_a from region 0 (A's region), rd_b from region 1 (B's)."""
     s = SMEM()
     pat_a = _pat(0, MMA_M)
     pat_b = _pat(100, MMA_N)
-    s.load(SMEM_TILE_BASE, pat_a)
-    s.load(SMEM_TILE_BASE + MMA_M, pat_b)
+    a_addr = SMEM_TILE_BASE                 # region 0
+    b_addr = SMEM_BYTES // 4                # region 1 (4096 = SMEM_BYTES/4)
+    s.load(a_addr, pat_a)
+    s.load(b_addr, pat_b)
     s.tick(
-        rd_a_en=1, rd_a_addr=SMEM_TILE_BASE,
-        rd_b_en=1, rd_b_addr=SMEM_TILE_BASE + MMA_M,
+        rd_a_en=1, rd_a_addr=a_addr,
+        rd_b_en=1, rd_b_addr=b_addr,
     )
     s.tick()
     assert s.rd_a_data == pat_a
@@ -96,24 +99,17 @@ def test_read_latency_exact_one():
 
 
 def test_no_conflict_concurrent_3ports():
-    """LOAD_WR + MMA_RD_A + MMA_RD_B targeting disjoint bank groups → no stalls."""
+    """LOAD_WR + MMA_RD_A + MMA_RD_B targeting disjoint regions → no stalls.
+
+    Post-B1: SMEM is partitioned into 4 regions of SMEM_BYTES/4 bytes each
+    (one region per 8-bank set, picked by addr[13:12]). Two ports targeting
+    DIFFERENT regions never conflict.
+    """
     s = SMEM()
-    # Pick three addresses in three different bank groups (groups are at
-    # bits [6:5] of addr; groups are 0..3 spanning 32B each within the
-    # bank-decode space).
-    #
-    # Group 0: bytes [0, 32)        (banks 0..7 at base 0)
-    # Group 1: bytes [32, 64)       (banks 8..15)
-    # Group 2: bytes [64, 96)       (banks 16..23)
-    # Group 3: bytes [96, 128)      (banks 24..31)
-    #
-    # ...repeat at higher 128-byte boundaries. The two groups must differ.
-    # We use addresses well inside SMEM_TILE_BASE so they're in the operand
-    # region.
-    wr_addr = SMEM_TILE_BASE             # group_of(SMEM_TILE_BASE)=group_of(128)=0
-    rd_a_addr = SMEM_TILE_BASE + 32      # group 1
-    rd_b_addr = SMEM_TILE_BASE + 64      # group 2
-    # All three are in different bank groups.
+    # wr_addr in region 2; rd_a in region 0; rd_b in region 1 — all different.
+    wr_addr   = 2 * (SMEM_BYTES // 4)        # region 2 (8192)
+    rd_a_addr = SMEM_TILE_BASE               # region 0
+    rd_b_addr = SMEM_BYTES // 4              # region 1 (4096)
 
     pat_w = _pat(0x10, BEAT_BYTES)
     pat_a = _pat(0x40, MMA_M)

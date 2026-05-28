@@ -153,9 +153,22 @@ def _overlap(a0: int, a1: int, b0: int, b1: int) -> bool:
     return not (a1 <= b0 or b1 <= a0)
 
 
-def _group_of(addr: int) -> int:
-    """8-bank-group index of an aligned address (= addr[6:5])."""
-    return (addr >> 5) & 0x3
+def _region_of(addr: int) -> int:
+    """4-way region (8-bank set) index of an address (= addr[13:12]).
+
+    Region 0 (addr 0..4095) → banks 0-7   (OPERAND A region by convention)
+    Region 1 (addr 4096..8191) → banks 8-15 (OPERAND B region by convention)
+    Region 2 (addr 8192..12287) → banks 16-23 (scratch / future)
+    Region 3 (addr 12288..16383) → banks 24-31 (scratch / future)
+
+    Was previously `_group_of(addr) = (addr >> 5) & 0x3` under the
+    cyclic-32-bank layout (groups of 8 banks within the cyclic mapping).
+    """
+    return (addr >> 12) & 0x3
+
+
+# Back-compat shim for any external caller that still imports the old name.
+_group_of = _region_of
 
 
 class SMEM:

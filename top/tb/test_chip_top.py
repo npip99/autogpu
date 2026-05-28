@@ -50,6 +50,7 @@ from config import (
     OP_REPEAT,
     OP_STORE,
     OP_WAIT,
+    SMEM_BYTES,
     SMEM_TILE_BASE,
 )
 from golden.matmul_reference import generate
@@ -453,7 +454,9 @@ async def test_e2e_matmul(dut):
     A_smem = SMEM_TILE_BASE
     # +32 puts B in a different 8-bank group from A, avoiding RD_A/RD_B
     # bank conflicts during the MMA. See pymodel/smem.py §BANK CONFLICTS.
-    B_smem = SMEM_TILE_BASE + len(A_bytes) + 32
+    # Post-B1 region-partitioned smem: A in region 0 (addr < 4096), B in
+    # region 1 (addr 4096..8191). bank = {addr[13:12], addr[4:2]}.
+    B_smem = SMEM_BYTES // 4  # = 4096 = start of region 1
 
     _backdoor_gmem_write(dut, A_gmem, A_bytes)
     _backdoor_gmem_write(dut, B_gmem, B_bytes)
@@ -638,7 +641,8 @@ async def test_k_loop_matmul(dut):
 
     A_smem = SMEM_TILE_BASE
     # +32 puts B in a different 8-bank group from A → no bank conflicts.
-    B_smem = SMEM_TILE_BASE + MMA_M * MMA_K + 32
+    # Post-B1 region-partitioned smem: A in region 0, B in region 1.
+    B_smem = SMEM_BYTES // 4  # = 4096 = start of region 1
 
     A_chunk_bytes = MMA_M * MMA_K   # 1024 bytes
     B_chunk_bytes = MMA_K * MMA_N   # 1024 bytes
