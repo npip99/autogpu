@@ -1,12 +1,22 @@
 current_design compute_array
 
-# 400 MHz (2500 ps) — see tech/asap7/DESIGN.md "Clock period vs RC budget".
-# 1 GHz was off by -1.22 ns on the cmd_unit → east-mac broadcast path;
-# wire RC across 1.5 mm of asap7 metal can't be repaired by the resizer.
+# 300 MHz (3333 ps) — see tech/asap7/DESIGN.md "Clock period vs RC budget".
+# Relaxed from 400 MHz (2500 ps) for issue #25: at 2500 ps the full 32×32
+# `push_a`/`push_b` broadcast from its BCAST_PIPE register to the far-column
+# skew_lanes (~1600 µm) is a ~2951 ps wire-delay-dominated path → -451 ps
+# setup, which the resizer cannot fix (buffering a long wire adds delay).
+# +833 ps of period closes all 461 such endpoints (worst -451 → +382 ps,
+# matching the margin the rest of the logic has) with hold unaffected
+# (period-independent). This 300 MHz is compute_array's self-contained fmax
+# spec; it composes as max() with the rest of the chip's clock domain, NOT
+# additively — see DESIGN.md "Full 32×32 ... period vs latency". The faster
+# alternative (keep 400 MHz, spatially re-pipeline the broadcast) is tracked
+# as the option-B follow-up. tiny_bcast0 stays at 2500 ps (its broadcast is
+# short and closes there).
 # asap7 lib uses 1 ps time units.
 set clk_name    core_clock
 set clk_port    clk
-set clk_period  2500
+set clk_period  3333
 set clk_io_pct  0.2
 
 create_clock -name $clk_name -period $clk_period [get_ports $clk_port]

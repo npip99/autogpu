@@ -262,6 +262,52 @@ carry the matching boundary-hold check** — this fix defers the check
 upward, it does not delete it. tiny_bcast0 (400 µm, ~300 ps insertion)
 never hit this, so the constraint is a no-op there.
 
+### Full 32×32: broadcast-wire setup → 300 MHz (the real "doesn't scale")
+
+With the I/O paths false-pathed, post-route STA (real parasitics) surfaces
+a *second*, internal violation: worst setup **−451 ps** on
+`gen_row[0].gen_col[31].u_cell/b_in` — the east-most column. This is the
+`push_a`/`push_b` broadcast traveling ~1600 µm from its single BCAST_PIPE
+register to the far-column skew_lanes. Both endpoints are real internal
+registers, so it is a genuine setup violation, not an artifact. It is
+**wire-delay-dominated** (~2951 ps path), so the resizer cannot fix it —
+buffering a long wire adds delay. This is the literal "BCAST_PIPE=1 doesn't
+scale from tiny" in issue #25, on the *setup* side: at 4×4 the broadcast is
+short and closes; at 32-wide it does not. More BCAST_PIPE stages do **not**
+help — it is one high-fanout net, not a chain.
+
+**Fix taken: relax `compute_array.sdc` to 300 MHz (3333 ps).** The +833 ps
+of period closes all 461 such endpoints (worst −451 → +382 ps, the margin
+the rest of the logic already has); hold is period-independent so it is
+unaffected. This is consistent with the existing 1 GHz→400 MHz relaxation
+for wire delay. The faster alternative — keep 400 MHz and spatially
+re-pipeline the broadcast (register relay stations / per-region replication,
++1 cycle latency, RTL + pymodel work) — is the option-B follow-up.
+
+### Period vs latency: how per-macro specs compose (read before sizing clocks)
+
+Two clock quantities compose *completely differently*; conflating them is
+how you get a pathological chip frequency:
+
+- **Period (fmax)** is a property of the whole clock domain. Every block
+  runs on the same `clk`, so **chip min period = max(block min periods)** —
+  a MAX, never a sum. Relaxing compute_array to 300 MHz makes the chip
+  300 MHz iff compute_array is the slowest block; it does **not**
+  multiply with other blocks toward 100–200 MHz. Each macro gets a clean
+  fmax number; the chip takes the min.
+- **Insertion delay (latency, ~3 ns here)** is what combines badly — but
+  *not* into the period unless mishandled. At the chip_top boundary an
+  unbalanced 3 ns of macro latency shows up as boundary skew; if that skew
+  is absorbed by enlarging the period, *that* is what drags fmax down. The
+  correct move is **latency balancing** (useful skew at chip_top: deliver
+  the macro's clk pin earlier), which removes the skew from the period
+  budget entirely. See issue tracking the chip_top boundary closure.
+
+So: size each macro's period from its own internal closure (compute_array
+= 300 MHz), and handle inter-macro latency with skew balancing or a
+registered boundary — never by letting latency eat the period. Done this
+way, chip fmax = min(macro fmax), and the specs compose predictably.
+
 ## ORFS knobs we override
 
 Per-module `config.mk` overrides, with rationale (see Layer discipline +
