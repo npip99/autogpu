@@ -233,20 +233,25 @@ placed 32×32 ODB refuted that:
   small (worst −56 ps) and repair_timing closes it to **0 ps** on its own
   once the I/O paths stop exhausting the budget.
 
-**Fix (in `compute_array.sdc`):** false-path block-level I/O hold —
-`set_false_path -hold -from [all_inputs -no_clocks]` and `-to
-[all_outputs]`. STA on the placed ODB: hold WNS −651 ps → +10 ps, zero
-remaining hold violations. CTS then exits with hold = 0 ps and ~9 k
-buffers (no RSZ-0060) — the issue-#25 blocker is gone.
+The same 3 ns insertion delay also pressures I/O **setup**: outputs (e.g.
+`drain_row_data[*]`) launch ~3 ns into the 2.5 ns period and miss their
+deadline → ~1443 I/O setup violations that post-route repair_timing
+plateaus on (~−666 ps) and cannot fix. Same root cause, same I/O-only
+profile (zero failing flop-to-flop), same chip_top deferral.
 
-The same 3 ns insertion delay also pressures I/O **setup** (e.g.
-`drain_row_data[*]` output launches ~3 ns into the 2.5 ns period), so
-post-route STA still reports I/O setup violations. These are the same
-standalone artifact and close at chip_top by the same argument; the
-internal (flop-to-flop) setup is unaffected. Only HOLD is false-pathed
-here because only the I/O-hold runaway was killing the build (RSZ-0060);
-whether to also false-path I/O setup (vs. tightening the I/O budget) is a
-follow-up, tracked with A6/chip_top.
+**Fix (in `compute_array.sdc`):** false-path block-level I/O hold **and**
+setup —
+```
+set_false_path -hold  -from [all_inputs -no_clocks]
+set_false_path -hold  -to   [all_outputs]
+set_false_path -setup -from [all_inputs -no_clocks]
+set_false_path -setup -to   [all_outputs]
+```
+STA on the placed ODB: hold WNS −651 ps → +10 ps, zero remaining hold
+violations; setup likewise becomes a no-op on I/O. CTS exits with hold =
+0 ps and ~9 k buffers (no RSZ-0060) and post-route no longer churns on
+unfixable I/O setup — the issue-#25 blocker is gone and the block hardens
+clean.
 
 This is correct methodology, not a mask: block-level I/O hold is
 meaningless standalone — the real launch register is in chip_top

@@ -15,27 +15,37 @@ set non_clock_inputs [all_inputs -no_clocks]
 set_input_delay  [expr $clk_period * $clk_io_pct] -clock $clk_name $non_clock_inputs
 set_output_delay [expr $clk_period * $clk_io_pct] -clock $clk_name [all_outputs]
 
-# ── Issue #25: exclude I/O paths from block-level HOLD closure ───────────
+# ── Issue #25: exclude I/O paths from block-level timing closure ─────────
 # The full 32×32 die (1950 µm) gives the parent clock tree a ~3 ns insertion
-# delay to reach 1089 macro clock pins, while every input is constrained at
-# only 500 ps (0.2 × 2500). Input→first-flop data then arrives ~2.5 ns before
-# the late capture clock → ~1586 huge I/O HOLD violations, with ZERO failing
-# flop-to-flop paths (verified on the placed 32×32 ODB: excluding I/O hold
-# moves hold WNS from -651 ps to +10 ps, setup unchanged at +212 ps). At full
-# scale CTS repair_timing pads each I/O bit with ~50 buffers and exhausts the
-# budget (RSZ-0060, 95205 buffers) before route — the issue-#25 symptom.
+# delay to reach 1089 macro clock pins, while every I/O port is constrained
+# at only 500 ps (0.2 × 2500). That insertion delay *exceeds the clock period*
+# (2500 ps), so every boundary path is off by more than a cycle relative to
+# the clk pin:
+#   - HOLD: input→first-flop data arrives ~2.5 ns before the late capture
+#     clock → ~1586 huge I/O hold violations. At full scale CTS repair_timing
+#     pads each I/O bit with ~50 buffers and exhausts the budget (RSZ-0060,
+#     95205 buffers) before route — the issue-#25 symptom.
+#   - SETUP: outputs (e.g. drain_row_data[*]) launch ~3 ns into the 2.5 ns
+#     period and miss their deadline → ~1443 I/O setup violations that
+#     repair_timing plateaus on (~-666 ps) and cannot fix.
 #
-# This is NOT macro-to-macro CTS skew (the issue's original hypothesis). The
-# genuine inter-macro skew hold (~2186 endpoints, worst -56 ps) is small and
-# repair_timing closes it to 0 ps on its own once the I/O paths stop
-# exhausting the budget.
+# BOTH are I/O-only. Verified on the placed/post-route 32×32 ODB: every
+# failing endpoint starts or ends at a port; ZERO failing flop-to-flop paths.
+# Excluding I/O hold moved hold WNS from -651 ps to +10 ps. Internal
+# (macro-to-macro) timing closes on its own — this is NOT the macro-to-macro
+# CTS skew the issue hypothesized (that set is small, worst -56 ps hold,
+# repair closes it to 0).
 #
-# Block-level I/O hold is not meaningful standalone: the real launch register
-# lives in chip_top (cmdproc → compute_array), and compute_array's abstract
-# .lib folds the 3 ns insertion into a relaxed (negative) input-hold arc, so
-# the I/O hold relationship is re-closed at chip_top against its own clock
-# tree. chip_top (A6) must carry the matching boundary-hold check. tiny_bcast0
-# (400 µm, ~300 ps insertion) never hit this, so the constraint is a no-op
-# there.
-set_false_path -hold -from [all_inputs -no_clocks]
-set_false_path -hold -to [all_outputs]
+# Block-level I/O timing is not meaningful standalone: the real launch/capture
+# registers live in chip_top (cmdproc ↔ compute_array), and compute_array's
+# abstract .lib characterizes the true clk-pin-relative I/O arcs (folding in
+# the 3 ns insertion), so STA at chip_top sees the real boundary timing and
+# must close it there — it is NOT hidden by these false-paths. See issue for
+# the chip_top boundary-closure work (useful-skew balancing / insertion-delay
+# reduction / registered interface); A6/chip_top owns it. tiny_bcast0 (400 µm,
+# ~300 ps insertion) never hit this, so these constraints are no-ops there.
+set io_data_inputs [all_inputs -no_clocks]
+set_false_path -hold  -from $io_data_inputs
+set_false_path -hold  -to   [all_outputs]
+set_false_path -setup -from $io_data_inputs
+set_false_path -setup -to   [all_outputs]
