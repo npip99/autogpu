@@ -24,7 +24,7 @@ The split was introduced in Phase 7f. Before it, `cmdproc/cmdproc_tb_top.sv` mix
         │       ▼                               ▼         ▼       ▼            │
         │   ┌─────────────┐           ┌────────────────┐  ┌────┐  ┌─────┐      │
         │   │  smem       │◀──────────│ compute_array  │  │load│  │store│      │
-        │   │ (32 sram_1rw│           │ (1024 leaves:  │  │    │  │     │      │
+        │   │ (16 sram_1rw│           │ (1024 leaves:  │  │    │  │     │      │
         │   │   banks)    │──────────▶│  mac_tmem_cell)│  │    │  │     │      │
         │   └─────────────┘           │  K-loop, drain │  │    │  │     │      │
         │                             └────────────────┘  └────┘  └─────┘      │

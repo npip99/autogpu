@@ -28,6 +28,7 @@ TOPLEVEL_LANG  ?= verilog
 # then chip_top, then chip_tb_top + off-chip behavioral gmem.
 VERILOG_SOURCES = $(PWD)/../mem/sram_1rw.sv \
                   $(PWD)/../cmdproc/cmdproc.sv \
+                  $(PWD)/../smem/smem_bank.sv \
                   $(PWD)/../smem/smem.sv \
                   $(PWD)/../barrier/barrier.sv \
                   $(PWD)/../load/load.sv \
@@ -47,6 +48,7 @@ VERILOG_SOURCES = $(PWD)/../mem/sram_1rw.sv \
                   $(PWD)/../skew_lane/skew_lane_a.sv \
                   $(PWD)/../skew_lane/skew_lane_b.sv \
                   $(PWD)/../compute_array/compute_array.sv \
+                  $(PWD)/../tile_buf_8row/tile_buf_8row.sv \
                   $(PWD)/../store/store.sv \
                   $(PWD)/chip_top.sv \
                   $(PWD)/../gmem/gmem.sv \
@@ -115,6 +117,7 @@ include $(shell cocotb-config --makefiles)/Makefile.sim
 #     `make lint` against the project-only file list.
 LINT_SOURCES = $(PWD)/../mem/sram_1rw.sv \
                $(PWD)/../cmdproc/cmdproc.sv \
+               $(PWD)/../smem/smem_bank.sv \
                $(PWD)/../smem/smem.sv \
                $(PWD)/../barrier/barrier.sv \
                $(PWD)/../load/load.sv \
@@ -130,6 +133,7 @@ LINT_SOURCES = $(PWD)/../mem/sram_1rw.sv \
                $(PWD)/../common/fp8_encode.sv \
                $(PWD)/../mac_tmem_cell/mac_tmem_cell.sv \
                $(PWD)/../compute_array/compute_array.sv \
+               $(PWD)/../tile_buf_8row/tile_buf_8row.sv \
                $(PWD)/../store/store.sv \
                $(PWD)/chip_top.sv
 

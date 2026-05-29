@@ -8,8 +8,8 @@
 // HIERARCHY (cocotb backdoor handles):
 //   chip_tb_top
 //   ├── u_chip       — synthesizable chip_top
-//   │    ├── u_smem      (32 sram_1rw banks; access via .bank_mem[b][w]
-//   │    │                shadow, or .gen_banks[b].u_sram.mem[w] direct)
+//   │    ├── u_smem      (16 sram_1rw banks; access via .bank_mem[b][w]
+//   │    │                shadow, or .gen_banks[b].u_bank.u_sram.mem[w] direct)
 //   │    ├── u_compute_array (1024 mac_tmem_cell leaves; per-cell storage
 //   │    │                accessible via
 //   │    │                .gen_row[i].gen_col[j].u_cell.storage[slot])

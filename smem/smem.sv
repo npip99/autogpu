@@ -67,7 +67,7 @@
 //
 // BACKDOOR (cocotb)
 // =================
-//   Per-bank storage lives inside `gen_banks[b].u_sram.mem[w]` (the
+//   Per-bank storage lives inside `gen_banks[b].u_bank.u_sram.mem[w]` (the
 //   sram_1rw instance). A read-only `mem[]` byte view is exposed at the
 //   smem.sv level for cocotb hierarchical reads
 //   (dut.u_smem.mem[byte_idx].value). The view samples bank rdata via
@@ -81,13 +81,24 @@
 //   reset is dominant: clears pending state + registered outputs. Bank
 //   contents preserved (matches gmem.sv / tmem.sv semantics). The
 //   post-power-on zeroing of bank contents is performed by the SCRUB
-//   PORT (driven by reset_seq) — when scrub_en=1, ALL 32 banks are
+//   PORT (driven by reset_seq) — when scrub_en=1, ALL 16 banks are
 //   written to 0 at scrub_addr (the per-bank word index). scrub_en is
 //   mutually exclusive with wr_en / rd_a_en / rd_b_en (chip_in_reset
 //   gates those off upstream).
 
+// `SMEM_BANK_WORDS — single source of truth for the smem_bank's
+// hardened depth. Duplicated as `ifndef/`define in both smem_bank.sv
+// (where it parameterizes the macro at harden time) and here in
+// smem.sv (where smem's NUM_WORDS_PER_BANK is sanity-checked against
+// it). Override one of these with `-D SMEM_BANK_WORDS=N` to change
+// the bank depth — but you MUST re-harden smem_bank to match, since
+// the hardened LEF is depth-frozen.
+`ifndef SMEM_BANK_WORDS
+`define SMEM_BANK_WORDS 128
+`endif
+
 module smem #(
-    parameter int SMEM_BYTES = 16384,
+    parameter int SMEM_BYTES = 8192,
     parameter int BEAT_BYTES = 16,
     parameter int MMA_M      = 32,
     parameter int MMA_N      = 32
@@ -131,10 +142,22 @@ module smem #(
     // ------------------------------------------------------------------
     // Bank-storage parameters.
     // ------------------------------------------------------------------
-    localparam int NUM_BANKS          = 32;
+    localparam int NUM_BANKS          = 16;
     localparam int BYTES_PER_DWORD    = 4;
     localparam int NUM_WORDS_PER_BANK = SMEM_BYTES / NUM_BANKS / BYTES_PER_DWORD;
-    localparam int BANK_BITS          = 5;
+
+    // SAFETY CHECK: smem_bank is hardened with `SMEM_BANK_WORDS = 128
+    // (see smem/smem_bank.sv). The macro's LEF only describes the
+    // resulting 128-deep address pinout; if smem.sv's derived
+    // NUM_WORDS_PER_BANK ever drifts away from 128 (e.g. SMEM_BYTES
+    // bumped without re-hardening smem_bank), the addresses smem.sv
+    // drives reach beyond the SRAM's actual depth and silently corrupt.
+    // Re-harden smem_bank with the new value if you change SMEM_BYTES.
+    if (NUM_WORDS_PER_BANK != `SMEM_BANK_WORDS) begin : smem_bank_words_mismatch
+        $error("smem_bank is hardened for %0d words but smem.sv computed NUM_WORDS_PER_BANK=%0d. Re-harden smem_bank (edit `SMEM_BANK_WORDS in smem_bank.sv and re-run ./tech/asap7/orfs/run.sh smem_bank).",
+               `SMEM_BANK_WORDS, NUM_WORDS_PER_BANK);
+    end
+    localparam int BANK_BITS          = 4;
     localparam int WORD_BITS          = $clog2(NUM_WORDS_PER_BANK);
 
     localparam int WR_DWORDS          = BEAT_BYTES / 4;   // 4
@@ -142,16 +165,41 @@ module smem #(
     localparam int RDB_DWORDS         = MMA_N      / 4;   // 8
 
     // ------------------------------------------------------------------
-    // Bank decode helpers. Functions take a full 32-bit address but use
-    // only a slice; the unused bits are not a bug.
+    // Bank decode helpers — REGION-PARTITIONED LAYOUT.
+    //
+    // SMEM is divided into 2 regions of 8 banks each, picked by
+    // addr[12]. Within a region, addr[4:2] selects one of 8 banks
+    // cyclically. addr[11:5] is the word index (128 words per bank).
+    //
+    //   bank[3]   = region (addr[12])
+    //   bank[2:0] = bank-within-region (addr[4:2])
+    //
+    // Region usage (convention enforced at the asm/test level):
+    //   region 0 (banks 0-7,  addr 0..4095):    OPERAND A
+    //   region 1 (banks 8-15, addr 4096..8191): OPERAND B
+    //
+    // Consequence: rd_a always touches banks 0-7 (its 8 dwords come
+    // from exactly those 8 banks with no cyclic shift); rd_b always
+    // touches banks 8-15. No cross-region cyclic mux is needed at smem
+    // output. See tech/asap7/problems/B1_smem_bank_rdata_congestion.md.
     // ------------------------------------------------------------------
     /* verilator lint_off UNUSEDSIGNAL */
     function automatic logic [BANK_BITS-1:0] bank_of(input logic [31:0] addr);
-        return addr[6:2];
+        return {addr[12], addr[4:2]};
     endfunction
 
-    function automatic logic [1:0] group_of(input logic [31:0] addr);
-        return addr[6:5];
+    // Region index — 0 or 1 (A or B region). Replaces the old
+    // `group_of(addr) = addr[6:5]` from the cyclic 32-bank layout.
+    function automatic logic region_of(input logic [31:0] addr);
+        return addr[12];
+    endfunction
+
+    // Word index inside a bank. addr[11:5] is the 7-bit word number
+    // (128 words per bank). Replaces the old `addr[2+BANK_BITS +:
+    // WORD_BITS]` (which was a 7-bit word number from addr[13:7] under
+    // the cyclic 32-bank layout — same width, different bit position).
+    function automatic logic [WORD_BITS-1:0] word_of(input logic [31:0] addr);
+        return addr[11:5];
     endfunction
     /* verilator lint_on UNUSEDSIGNAL */
 
@@ -164,9 +212,19 @@ module smem #(
     logic rd_a_rd_b_conflict;
 
     always_comb begin
-        wr_rd_a_conflict   = wr_en && rd_a_en && (group_of(wr_addr)   == group_of(rd_a_addr));
-        wr_rd_b_conflict   = wr_en && rd_b_en && (group_of(wr_addr)   == group_of(rd_b_addr));
-        rd_a_rd_b_conflict = rd_a_en && rd_b_en && (group_of(rd_a_addr) == group_of(rd_b_addr));
+        // Conflicts are now defined by REGION (8-bank set):
+        //   - LOAD overlaps an RD port only if they target the same region.
+        //     With the standard layout (LOAD-of-A → region 0, RD_A from
+        //     region 0; LOAD-of-B → region 1, RD_B from region 1), in
+        //     practice LOAD-of-A conflicts only with RD_A (same region)
+        //     and LOAD-of-B only with RD_B. The asm program double-buffers
+        //     to avoid these conflicts during steady-state matmul.
+        //   - RD_A and RD_B target DIFFERENT regions by convention (A in 0,
+        //     B in 1), so they never conflict and rd_a_rd_b_conflict is 0
+        //     unless the program violates the layout convention.
+        wr_rd_a_conflict   = wr_en && rd_a_en && (region_of(wr_addr)   == region_of(rd_a_addr));
+        wr_rd_b_conflict   = wr_en && rd_b_en && (region_of(wr_addr)   == region_of(rd_b_addr));
+        rd_a_rd_b_conflict = rd_a_en && rd_b_en && (region_of(rd_a_addr) == region_of(rd_b_addr));
 
         load_wr_stall_out  = 1'b0;
         mma_rd_a_stall_out = wr_rd_a_conflict;
@@ -196,12 +254,14 @@ module smem #(
     // The per-bank word index within the bank is `addr[2+BANK_BITS +:
     // WORD_BITS]` (the dword-index above the bank-id bits).
     // ------------------------------------------------------------------
-    // Bank-driver signals.
+    // Bank-driver signals (bank_rdata is declared below alongside the
+    // smem_bank instantiation block, since bank_rdata now comes from
+    // the per-bank OR of the bank's gated outputs, not directly from
+    // the SRAM macro).
     logic                       bank_en   [NUM_BANKS];
     logic                       bank_we   [NUM_BANKS];
     logic [WORD_BITS-1:0]       bank_addr [NUM_BANKS];
     logic [31:0]                bank_wdata[NUM_BANKS];
-    logic [31:0]                bank_rdata[NUM_BANKS];
 
     // Per-bank arbitration. SCRUB > LOAD_WR > RD_A > RD_B. The stall logic
     // above guarantees only one port "covers" any given bank on a cycle
@@ -248,7 +308,7 @@ module smem #(
                 for (d_iter = 0; d_iter < WR_DWORDS; d_iter++) begin
                     dword_addr   = wr_addr + 32'(d_iter * 4);
                     b_idx        = bank_of(dword_addr);
-                    w_idx        = dword_addr[2 + BANK_BITS +: WORD_BITS];
+                    w_idx        = word_of(dword_addr);
                     bank_en[b_idx]    = 1'b1;
                     bank_we[b_idx]    = 1'b1;
                     bank_addr[b_idx]  = w_idx;
@@ -262,7 +322,7 @@ module smem #(
                 for (d_iter = 0; d_iter < RDA_DWORDS; d_iter++) begin
                     dword_addr = rd_a_addr + 32'(d_iter * 4);
                     b_idx      = bank_of(dword_addr);
-                    w_idx      = dword_addr[2 + BANK_BITS +: WORD_BITS];
+                    w_idx      = word_of(dword_addr);
                     if (!bank_en[b_idx]) begin
                         bank_en[b_idx]   = 1'b1;
                         bank_we[b_idx]   = 1'b0;
@@ -276,7 +336,7 @@ module smem #(
                 for (d_iter = 0; d_iter < RDB_DWORDS; d_iter++) begin
                     dword_addr = rd_b_addr + 32'(d_iter * 4);
                     b_idx      = bank_of(dword_addr);
-                    w_idx      = dword_addr[2 + BANK_BITS +: WORD_BITS];
+                    w_idx      = word_of(dword_addr);
                     if (!bank_en[b_idx]) begin
                         bank_en[b_idx]   = 1'b1;
                         bank_we[b_idx]   = 1'b0;
@@ -288,25 +348,99 @@ module smem #(
     end
 
     // ------------------------------------------------------------------
-    // 32 sram_1rw instances. In Phase 7g, tech/<process>/sram_1rw.sv
-    // replaces this with the vendor SRAM macro.
+    // Per-bank rd_a / rd_b "I'm contributing to dword d this cycle".
+    //
+    // With the region-partitioned bank layout:
+    //   - rd_a's 8 dwords always come from region 0 (banks 0-7), with
+    //     bank b serving dword (b - 0) = b.  So bank 0 → dword 0, bank 1
+    //     → dword 1, ..., bank 7 → dword 7. Hardcoded mapping; no
+    //     runtime computation needed.
+    //   - rd_b's 8 dwords always come from region 1 (banks 8-15). Bank
+    //     b+8 serves dword b.
+    //   - Banks in regions 2-3 (banks 16-31) never participate in reads
+    //     under the standard layout convention.
+    //
+    // `rd_*_active` for each bank is just "is there a pending read on
+    // that port, AND does the pending addr live in this bank's region?"
+    // The dword_idx is the bank's position within its region.
     // ------------------------------------------------------------------
+    logic        bank_rd_a_active   [NUM_BANKS];
+    logic [2:0]  bank_rd_a_dword_idx[NUM_BANKS];
+    logic        bank_rd_b_active   [NUM_BANKS];
+    logic [2:0]  bank_rd_b_dword_idx[NUM_BANKS];
+
+    always_comb begin
+        logic                   rd_a_region, rd_b_region;
+        logic [BANK_BITS-1:0]   b_id;
+        rd_a_region = region_of(rd_a_pending_addr);
+        rd_b_region = region_of(rd_b_pending_addr);
+        for (int b = 0; b < NUM_BANKS; b++) begin
+            // bank b is in region b[3]. If the pending read targets that
+            // region, the bank is active and its dword_idx is b[2:0].
+            b_id = BANK_BITS'(b);
+            bank_rd_a_active[b]    = rd_a_pending_valid && (rd_a_region == b_id[3]);
+            bank_rd_a_dword_idx[b] = b_id[2:0];
+            bank_rd_b_active[b]    = rd_b_pending_valid && (rd_b_region == b_id[3]);
+            bank_rd_b_dword_idx[b] = b_id[2:0];
+        end
+    end
+
+    // The hardened read-beat assembly below pulls rd_a's dwords from
+    // banks 0-7 (region 0) and rd_b's from banks 8-15 (region 1). That
+    // wiring is only valid if the operand partition holds: A tiles always
+    // live in region 0, B tiles always in region 1. The active-flag logic
+    // above is region-general, so a stray read into the wrong region would
+    // silently return zeros. Catch it in sim. (sv2v drops immediate
+    // assertions, so this is sim-only and never reaches synthesis.)
+    always_ff @(posedge clk) begin
+        if (!reset) begin
+            if (rd_a_pending_valid)
+                assert (region_of(rd_a_pending_addr) == 1'b0)
+                    else $error("smem: rd_a read into region 1 (addr=%h); read-beat assembly only wires banks 0-7 for rd_a.", rd_a_pending_addr);
+            if (rd_b_pending_valid)
+                assert (region_of(rd_b_pending_addr) == 1'b1)
+                    else $error("smem: rd_b read into region 0 (addr=%h); read-beat assembly only wires banks 8-15 for rd_b.", rd_b_pending_addr);
+        end
+    end
+
+    // ------------------------------------------------------------------
+    // 16 smem_bank macros (2 regions x 8). Each owns its own fakeram +
+    // per-output-dword gating logic. Hardened LEF (smem_bank.lef).
+    //
+    // No central rdata mux or OR-tree at smem level — under the region
+    // partition each bank drives exactly one dword of one read port, so
+    // the read beat is wired straight from the per-bank gated outputs.
+    // The 512 bank-rdata wires that used to fan to a central mux are
+    // consumed inside each macro.
+    // ------------------------------------------------------------------
+    logic [31:0] bank_rd_a_out [NUM_BANKS][8];
+    logic [31:0] bank_rd_b_out [NUM_BANKS][8];
+
     genvar gb;
     generate
         for (gb = 0; gb < NUM_BANKS; gb++) begin : gen_banks
-            sram_1rw #(
-                .WORDS(NUM_WORDS_PER_BANK),
-                .W    (32)
-            ) u_sram (
-                .clk   (clk),
-                .en    (bank_en[gb]),
-                .we    (bank_we[gb]),
-                .addr  (bank_addr[gb]),
-                .wdata (bank_wdata[gb]),
-                .rdata (bank_rdata[gb])
+            // No parameter override: smem_bank is consumed as a hardened
+            // LEF black-box, and yosys can't pass parameter values into
+            // a LIB-only cell. The macro is hardened with WORDS=128
+            // (matching the `SMEM_BANK_WORDS define in smem_bank.sv);
+            // SMEM_BYTES at chip_top must keep NUM_WORDS_PER_BANK at 128
+            // for the macro to bind cleanly.
+            smem_bank u_bank (
+                .clk            (clk),
+                .en             (bank_en[gb]),
+                .we             (bank_we[gb]),
+                .addr           (bank_addr[gb]),
+                .wdata          (bank_wdata[gb]),
+                .rd_a_active    (bank_rd_a_active[gb]),
+                .rd_a_dword_idx (bank_rd_a_dword_idx[gb]),
+                .rd_b_active    (bank_rd_b_active[gb]),
+                .rd_b_dword_idx (bank_rd_b_dword_idx[gb]),
+                .rd_a_out       (bank_rd_a_out[gb]),
+                .rd_b_out       (bank_rd_b_out[gb])
             );
         end
     endgenerate
+
 
     // ------------------------------------------------------------------
     // Sim-only shadow `bank_mem[NUM_BANKS][NUM_WORDS_PER_BANK]` used for
@@ -317,7 +451,7 @@ module smem #(
     // real sram_1rw rdata outputs.
     //
     // For cocotb backdoor writes from a TB, write to bank_mem[b][w]
-    // directly AND also to gen_banks[b].u_sram.mem[w] (a helper does
+    // directly AND also to gen_banks[b].u_bank.u_sram.mem[w] (a helper does
     // both). The shadow is needed because Verilator + cocotb access
     // through generate blocks is fiddly and the mma/smem testbenches
     // already rely on the bank_mem[b][w] handle.
@@ -341,9 +475,12 @@ module smem #(
     /* verilator lint_on UNUSEDSIGNAL */
     always_comb begin
         for (int i = 0; i < SMEM_BYTES; i++) begin
+            // Region-partitioned layout: bank = {addr[12], addr[4:2]},
+            // word = addr[11:5]. (Was bank = addr[6:2], word = addr[13:7]
+            // under the cyclic 32-bank layout.)
             mem[i] = bank_mem
-                [(i >> 2) & (NUM_BANKS-1)]
-                [(i >> (2 + BANK_BITS))]
+                [{i[12], i[4:2]}]
+                [i[11:5]]
                 [(i & 3) * 8 +: 8];
         end
     end
@@ -366,27 +503,16 @@ module smem #(
     // (at edge T) and the bank rdata flopped at edge T; we are now between
     // edge T and edge T+1, building the beat for the registered output.
     // ------------------------------------------------------------------
-    function automatic logic [7:0] read_byte_from_banks(input logic [31:0] addr);
-        logic [BANK_BITS-1:0] b_idx;
-        logic [31:0]          word;
-        b_idx = bank_of(addr);
-        word  = bank_rdata[b_idx];
-        return word[(addr & 32'd3) * 8 +: 8];
-    endfunction
-
-    // Beat assembly. Same style as the bank arbitrator: all locals declared
-    // and pre-initialized at module scope; loop iterators are module-level
-    // ints. Each always_comb block has its own set of locals so neither
-    // sees the other as a multi-driver. See DEVELOPMENT.md §"Synthesis-
-    // friendly SV".
+    // Beat assembly reads directly from the per-bank gated outputs.
+    // Region partitioning (rd_a -> banks 0-7, rd_b -> banks 8-15) plus
+    // the per-dword gating inside each hardened smem_bank means only the
+    // already-selected dwords leave each bank, so the read beat is wired
+    // straight from bank outputs with no central mux. This is the B1 fix:
+    // the prior monolithic mux made all 16x32 = 512 bank-data wires
+    // converge on one region, which asap7 detail-route could not escape.
+    // See tech/asap7/problems/B1_smem_bank_rdata_congestion.md.
     logic [MMA_M*8-1:0] rd_a_beat;
     logic [MMA_N*8-1:0] rd_b_beat;
-    int          beat_a_i;
-    logic [31:0] beat_a_rb;
-    logic        beat_a_fwd;
-    int          beat_b_i;
-    logic [31:0] beat_b_rb;
-    logic        beat_b_fwd;
 
     // Write-forward mask: one barrel-shift instead of MMA comparators.
     //
@@ -438,35 +564,69 @@ module smem #(
         end
     end
 
+    // Pre-compute the per-byte byte_idx_in_wr for both ports. The dword
+    // mux is purely combinational on its inputs — keeping the byte_idx
+    // arithmetic at the parent means every dword instance sees the same
+    // wr_data + a tiny 4-bit index per byte, so yosys can't share the
+    // arithmetic ALU across instances (which would defeat the hierarchy).
+    logic [3:0] byte_idx_in_wr_a [MMA_M];
+    logic [3:0] byte_idx_in_wr_b [MMA_N];
+
     always_comb begin
-        beat_a_rb  = '0;
-        beat_a_fwd = 1'b0;
-        rd_a_beat = '0;
-        for (beat_a_i = 0; beat_a_i < MMA_M; beat_a_i++) begin
-            beat_a_rb  = rd_a_pending_addr + 32'(beat_a_i);
-            beat_a_fwd = fwd_mask_a[beat_a_i];
-            if (beat_a_fwd) begin
+        for (int i = 0; i < MMA_M; i++) begin
+            byte_idx_in_wr_a[i] = (4'(i) - pos_a[3:0]) & 4'hF;
+        end
+    end
+
+    always_comb begin
+        for (int i = 0; i < MMA_N; i++) begin
+            byte_idx_in_wr_b[i] = (4'(i) - pos_b[3:0]) & 4'hF;
+        end
+    end
+
+    // Direct bank-to-output wiring (region-partitioned layout).
+    // Under the region-partition convention, bank b in region 0 (banks
+    // 0-7) always feeds rd_a's dword (b mod 8); bank b in region 1
+    // (banks 8-15) always feeds rd_b's dword (b mod 8). No mux, no OR
+    // tree, no convergence point — the smem-level read path is a fan-out
+    // of 8 direct wires per port.
+    //
+    // bank_rd_a_out[b][d] is non-zero only when b == d (banks 0-7,
+    // d=0..7) — the smem_bank's internal gating handles this. Same for
+    // bank_rd_b_out where the non-zero index is b == d+8 (banks 8-15,
+    // d=0..7). Pull those specific entries directly.
+    logic [31:0] rda [RDA_DWORDS];
+    logic [31:0] rdb [RDB_DWORDS];
+
+    always_comb begin
+        for (int d = 0; d < RDA_DWORDS; d++) begin
+            // bank d in region 0 → dword d of rd_a beat
+            rda[d] = bank_rd_a_out[d][d];
+            // bank d+8 in region 1 → dword d of rd_b beat
+            rdb[d] = bank_rd_b_out[d + 8][d];
+        end
+    end
+
+    // Byte-level overlay: for each output byte i in 0..MMA_M-1, take the
+    // wr_data byte if fwd_mask_a[i] else the bank-OR-tree byte.
+    always_comb begin
+        for (int i = 0; i < MMA_M; i++) begin
+            if (fwd_mask_a[i]) begin
                 // byte_idx = (i - pos_a) mod 16; only need 4 LSBs.
-                rd_a_beat[beat_a_i*8 +: 8] =
-                    wr_data[((4'(beat_a_i) - pos_a[3:0]) & 4'hF) * 8 +: 8];
+                rd_a_beat[i*8 +: 8] = wr_data[byte_idx_in_wr_a[i] * 8 +: 8];
             end else begin
-                rd_a_beat[beat_a_i*8 +: 8] = read_byte_from_banks(beat_a_rb);
+                // Dword d = i / 4; byte position within dword = i % 4.
+                rd_a_beat[i*8 +: 8] = rda[i >> 2][(i & 32'h3) * 8 +: 8];
             end
         end
     end
 
     always_comb begin
-        beat_b_rb  = '0;
-        beat_b_fwd = 1'b0;
-        rd_b_beat = '0;
-        for (beat_b_i = 0; beat_b_i < MMA_N; beat_b_i++) begin
-            beat_b_rb  = rd_b_pending_addr + 32'(beat_b_i);
-            beat_b_fwd = fwd_mask_b[beat_b_i];
-            if (beat_b_fwd) begin
-                rd_b_beat[beat_b_i*8 +: 8] =
-                    wr_data[((4'(beat_b_i) - pos_b[3:0]) & 4'hF) * 8 +: 8];
+        for (int i = 0; i < MMA_N; i++) begin
+            if (fwd_mask_b[i]) begin
+                rd_b_beat[i*8 +: 8] = wr_data[byte_idx_in_wr_b[i] * 8 +: 8];
             end else begin
-                rd_b_beat[beat_b_i*8 +: 8] = read_byte_from_banks(beat_b_rb);
+                rd_b_beat[i*8 +: 8] = rdb[i >> 2][(i & 32'h3) * 8 +: 8];
             end
         end
     end

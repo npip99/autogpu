@@ -88,24 +88,36 @@ class SMEMAdapter:
         return int(self._s.mma_rd_b_stall_out)
 
 
-def _rand_wr_addr(rng: random.Random) -> int:
-    """Random BEAT_BYTES-aligned address inside the tile region."""
-    lo = SMEM_TILE_BASE // BEAT_BYTES
-    hi = (SMEM_BYTES // BEAT_BYTES) - 1
+# Region-partition convention (post-B1):
+#   region 0 = addr 0..4095   → banks 0-7  → OPERAND A
+#   region 1 = addr 4096..8191 → banks 8-15 → OPERAND B
+# rd_a only reads region 0; rd_b only reads region 1. LOAD writes to
+# whichever region the destination address falls in. Random tests must
+# respect this so the OR-tree-free read path returns valid data.
+_REGION_SIZE = SMEM_BYTES // 2  # 2 regions of 4 KB each (8 KB SMEM, 16 banks)
+
+
+def _rand_wr_addr(rng: random.Random, region: int = 0) -> int:
+    """Random BEAT_BYTES-aligned address inside one of the 4 SMEM regions.
+    Default region 0 (A's region); pass region=1 for B's region.
+    """
+    base = region * _REGION_SIZE
+    lo = max(SMEM_TILE_BASE, base) // BEAT_BYTES
+    hi = (base + _REGION_SIZE - 1) // BEAT_BYTES
     return rng.randint(lo, hi) * BEAT_BYTES
 
 
 def _rand_rd_a_addr(rng: random.Random) -> int:
-    """Random MMA_M-aligned address inside the tile region."""
-    lo = SMEM_TILE_BASE // MMA_M
-    hi = (SMEM_BYTES // MMA_M) - 1
+    """Random MMA_M-aligned address inside region 0 (A region)."""
+    lo = max(SMEM_TILE_BASE, 0) // MMA_M
+    hi = (_REGION_SIZE - 1) // MMA_M
     return rng.randint(lo, hi) * MMA_M
 
 
 def _rand_rd_b_addr(rng: random.Random) -> int:
-    """Random MMA_N-aligned address inside the tile region."""
-    lo = SMEM_TILE_BASE // MMA_N
-    hi = (SMEM_BYTES // MMA_N) - 1
+    """Random MMA_N-aligned address inside region 1 (B region)."""
+    lo = _REGION_SIZE // MMA_N
+    hi = (2 * _REGION_SIZE - 1) // MMA_N
     return rng.randint(lo, hi) * MMA_N
 
 
@@ -114,15 +126,16 @@ def _overlap(a0: int, a1: int, b0: int, b1: int) -> bool:
 
 
 def _backdoor_write_word(smem, bank: int, word: int, value: int) -> None:
-    """As of Phase 7f, SMEM banks live inside `sram_1rw` generate instances.
-    A backdoor word write must update the operational SRAM storage AND the
-    parallel `bank_mem` shadow used by backdoor reads.
+    """As of the B1 smem_bank refactor, each bank is a `smem_bank` instance
+    (`u_bank`) wrapping an `sram_1rw` (`u_sram`). A backdoor word write
+    must update the operational SRAM storage AND the parallel `bank_mem`
+    shadow used by backdoor reads.
 
     The operational storage path depends on which sram_1rw impl is active:
-      - FF impl (default):       `u_sram.mem[w]`
-      - sky130 macro wrapper:    `u_sram.u_macro.mem[w]`
+      - FF impl (default):       `u_bank.u_sram.mem[w]`
+      - sky130 macro wrapper:    `u_bank.u_sram.u_macro.mem[w]`
     """
-    sram = smem.gen_banks[bank].u_sram
+    sram = smem.gen_banks[bank].u_bank.u_sram
     masked = value & 0xFFFFFFFF
     if hasattr(sram, "mem"):
         sram.mem[word].value = masked
@@ -136,14 +149,22 @@ def _backdoor_load_dut(dut, addr: int, data: bytes) -> None:
     per (bank, word) before issuing writes — cocotb hierarchical writes
     are NBA, so successive read-modify-write of the same word would race.
     """
-    NUM_BANKS = 32
+    NUM_BANKS = 16
+
+    # Region-partitioned bank decode (post-B1 refactor):
+    #   bank = {addr[13:12], addr[4:2]}, word = addr[11:5]
+    def _bank_of(byte_addr: int) -> int:
+        # bank = {addr[12], addr[4:2]}  (1-bit region + 3-bit bank-within-region)
+        return ((byte_addr >> 9) & 0x8) | ((byte_addr >> 2) & 0x7)
+    def _word_of(byte_addr: int) -> int:
+        return (byte_addr >> 5) & 0x7F
 
     # Pre-read existing words for any (bank, word) we'll touch.
     word_cache: dict[tuple[int, int], int] = {}
     for i in range(len(data)):
         byte_addr = addr + i
-        bank = (byte_addr >> 2) & (NUM_BANKS - 1)
-        word = byte_addr >> (2 + 5)
+        bank = _bank_of(byte_addr)
+        word = _word_of(byte_addr)
         key = (bank, word)
         if key not in word_cache:
             word_cache[key] = int(dut.bank_mem[bank][word].value)
@@ -151,8 +172,8 @@ def _backdoor_load_dut(dut, addr: int, data: bytes) -> None:
     # Apply byte updates in the cache.
     for i, byte in enumerate(data):
         byte_addr = addr + i
-        bank = (byte_addr >> 2) & (NUM_BANKS - 1)
-        word = byte_addr >> (2 + 5)
+        bank = _bank_of(byte_addr)
+        word = _word_of(byte_addr)
         byte_in_dw = byte_addr & 3
         v = word_cache[(bank, word)]
         v &= ~(0xFF << (byte_in_dw * 8))
@@ -185,7 +206,7 @@ async def test_scrub_clears_all_banks(dut):
     # Poison every bank-word with a non-zero pattern via back-door so we can
     # detect the scrub actually doing work. Writes go to both the sram_1rw
     # storage and the shadow.
-    NUM_BANKS = 32
+    NUM_BANKS = 16
     NUM_WORDS_PER_BANK = SMEM_BYTES // NUM_BANKS // 4
     for b in range(NUM_BANKS):
         for w in range(NUM_WORDS_PER_BANK):
@@ -229,7 +250,7 @@ async def test_directed_load_then_read_a(dut):
 
     # Zero bank storage (`initial` blocks only run at sim startup; if this
     # test ran a second time on the same sim, contents could be stale).
-    NUM_BANKS = 32
+    NUM_BANKS = 16
     NUM_WORDS_PER_BANK = SMEM_BYTES // NUM_BANKS // 4
     for b in range(NUM_BANKS):
         for w in range(NUM_WORDS_PER_BANK):
@@ -279,7 +300,7 @@ async def test_random_vs_pymodel(dut):
 
     # Zero bank storage to match pymodel's fresh state (reset preserves
     # memory).
-    NUM_BANKS = 32
+    NUM_BANKS = 16
     NUM_WORDS_PER_BANK = SMEM_BYTES // NUM_BANKS // 4
     for b in range(NUM_BANKS):
         for w in range(NUM_WORDS_PER_BANK):
@@ -298,7 +319,9 @@ async def test_random_vs_pymodel(dut):
         rd_a_en = rng.randint(0, 1)
         rd_b_en = rng.randint(0, 1)
 
-        wr_addr = _rand_wr_addr(rng) if wr_en else 0
+        # 50/50 between region 0 (A's region, conflicts with rd_a) and
+        # region 1 (B's region, conflicts with rd_b).
+        wr_addr = _rand_wr_addr(rng, rng.randint(0, 1)) if wr_en else 0
         rd_a_addr = _rand_rd_a_addr(rng) if rd_a_en else 0
         rd_b_addr = _rand_rd_b_addr(rng) if rd_b_en else 0
 
@@ -340,26 +363,18 @@ async def test_random_vs_pymodel(dut):
 
 
 def _rand_in_group(rng: random.Random, group: int, align: int, width: int) -> int:
-    """Return a random `align`-aligned addr whose 8-bank group == `group`.
+    """Return a random `align`-aligned addr inside SMEM region `group`.
 
-    group ∈ {0,1,2,3}. A 128-byte block has 4 groups of 32B each (banks
-    [0-7], [8-15], [16-23], [24-31]). To land in group `group`, the address
-    needs bits [6:5] == group. We pick a random 128-byte block, then add the
-    in-group offset.
+    Post-B1, an SMEM "group" is one of the 4 hardware regions (4 KB each,
+    8 banks each, picked by addr[13:12]).
+    group ∈ {0,1,2,3}. Conflicts now happen when two ports target the same
+    region. Picks any aligned address in the region.
     """
-    # Total addresses with this group: SMEM_BYTES / 128 * 32 = SMEM_BYTES/4
-    block_lo = SMEM_TILE_BASE // 128
-    block_hi = (SMEM_BYTES // 128) - 1
-    if block_lo > block_hi:
-        block_lo = 0
-    block = rng.randint(block_lo, block_hi)
-    base = block * 128 + group * 32
-    # Number of `align`-aligned slots inside this 32B group.
-    slots = max(1, 32 // align)
-    slot = rng.randint(0, slots - 1)
-    addr = base + slot * align
-    # If the resulting addr+width exceeds smem, slide down.
-    while addr + width > SMEM_BYTES:
+    base = group * _REGION_SIZE
+    lo = base // align
+    hi = (base + _REGION_SIZE - 1) // align
+    addr = rng.randint(lo, hi) * align
+    while addr + width > base + _REGION_SIZE:
         addr -= align
     return addr
 
@@ -384,7 +399,7 @@ async def test_bank_conflict_random(dut):
     # gmem/tmem convention). Since the previous test left random data
     # behind, we zero contents explicitly so both pymodel and DUT start
     # with the same all-zero memory.
-    NUM_BANKS = 32
+    NUM_BANKS = 16
     NUM_WORDS_PER_BANK = SMEM_BYTES // NUM_BANKS // 4
     for b in range(NUM_BANKS):
         for w in range(NUM_WORDS_PER_BANK):
@@ -403,16 +418,18 @@ async def test_bank_conflict_random(dut):
         rd_a_en = rng.randint(0, 1)
         rd_b_en = rng.randint(0, 1)
 
-        # ~70% of the time, pick all three addresses from the SAME 8-bank
-        # group to provoke conflicts. Remaining 30%: random groups (often
-        # no conflict).
+        # Post-B1 region-partitioned smem: rd_a is locked to region 0,
+        # rd_b to region 1. Conflicts now happen when LOAD's wr_addr lands
+        # in the same region as one of the reads.
+        # ~70% of cycles: force wr_addr into rd_a's or rd_b's region to
+        # provoke a conflict.
         if rng.random() < 0.7:
-            group = rng.randint(0, 3)
-            wr_addr   = _rand_in_group(rng, group, BEAT_BYTES, BEAT_BYTES) if wr_en   else 0
-            rd_a_addr = _rand_in_group(rng, group, MMA_M,      MMA_M)      if rd_a_en else 0
-            rd_b_addr = _rand_in_group(rng, group, MMA_N,      MMA_N)      if rd_b_en else 0
+            wr_region = rng.randint(0, 1)
+            wr_addr   = _rand_in_group(rng, wr_region, BEAT_BYTES, BEAT_BYTES) if wr_en else 0
+            rd_a_addr = _rand_in_group(rng, 0, MMA_M, MMA_M) if rd_a_en else 0
+            rd_b_addr = _rand_in_group(rng, 1, MMA_N, MMA_N) if rd_b_en else 0
         else:
-            wr_addr   = _rand_wr_addr(rng)   if wr_en   else 0
+            wr_addr   = _rand_wr_addr(rng, rng.randint(0, 1)) if wr_en else 0
             rd_a_addr = _rand_rd_a_addr(rng) if rd_a_en else 0
             rd_b_addr = _rand_rd_b_addr(rng) if rd_b_en else 0
 
