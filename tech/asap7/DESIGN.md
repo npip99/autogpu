@@ -509,13 +509,19 @@ chip_top can run at full MMA=32.
 
 ### Known caveats at chip_top first-pass
 
-1. **PSM-0069 fix applied** via A1's pattern: `chip_top.pdn.tcl` now
-   ships a `define_pdn_grid -macro -name {macro_grid}` with
-   `add_pdn_connect -layers {M5 M6}` and `{M6 M7}` so the parent
-   stripes weld to every hardened-leaf VDD/VSS pin (compute_array +
-   the 4 sub-block macros + 16 fakeram banks). Same mechanical fix as
-   `compute_array.pdn.tcl`. Verify with
-   `scripts/verify_macro_power.tcl` after a 6_final route.
+1. **PDN macro welding (PSM-0069 / PDN-0233 fix).** `chip_top.pdn.tcl`
+   ships a `define_pdn_grid -macro -name {macro_grid}`, but chip_top's
+   macro mix is heterogeneous, so A1's homogeneous `{M5 M6}`+`{M6 M7}`
+   connects were not enough (issue #10):
+     - fakeram7_256x32 (smem banks) expose VDD/VSS on **M4 only** → the
+       macro_grid needs an `{M4 M5}` rung to reach them.
+     - reset_seq is a 8.3 µm cell whose M6 pin spans just 4.27 µm; the
+       fakeram banks are 8.36 µm wide. The coarse 60 µm parent stripes
+       stepped over them. So the `top` grid's **M5 verticals run at a
+       4 µm pitch** (≤ the 4.27 µm reset_seq pin window) — guaranteeing
+       at least one M5 over every macro's pin window. M6/M7 stay coarse.
+   Verified: `scripts/verify_macro_power.tcl` on the post-PDN ODB reports
+   `ok=361 fail=0`.
 2. **compute_array GDS exists post-A1.** `ADDITIONAL_GDS` now includes
    `compute_array_tiny_bcast0/base/6_final.gds`; `GDS_ALLOW_EMPTY` is
    tightened to just `fakeram.*` (those macros are LEF-only from the
@@ -536,9 +542,12 @@ chip_top can run at full MMA=32.
 
 ```
 # After any compute_array (or other submodule) re-harden:
-uv run python tech/asap7/orfs/scripts/gen_chip_top_floorplan.py
-make -C tech/sky130 build/sv2v/chip_top_asap7_tiny.v   # or MMA_DIM=32
+uv run --with matplotlib python tech/asap7/orfs/scripts/gen_chip_top_floorplan.py
+make -C tech/sky130 build/sv2v/chip_top_asap7_tiny.v MMA_DIM=4   # or MMA_DIM=32
 ./tech/asap7/orfs/run.sh chip_top
+# At reduced MMA the smem read path uses one bank per region, so synthesis
+# prunes the other banks; the placement guards each fakeram with findInst,
+# so only the surviving banks are placed (no MPL-0020).
 ```
 
 ## LVS infrastructure

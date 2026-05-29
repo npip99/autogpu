@@ -166,24 +166,29 @@ def main() -> None:
     tcl.append(f"place_macro -macro_name u_barrier            -location {{{br_x:.2f} {north_band_y:.2f}}} -orientation R0")
     tcl.append(f"place_macro -macro_name u_reset_seq          -location {{{rs_x:.2f} {north_band_y:.2f}}} -orientation R0")
     tcl.append("")
-    tcl.append("# smem fakeram7 banks — 16 instances in an 8-col × 2-row grid.")
-    tcl.append("# Instance name format inside chip_top netlist:")
-    tcl.append("#   u_smem.gen_banks[<n>].u_bank.u_sram.u_macro")
-    tcl.append("# (smem.sv uses `for ... begin : gen_banks`; sram_1rw.sv")
-    tcl.append("#  under USE_ASAP7_FAKERAM wraps fakeram7_256x32 as u_macro.)")
+    tcl.append("# smem fakeram7 banks — up to 16 in an 8-col × 2-row grid.")
+    tcl.append("# Instance name inside chip_top netlist:")
+    tcl.append("#   u_smem.gen_banks[<n>].u_bank/u_sram.u_macro")
+    tcl.append("# smem_bank is keep_hierarchy, so the divider before u_sram is")
+    tcl.append("# '/' (a module boundary), not '.'. At reduced MMA sizes the smem")
+    tcl.append("# read path only touches one bank per region (RDA_DWORDS = MMA_M/4),")
+    tcl.append("# so synthesis prunes the unread banks; guard each placement with")
+    tcl.append("# findInst so a pruned bank doesn't trip MPL-0020.")
     for ridx in range(SMEM_BANKS_Y):
         for cidx in range(SMEM_BANKS_X):
             bank_idx = ridx * SMEM_BANKS_X + cidx
             bx = smem_x0 + cidx * SMEM_BANK_PITCH_X
             by = smem_y0 + ridx * SMEM_BANK_PITCH_Y
+            name = f"u_smem.gen_banks\\[{bank_idx}\\].u_bank/u_sram.u_macro"
+            tcl.append(f"set m {{{name}}}")
             tcl.append(
-                f"place_macro -macro_name {{u_smem.gen_banks\\[{bank_idx}\\].u_bank.u_sram.u_macro}}"
-                f" -location {{{bx:.2f} {by:.2f}}} -orientation R0"
+                f"if {{[[ord::get_db_block] findInst $m] ne \"NULL\"}} "
+                f"{{place_macro -macro_name $m -location {{{bx:.2f} {by:.2f}}} -orientation R0}}"
             )
 
     tcl_path = OUT_DIR / "chip_top.macro_placement.tcl"
     tcl_path.write_text("\n".join(tcl) + "\n")
-    print(f"\nWrote {tcl_path} ({len([l for l in tcl if l.startswith('place_macro')])} macros)")
+    print(f"\nWrote {tcl_path} ({sum('place_macro' in l for l in tcl)} macros)")
 
     # ---- Render preview PNG ----------------------------------------------
     fig, ax = plt.subplots(figsize=(10, 10))
