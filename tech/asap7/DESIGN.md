@@ -213,6 +213,101 @@ The three alternative-fix options listed above (commercial CTS,
 flatten hierarchy, re-harden leaves with output flops) remain on the
 table for designs where 2500 ps isn't an acceptable clock target.
 
+### Full 32×32: the runaway is I/O hold, not macro-to-macro (issue #25)
+
+`BCAST_PIPE=1` closes the tiny 4×4 but the full 32×32 still died at CTS
+with `RSZ-0060 Max buffer count reached` (95205 hold buffers). Issue #25
+assumed this was macro-to-macro CTS skew at scale. Instrumenting the
+placed 32×32 ODB refuted that:
+
+- **100% of hold-violating paths start at input ports** (1586 paths);
+  **zero are flop-to-flop.** Worst was `issue_a_off[*]` → `u_cmd` at
+  ~−2.7 ns, with the WNS *frozen* — buffers can't fix it.
+- Cause: the 1950 µm die gives the parent clock tree a **~3 ns insertion
+  delay** to reach 1089 macro CLK pins, but inputs are constrained at only
+  500 ps (`clk_io_pct` 0.2 × 2500). Data lands ~2.5 ns before the late
+  capture clock → enormous I/O hold. repair_timing pads each I/O bit with
+  ~50 delay buffers across thousands of port bits → buffer-budget blowup
+  before route.
+- The genuine inter-macro skew hold *does* exist (~2186 endpoints) but is
+  small (worst −56 ps) and repair_timing closes it to **0 ps** on its own
+  once the I/O paths stop exhausting the budget.
+
+The same 3 ns insertion delay also pressures I/O **setup**: outputs (e.g.
+`drain_row_data[*]`) launch ~3 ns into the 2.5 ns period and miss their
+deadline → ~1443 I/O setup violations that post-route repair_timing
+plateaus on (~−666 ps) and cannot fix. Same root cause, same I/O-only
+profile (zero failing flop-to-flop), same chip_top deferral.
+
+**Fix (in `compute_array.sdc`):** false-path block-level I/O hold **and**
+setup —
+```
+set_false_path -hold  -from [all_inputs -no_clocks]
+set_false_path -hold  -to   [all_outputs]
+set_false_path -setup -from [all_inputs -no_clocks]
+set_false_path -setup -to   [all_outputs]
+```
+STA on the placed ODB: hold WNS −651 ps → +10 ps, zero remaining hold
+violations; setup likewise becomes a no-op on I/O. CTS exits with hold =
+0 ps and ~9 k buffers (no RSZ-0060) and post-route no longer churns on
+unfixable I/O setup — the issue-#25 blocker is gone and the block hardens
+clean.
+
+This is correct methodology, not a mask: block-level I/O hold is
+meaningless standalone — the real launch register is in chip_top
+(cmdproc → compute_array), and compute_array's abstract `.lib` folds the
+3 ns insertion into a *relaxed* (negative) input-hold arc, so the I/O hold
+is re-closed at chip_top against its own clock tree. **A6/chip_top must
+carry the matching boundary-hold check** — this fix defers the check
+upward, it does not delete it. tiny_bcast0 (400 µm, ~300 ps insertion)
+never hit this, so the constraint is a no-op there.
+
+### Full 32×32: broadcast-wire setup → 300 MHz (the real "doesn't scale")
+
+With the I/O paths false-pathed, post-route STA (real parasitics) surfaces
+a *second*, internal violation: worst setup **−451 ps** on
+`gen_row[0].gen_col[31].u_cell/b_in` — the east-most column. This is the
+`push_a`/`push_b` broadcast traveling ~1600 µm from its single BCAST_PIPE
+register to the far-column skew_lanes. Both endpoints are real internal
+registers, so it is a genuine setup violation, not an artifact. It is
+**wire-delay-dominated** (~2951 ps path), so the resizer cannot fix it —
+buffering a long wire adds delay. This is the literal "BCAST_PIPE=1 doesn't
+scale from tiny" in issue #25, on the *setup* side: at 4×4 the broadcast is
+short and closes; at 32-wide it does not. More BCAST_PIPE stages do **not**
+help — it is one high-fanout net, not a chain.
+
+**Fix taken: relax `compute_array.sdc` to 300 MHz (3333 ps).** The +833 ps
+of period closes all 461 such endpoints (worst −451 → +382 ps, the margin
+the rest of the logic already has); hold is period-independent so it is
+unaffected. This is consistent with the existing 1 GHz→400 MHz relaxation
+for wire delay. The faster alternative — keep 400 MHz and spatially
+re-pipeline the broadcast (register relay stations / per-region replication,
++1 cycle latency, RTL + pymodel work) — is the option-B follow-up.
+
+### Period vs latency: how per-macro specs compose (read before sizing clocks)
+
+Two clock quantities compose *completely differently*; conflating them is
+how you get a pathological chip frequency:
+
+- **Period (fmax)** is a property of the whole clock domain. Every block
+  runs on the same `clk`, so **chip min period = max(block min periods)** —
+  a MAX, never a sum. Relaxing compute_array to 300 MHz makes the chip
+  300 MHz iff compute_array is the slowest block; it does **not**
+  multiply with other blocks toward 100–200 MHz. Each macro gets a clean
+  fmax number; the chip takes the min.
+- **Insertion delay (latency, ~3 ns here)** is what combines badly — but
+  *not* into the period unless mishandled. At the chip_top boundary an
+  unbalanced 3 ns of macro latency shows up as boundary skew; if that skew
+  is absorbed by enlarging the period, *that* is what drags fmax down. The
+  correct move is **latency balancing** (useful skew at chip_top: deliver
+  the macro's clk pin earlier), which removes the skew from the period
+  budget entirely. See issue tracking the chip_top boundary closure.
+
+So: size each macro's period from its own internal closure (compute_array
+= 300 MHz), and handle inter-macro latency with skew balancing or a
+registered boundary — never by letting latency eat the period. Done this
+way, chip fmax = min(macro fmax), and the specs compose predictably.
+
 ## ORFS knobs we override
 
 Per-module `config.mk` overrides, with rationale (see Layer discipline +

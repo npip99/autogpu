@@ -24,10 +24,12 @@ export DESIGN_NICKNAME = compute_array_tiny_bcast0
 #      via its bcast_pipe= ctor arg). The pipe flops live in the
 #      parent's CTS domain, which lets the resizer add hold-fix delay
 #      on a much shorter inter-macro segment.
-#   2. clock period 1000 ps -> 2500 ps in compute_array_tiny_bcast0.sdc
-#      (matches the full compute_array.sdc target). At 1 GHz baseline
-#      itself had -1728 ps setup WNS; the 1 GHz target was always
-#      aspirational on this design.
+#   2. clock period 1000 ps -> 2500 ps in compute_array_tiny_bcast0.sdc.
+#      At 1 GHz baseline itself had -1728 ps setup WNS; the 1 GHz target
+#      was always aspirational on this design. (tiny stays at 2500 ps /
+#      400 MHz; the full compute_array.sdc was later relaxed to 3333 ps /
+#      300 MHz for the long far-column broadcast — issue #25 — which tiny's
+#      short 4-wide broadcast does not need.)
 #
 # Other approaches explored that did NOT beat this config (kept in the
 # tree as documentation, see headers of):
