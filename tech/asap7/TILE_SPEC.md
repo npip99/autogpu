@@ -47,6 +47,14 @@ during transition.
    only the parent's *delivery* of clock to the pin gets better. Tile
    is forward-compatible by default.
 
+   **Layer-stack contract (forward-compat with #33):** the tile must
+   leave M8/M9 untouched — those layers are reserved for the
+   chip-wide clock trunk #33 lays down. Edge rails on M5, internal
+   routing M1–M6, abstract LEF references nothing above M6. #33 adds
+   a build-time guard (in `run.sh`) that errors if a leaf abstract LEF
+   references M8/M9; if Phase A drifts above M6 by accident, that guard
+   will catch it.
+
 6. **Drain bus = routed at parent.** The 1024-bit `drain_row_data` from
    the top row's tiles to the chip output port is wide-not-long; per-bit
    wires are short (top-row tiles already sit at the top edge). Routed
