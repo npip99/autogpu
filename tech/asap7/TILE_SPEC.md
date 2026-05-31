@@ -60,34 +60,125 @@ during transition.
    wires are short (top-row tiles already sit at the top edge). Routed
    at parent — no per-tile pipelining.
 
-## Tile boundary (Phase A WIP)
+## Tile boundary
 
-Die size, edge rail pitch, edge pin tracks — TBD; will be filled in
-as Phase A progresses. Skeleton headings:
+### Direction conventions (from compute_array.sv RTL)
 
-- Die size + grid pitch
-- Edge power rails (M5): layer, pitch, offset, width
-- Edge signal pin tracks
-  - West edge:  `a_in[7:0]`, `compute_in`, `slot_in[1:0]`, `accum_in`
-  - East edge:  `a_out[7:0]`, `compute_out`, `slot_out[1:0]`, `accum_out`
-  - South edge: `b_in[7:0]`, `drain_in[31:0]`
-  - North edge: `b_out[7:0]`, `drain_out[31:0]`
-  - North or West edge: `clk`, `reset`
-  - Edge for parent broadcasts: `drain_en`, `drain_slot[1:0]`, `scrub_en`
-- Internal CTS strategy (small, shallow tree to local flops)
+The systolic flow already determines which signals enter/leave on which
+edge:
 
-## Open questions (to settle during Phase A)
+| Signal | Direction | Reason from RTL |
+|---|---|---|
+| `a_in`, `compute_in`, `slot_in`, `accum_in` | enter from **WEST** | `a_in_w = (gj==0) ? edge_a : a_pipe[gi][gj-1]` — west neighbor's `a_out` |
+| `a_out`, `compute_out`, `slot_out`, `accum_out` | leave to **EAST** | drives east neighbor's `a_in` |
+| `b_in` | enter from **SOUTH** | `b_in_w = (gi==0) ? edge_b : b_pipe[gi-1][gj]` — south neighbor's `b_out` |
+| `b_out` | leave to **NORTH** | drives north neighbor's `b_in` |
+| `drain_in` | enter from **NORTH** | `drain_in_w = drain_pipe[gi+1][gj]` — gi+1 is at higher y |
+| `drain_out` | leave to **SOUTH** | drives south neighbor's `drain_in` |
 
-- Do `drain_en` / `drain_slot` / `scrub_en` get an edge pin on every
-  tile + parent relay (like push), or stay as a parent-driven broadcast
-  fanning into every tile? (Today: parent broadcast; same wire-delay
-  class as the push problem #31 fixed for `push_a/b`.)
-- Where does `clk` enter the tile (which edge, which track)? Affects
-  how parent CTS terminates.
-- Should the tile carry its own slice of `pa_chain` / `pb_chain`
-  internally (uniform tile, west-edge slice goes unused on interior
-  tiles), or stay as parent-level chain at the perimeter (one tile
-  type, chain regs at parent)?
+### Per-edge pin layout
+
+Per-edge layer convention: edge pins are on the metal layer whose
+preferred direction is *perpendicular* to the edge (so the stub
+naturally extends from interior to boundary). asap7:
+M2 H · M3 V · M4 H · M5 V · M6 H · M7 V.
+
+- **WEST edge (M4 horizontal pins, at x=0):** `a_in[7:0]`, `compute_in`,
+  `slot_in[1:0]`, `accum_in` — **12 pins** total.
+- **EAST edge (M4 horizontal pins, at x=tile_w):** `a_out[7:0]`,
+  `compute_out`, `slot_out[1:0]`, `accum_out` — **12 pins** total.
+- **SOUTH edge (M5 vertical pins, at y=0):** `b_in[7:0]`,
+  `drain_out[31:0]` — **40 pins** total.
+- **NORTH edge (M5 vertical pins, at y=tile_h):** `b_out[7:0]`,
+  `drain_in[31:0]`, `clk`, `reset`, `drain_en`, `drain_slot[1:0]`,
+  `scrub_en` — **46 pins** total.
+
+### Abutment invariants
+
+The parent places tiles in a regular grid in **uniform orientation
+(`R0` for all)**. No flips, no rotations. This makes edge mating
+trivial: tile A's east edge at `(tile_w, *)` aligns with tile B's west
+edge at `(tile_w + 0, *)` after B is placed at `(tile_w, 0)`. For
+metal shapes to merge into one wire on contact:
+
+- **W/E abutment** requires `a_in[k]` and `a_out[k]` to be at the
+  **same Y** on opposite edges (same layer M4). When tile B is placed
+  east of tile A, the M4 stubs from each side meet at `(tile_w, Y_k)`
+  and merge.
+- **N/S abutment** requires `b_in[k]` and `b_out[k]` to be at the
+  **same X** on opposite edges (same layer M5). Same for
+  `drain_in[k]` and `drain_out[k]`. When tile B is placed north of
+  tile A, the M5 stubs meet at `(X_k, tile_h)` and merge.
+
+These symmetry requirements are enforced by the pin-placement TCL
+emitted in Phase A.
+
+### Edge power rails (ring per tile, abuts into a 2-D grid)
+
+Each tile has a four-sided power ring:
+
+- **Top + bottom (N/S edges):** M4 horizontal rails for VDD and VSS at
+  `y=0` (bottom) and `y=tile_h` (top), the full tile width.
+- **Left + right (W/E edges):** M5 vertical rails for VDD and VSS at
+  `x=0` (left) and `x=tile_w` (right), the full tile height.
+
+When tile B is placed north of tile A, A's top rail and B's bottom rail
+sit at the same y on the same layer → merge into one continuous M4
+stripe. Same for E/W with M5. After 1024 abutments, this forms a 2-D
+PDN grid covering the entire array with no `pdngen` step needed for
+the array interior.
+
+Internal stripes (from `BLOCK_grid_strategy.tcl`) stay as they are —
+they connect to the edge rings via existing M4–M5 vias.
+
+### Die size
+
+Target: **34.560 µm × 34.560 µm** (640 sites × 0.054 µm = 34.560,
+exact on the asap7sc7p5t_rvt site grid). Slightly smaller than the
+current 34.543 µm hardening (which itself is just below-grid; ORFS
+rounded). Row pitch in current LEF is 0.27 µm → 128 rows × 0.27 =
+34.56 µm exactly. So 34.56 × 34.56 lands on **both** the site x-pitch
+*and* the row y-pitch.
+
+Final value confirmed against `mac_tmem_cell` cell content area during
+Phase A hardening — if 34.56 is too tight for the existing internal
+content (the `mac_tmem_cell` includes one fp32_fma + tmem storage and
+isn't trivially shrinkable), grow to **39.96 µm × 39.96 µm** (740
+sites × 0.054, 148 rows × 0.27). The grid stays clean either way.
+
+### Internal CTS
+
+Local-only: parent (or the #33 mesh trunk) terminates at the tile's
+single `clk` pin on the NORTH edge. From there, the tile's own CTS
+runs a trivial shallow tree (~few buffer levels) to the local flop
+fan-out (mac_tmem_cell's internal flops, ~100s of sinks). No
+chip-wide tree depth contributed by the tile.
+
+### Layer-stack constraint (#33 compat)
+
+`mac_tmem_cell` internal routing stays **M1–M6** (current hardening
+default). Edge rails on **M5**, edge pins on **M4** (W/E) and **M5**
+(N/S). Abstract LEF references nothing above M6. Parent perimeter
+routing stays **≤ M7**. This leaves **M8/M9 untouched** for #33's
+chip-wide clock trunk — issue #33's `run.sh` LEF guard will not error
+on the abutment-ready tile.
+
+## Closed questions
+
+The three open questions from the initial spec are settled:
+
+- **`drain_en` / `drain_slot` / `scrub_en`:** edge pins on NORTH for
+  Phase A (parent supplies them; same parent-broadcast pattern as
+  today). If they become a wire-delay bottleneck at full 32×32, apply
+  the same #31 relay-chain pattern at parent — but kept out of the
+  initial tile spec to avoid bloating the boundary.
+- **`clk` entry:** NORTH edge, M5 vertical. Parent CTS terminates here.
+- **`pa_chain` / `pb_chain` location:** stays at **parent level**,
+  placed at the W and S perimeters of the abutted array. Tile is one
+  uniform type — no west-edge-special-tile variant. Chain reg at
+  perimeter directly drives the leftmost-column / bottom-row tile's
+  `a_in` / `b_in` edge pin (a single short routed segment from chain
+  reg to tile boundary).
 
 ## Phases (tracked in this PR)
 
