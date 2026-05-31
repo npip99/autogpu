@@ -123,7 +123,8 @@ Enforcement of the M8/M9 reservation invariant:
    (`Number of static layers:` > 0; path depth collapses from ~27).
 4. PR #27's I/O false-paths removed on a mesh-based build with timing still
    closing. (The 300 MHz → 400 MHz revert is **separate** — gated on the
-   broadcast re-pipelining, not the clock; see Scope below.)
+   broadcast relay-chain restructure (**#31**, in flight on the #32 branch)
+   and its placement-constraint follow-up, not the clock; see Scope below.)
 5. Documented "tap the infra" contract: any new block exposes a CLK pin and
    runs a trivial internal tree; no per-block clock-tree topology design.
 
@@ -154,7 +155,11 @@ setting only the hook env vars, then document the methodology in DESIGN.md.
   false-paths be removed.
 - **Does NOT close:** the 300 MHz cap — that is a long *data* broadcast wire
   (setup on a ~1.6 mm signal net), not the clock. 400 MHz needs the broadcast
-  re-pipelining (issue #27 "option B"), tracked separately. A true mesh
+  relay-chain restructure (**#31**, in flight on the #32 tile-abutment branch:
+  moves worst broadcast setup -451 → ~-190 ps, with full 400 MHz pending a
+  placement-constraint follow-up that distributes the chain registers). This
+  PR and #31 are **complementary** toward 400 MHz: this clears the
+  insertion/I-O blockers, #31 clears the broadcast-wire blocker. A true mesh
   (#2202) — commercial tools only.
 
 ## Proposed decisions (open for review)
