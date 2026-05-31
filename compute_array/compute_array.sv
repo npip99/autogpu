@@ -310,7 +310,104 @@ module compute_array #(
     endgenerate
 
     // ------------------------------------------------------------------
-    // a-side skew_lanes: one per row. Each row i has tap_index = i.
+    // Spatial broadcast relay (issue #31). Replaces the single global
+    // fan-out from `push_{a,b}_bytes_piped` (one BCAST_PIPE register driving
+    // 32 skew_lanes across ~1600 µm) with a chain of MMA_M / MMA_N relay
+    // registers, one per skew_lane location. Stage 0 is combinational; each
+    // subsequent stage is a registered hop to its neighbor (~55 µm). Each
+    // skew_lane[i] taps the chain at its own position and uses tap_index=0
+    // — `skew_lane.sv` with tap_index=0 is a pure live combinational
+    // pass-through, so the i-cycle delay that the macro's internal shift
+    // register used to provide (via tap_index=i) is now provided by the
+    // i registered chain hops instead.
+    //
+    // Edge timing is preserved EXACTLY cycle-for-cycle:
+    //   today:  push_byte fanout combinational → skew_lane[i] tap=i  → edge at T+i
+    //   new:    chain stage i = i registered hops               → tap=0 LIVE → edge at T+i
+    //
+    // So cmd_unit's FSM, the output pipe, pymodel, and cocotb are all
+    // unchanged — the chain moves the systolic delay from inside the
+    // hardened skew_lane macro out to a parent-level distributed register
+    // chain that the placer can spread along the actual skew_lane
+    // positions, killing the long fanout wire (PR #27's −451 ps broadcast
+    // setup at 32-wide).
+    //
+    // Accepted-interim cost (~2× delay-flop count on the broadcast path):
+    // `skew_lane` is HARDENED, so its internal `DEPTH-1`-deep shift
+    // register is baked into the LEF. With tap_index=0 that shift register
+    // is dead (the live path bypasses it) but still present and clocked —
+    // it can't be removed without re-hardening the leaf, which is out of
+    // scope here. The new `pa_chain`/`pb_chain` registers therefore
+    // duplicate the same delay-flop storage at the parent level. This
+    // doubles delay-flop count on the broadcast path (and the dynamic
+    // power that goes with it); does not affect setup/hold/functional
+    // correctness. It resolves naturally when issue #32 (tile abutment)
+    // re-hardens a tile that drops the in-macro shift in favor of these
+    // chain stages.
+    //
+    // Each `pa_chain[s]` registers the full MMA_M*8-bit bus though only
+    // byte slice s is tapped — yosys' DCE should drop the unread high-byte
+    // slots of stages s>0 (they aren't read by any skew_lane), but if
+    // synth_stat shows them surviving, narrow the per-stage chain
+    // explicitly as a follow-up cleanup.
+    // ------------------------------------------------------------------
+    logic [MMA_M*8-1:0]   pa_chain   [0:MMA_M-1];
+    logic                 pn_a_chain [0:MMA_M-1];
+    logic [SLOT_W-1:0]    ps_a_chain [0:MMA_M-1];
+    logic                 pac_a_chain[0:MMA_M-1];
+
+    logic [MMA_N*8-1:0]   pb_chain   [0:MMA_N-1];
+    logic                 pn_b_chain [0:MMA_N-1];
+    logic [SLOT_W-1:0]    ps_b_chain [0:MMA_N-1];
+    logic                 pac_b_chain[0:MMA_N-1];
+
+    // Stage 0: combinational from the (already BCAST_PIPE-registered) source.
+    assign pa_chain[0]    = push_a_bytes_piped;
+    assign pn_a_chain[0]  = push_now_piped;
+    assign ps_a_chain[0]  = push_slot_piped;
+    assign pac_a_chain[0] = push_accum_piped;
+    assign pb_chain[0]    = push_b_bytes_piped;
+    assign pn_b_chain[0]  = push_now_piped;
+    assign ps_b_chain[0]  = push_slot_piped;
+    assign pac_b_chain[0] = push_accum_piped;
+
+    // Stages 1..N-1: registered relay. Placer will spread these to sit
+    // adjacent to their consuming skew_lane[i] (timing-driven placement);
+    // each hop becomes ~one mac-pitch (~55 µm) instead of full-die.
+    always_ff @(posedge clk) begin
+        if (reset) begin
+            for (int s = 1; s < MMA_M; s++) begin
+                pa_chain[s]    <= '0;
+                pn_a_chain[s]  <= 1'b0;
+                ps_a_chain[s]  <= '0;
+                pac_a_chain[s] <= 1'b0;
+            end
+            for (int s = 1; s < MMA_N; s++) begin
+                pb_chain[s]    <= '0;
+                pn_b_chain[s]  <= 1'b0;
+                ps_b_chain[s]  <= '0;
+                pac_b_chain[s] <= 1'b0;
+            end
+        end else begin
+            for (int s = 1; s < MMA_M; s++) begin
+                pa_chain[s]    <= pa_chain[s-1];
+                pn_a_chain[s]  <= pn_a_chain[s-1];
+                ps_a_chain[s]  <= ps_a_chain[s-1];
+                pac_a_chain[s] <= pac_a_chain[s-1];
+            end
+            for (int s = 1; s < MMA_N; s++) begin
+                pb_chain[s]    <= pb_chain[s-1];
+                pn_b_chain[s]  <= pn_b_chain[s-1];
+                ps_b_chain[s]  <= ps_b_chain[s-1];
+                pac_b_chain[s] <= pac_b_chain[s-1];
+            end
+        end
+    end
+
+    // ------------------------------------------------------------------
+    // a-side skew_lanes: one per row. Each row i consumes chain stage i;
+    // tap_index=0 (skew_lane runs as a live pass-through — the i-cycle
+    // systolic delay is now in the chain instead).
     // Outputs feed the west edge of cell (i, 0).
     // ------------------------------------------------------------------
     logic [MMA_M-1:0]            edge_compute;
@@ -328,11 +425,11 @@ module compute_array #(
             skew_lane_a u_a (
                 .clk        (clk),
                 .reset      (reset),
-                .push_now   (push_now_piped),
-                .push_byte  (push_a_bytes_piped[gi_a*8 +: 8]),
-                .push_slot  (push_slot_piped),
-                .push_accum (push_accum_piped),
-                .tap_index  (gi_a[$clog2(SKEW_DEPTH)-1:0]),
+                .push_now   (pn_a_chain[gi_a]),
+                .push_byte  (pa_chain[gi_a][gi_a*8 +: 8]),
+                .push_slot  (ps_a_chain[gi_a]),
+                .push_accum (pac_a_chain[gi_a]),
+                .tap_index  ({$clog2(SKEW_DEPTH){1'b0}}),
                 .edge_valid (ev),
                 .edge_byte  (eb),
                 .edge_slot  (es),
@@ -346,8 +443,8 @@ module compute_array #(
     endgenerate
 
     // ------------------------------------------------------------------
-    // b-side skew_lanes: one per col. tap_index = col_index.
-    // push_slot / push_accum tied to 0 on b-side (only the byte matters).
+    // b-side skew_lanes: one per col. Each col j consumes chain stage j;
+    // tap_index=0 (live pass-through, j-cycle delay now in the chain).
     // ------------------------------------------------------------------
     logic [MMA_N*8-1:0]          edge_b_bytes_flat;
 
@@ -361,19 +458,16 @@ module compute_array #(
             skew_lane_b u_b (
                 .clk        (clk),
                 .reset      (reset),
-                .push_now   (push_now_piped),
-                .push_byte  (push_b_bytes_piped[gj_b*8 +: 8]),
+                .push_now   (pn_b_chain[gj_b]),
+                .push_byte  (pb_chain[gj_b][gj_b*8 +: 8]),
                 // push_slot / push_accum: functionally unused on b-side
-                // (b-skew's edge_slot / edge_accum outputs are dangling — the
-                // cell grid takes slot/accum from a-skew, not from here).
-                // Reusing cmd_unit's existing broadcast nets instead of tying
-                // to '0 avoids 96 per-instance conb_1 tie cells (32 b-skews
-                // × 3 bits) and their wires, which otherwise pile up in the
-                // std-cell strip just south of the b-skew row and contribute
-                // to GR congestion there.
-                .push_slot  (push_slot_piped),
-                .push_accum (push_accum_piped),
-                .tap_index  (gj_b[$clog2(SKEW_DEPTH)-1:0]),
+                // (b-skew's edge_slot / edge_accum outputs are dangling —
+                // cells take slot/accum from a-skew). Reusing the chain
+                // signals (vs tying to '0) avoids 96 per-instance conb_1
+                // tie cells (32 b-skews × 3 bits) and their wires.
+                .push_slot  (ps_b_chain[gj_b]),
+                .push_accum (pac_b_chain[gj_b]),
+                .tap_index  ({$clog2(SKEW_DEPTH){1'b0}}),
                 .edge_valid (ev_unused),
                 .edge_byte  (eb),
                 .edge_slot  (es_unused),
