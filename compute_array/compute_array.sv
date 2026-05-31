@@ -326,11 +326,30 @@ module compute_array #(
     //   new:    chain stage i = i registered hops               → tap=0 LIVE → edge at T+i
     //
     // So cmd_unit's FSM, the output pipe, pymodel, and cocotb are all
-    // unchanged — the chain just moves the systolic delay from inside the
+    // unchanged — the chain moves the systolic delay from inside the
     // hardened skew_lane macro out to a parent-level distributed register
     // chain that the placer can spread along the actual skew_lane
     // positions, killing the long fanout wire (PR #27's −451 ps broadcast
     // setup at 32-wide).
+    //
+    // Accepted-interim cost (~2× delay-flop count on the broadcast path):
+    // `skew_lane` is HARDENED, so its internal `DEPTH-1`-deep shift
+    // register is baked into the LEF. With tap_index=0 that shift register
+    // is dead (the live path bypasses it) but still present and clocked —
+    // it can't be removed without re-hardening the leaf, which is out of
+    // scope here. The new `pa_chain`/`pb_chain` registers therefore
+    // duplicate the same delay-flop storage at the parent level. This
+    // doubles delay-flop count on the broadcast path (and the dynamic
+    // power that goes with it); does not affect setup/hold/functional
+    // correctness. It resolves naturally when issue #32 (tile abutment)
+    // re-hardens a tile that drops the in-macro shift in favor of these
+    // chain stages.
+    //
+    // Each `pa_chain[s]` registers the full MMA_M*8-bit bus though only
+    // byte slice s is tapped — yosys' DCE should drop the unread high-byte
+    // slots of stages s>0 (they aren't read by any skew_lane), but if
+    // synth_stat shows them surviving, narrow the per-stage chain
+    // explicitly as a follow-up cleanup.
     // ------------------------------------------------------------------
     logic [MMA_M*8-1:0]   pa_chain   [0:MMA_M-1];
     logic                 pn_a_chain [0:MMA_M-1];
