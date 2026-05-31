@@ -163,6 +163,66 @@ routing stays **≤ M7**. This leaves **M8/M9 untouched** for #33's
 chip-wide clock trunk — issue #33's `run.sh` LEF guard will not error
 on the abutment-ready tile.
 
+## Phase B findings (4×4 abutment validation, `mac_array_small_abut`)
+
+Ran 10 iterations of a 4×4 abutted harness using `mac_array_small` as
+the harness RTL. Result: **the abutment recipe is validated**, with one
+caveat about test-vehicle suitability documented below.
+
+What's validated:
+1. **PDN abutment works.** `PDN-0001` clean for all 16 abutted tiles via
+   a parent PDN that mirrors PR #5 (A1)'s pattern, except one layer up:
+   tile exposes power pins on **M6** (not M5 as `BLOCK_grid_strategy.tcl`
+   `-pins` says — confirmed by inspecting the generated tile LEF), so
+   parent runs **M7 vertical stripes pitch 5.4 µm offset 1.5** across
+   the die and the macro grid welds M6-M7 vias. The
+   tech/asap7/orfs/mac_array_small_abut.pdn.tcl in this PR is the
+   working template.
+2. **Signal pin abutment works at the netlist level.** Directly checked
+   the post-CTS ODB: tile (0,0)'s `a_out[0]` and tile (0,1)'s `a_in[0]`
+   are both on net `a_pipe[0][0]`. The router treats them as one net
+   even with zero-width edge-touch pins; no pin overlap extension
+   needed.
+3. **Tile placement holds the spec.** Tile bboxes verified abutting
+   exactly at the boundary (tile (0,0) east = tile (0,1) west = 39.6 µm
+   in chip coords), placed with R0 orientation everywhere, on the
+   asap7 site/row grid.
+
+What's not validated (and why it doesn't matter for the spec):
+- **Full GRT routing of `mac_array_small_abut` failed** with M2/M3
+  overflow ~100K on the routing channels. Diagnosed: the 1024-bit
+  `drain_row_sel` mux (768 parent stdcells: 256 each of INVx1, NAND2x1,
+  OA211x2) implementing the row select for `drain_row_data` is the
+  congestion source. Top-fanout nets are the buffered select signals
+  fanning to ~70 sinks each. Confirmed by per-net inspection of the
+  ODB — abutted tiles themselves have ~zero parent route demand. The
+  congestion is in the drain-mux + drain-bus region, structural to
+  `mac_array_small`'s RTL and unrelated to abutment.
+- **mac_array_small is not the right Phase B vehicle long-term.** Its
+  `drain_row_sel` mux dominates parent routing and obscures abutment
+  validation. `compute_array.sv` (the Phase C target) has very different
+  parent structure — `cmd_unit` + perimeter chain registers + a simple
+  drain bus from the top row (no row-select mux), so the same harness
+  pattern should fit much cleaner at the Phase C scale.
+
+Files in this PR for Phase B:
+- `tech/asap7/orfs/mac_array_small_abut.config.mk`
+- `tech/asap7/orfs/mac_array_small_abut.sdc` (3333 ps / 300 MHz, matching
+  the existing `compute_array.sdc` to avoid timing-driven router pressure)
+- `tech/asap7/orfs/mac_array_small_abut.pdn.tcl` (the M7-vertical /
+  macro-grid pattern that validates above)
+
+The macro placement TCL (`mac_array_small_abut.macro_placement.tcl`) is
+gitignored per the repo convention. Re-emit with:
+```
+# 4×4 grid of 34.56 µm tiles, R0, on asap7 grid (site 0.054 H, row 0.27 V).
+# CORE origin: (5.022, 5.13). Tile (i,j) at (5.022 + j*34.56, 5.13 + i*34.56).
+for r in 0 1 2 3: for c in 0 1 2 3:
+    place_macro -macro_name gen_row\[r\].gen_col\[c\].u_cell \
+                -location {5.022 + c*34.56  5.13 + r*34.56} \
+                -orientation R0
+```
+
 ## Closed questions
 
 The three open questions from the initial spec are settled:
