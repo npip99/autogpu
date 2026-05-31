@@ -45,9 +45,17 @@ export IO_CONSTRAINTS = /work/tech/asap7/orfs/scripts/mac_tmem_cell_tile.pins.tc
 export IO_PLACER_H = M4
 export IO_PLACER_V = M5
 
-# Edge-ring PDN — replaces the platform default. After abutment the rings
-# merge into one continuous power grid covering the array interior.
-export PDN_TCL = /work/tech/asap7/orfs/mac_tmem_cell_tile.pdn.tcl
+# Use the platform default BLOCK_grid_strategy.tcl (followpins + M5
+# stripes + ring). Tile abutment relies primarily on **followpin
+# alignment**: tile_h = 34.56 µm = 128 × row_pitch(0.27 µm) means the
+# first/last rows land at deterministic y coords that align across
+# abutted tiles, so M1/M2 followpin rails are continuous across edges.
+# The default ring sits ~0.084 µm inside the core (not at the die
+# boundary), so it does NOT itself form the abutment ring — but it
+# does deliver power within each tile. This is enough for v1; a true
+# at-the-boundary ring can be a Phase A iteration if IR drop or
+# verify_macro_power flags it.
+# export PDN_TCL  =  (use platform default — comment kept for future override)
 
 # Cap internal routing at M6. Leaves M7 free for parent perimeter routing
 # and M8/M9 reserved for #33's chip-wide clock trunk. mac_tmem_cell's

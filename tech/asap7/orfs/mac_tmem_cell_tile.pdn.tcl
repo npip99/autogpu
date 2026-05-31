@@ -32,7 +32,10 @@ add_pdn_stripe -grid {top} -layer {M2} -width {0.018} -pitch {0.54} \
 # Edge ring on M5 (vertical, left+right edges) and M4 (horizontal, top+
 # bottom edges). core_offset {0} places the ring directly at the die
 # boundary so the rails are at x=0/x=TILE_W (M5) and y=0/y=TILE_H (M4).
-add_pdn_ring -grid {top} -layers {M5 M4} -widths {0.288 0.288} \
+# Width 0.216 µm is the closest asap7 valid width to the intended 0.288
+# (M5 valid widths: 0.024, 0.120, 0.216, 0.312, 0.408, ...). Same valid-
+# width restriction applies to M4.
+add_pdn_ring -grid {top} -layers {M5 M4} -widths {0.216 0.216} \
              -spacings {0.096} -core_offset {0.0}
 
 # Internal M5 stripes — preserves the connectivity the macro had before,
