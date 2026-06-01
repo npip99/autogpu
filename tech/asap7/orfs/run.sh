@@ -88,10 +88,16 @@ sg docker -c "docker run --rm --user $(id -u):$(id -g) \
 #   M1  — parent runs M1 followpins for any stdcells in the inter-macro
 #         channels. Macro M1 OBS would fragment those into "unrepairable
 #         channels" (PDN-0179). Power-only layer, no signal conflict.
+#   M4  — abutment pin layer for W/E pairs. Bloating M4 OBS across the
+#         full tile face blocks DRT from landing pin-access vias at the
+#         abutment seam, causing tiny M4 boundary shorts (issue #32 Phase B
+#         hit 37–45 of these even with 2 µm CORE_AREA inset). M4 is sparse
+#         inside the tile so parent over-macro M4 routing is unlikely to
+#         conflict. M3 OBS still blocks broad parent routing across the tile.
 #   M6/M7 — parent's PDN stripes go here. Leaf internal PDN uses M5/M6
 #         which the bloat tags; stripping lets parent stripes pass through.
 python3 $REPO_ROOT/tech/asap7/orfs/scripts/strip_lef_obs_layers.py \
-    $REPO_ROOT/build/orfs/results/asap7/$MODULE/base/$MODULE.lef M1 M2 M5 M6 M7
+    $REPO_ROOT/build/orfs/results/asap7/$MODULE/base/$MODULE.lef M1 M2 M4 M5 M6 M7
 
 GDS="$WORK_HOST/results/asap7/$MODULE/base/6_final.gds"
 PNG_DIR="$REPO_ROOT/build/render"

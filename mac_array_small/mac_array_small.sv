@@ -1,16 +1,25 @@
-// mac_array_small.sv -- minimal systolic test array for Phase 7i synth proof.
+// mac_array_small.sv -- minimal systolic test array (4×4 version of compute_array).
 //
-// 4x4 grid of mac_tmem_cell leaves wired neighbor-to-neighbor. This is NOT
-// the production compute_array (no K-loop FSM, no drain stream pipeline).
-// Its only job is to prove that the systolic wiring pattern routes cleanly
-// on sky130 with mac_tmem_cell as a hardened macro.
+// Modeled directly on compute_array.sv's mac mesh: same neighbor-to-neighbor
+// systolic wiring (a east, b north, drain north-to-south), same top-row drain
+// output.
 //
-// Dataflow:
-//   - a enters at the WEST edge, flows EAST through each row.
-//   - b enters at the NORTH edge, flows SOUTH through each column.
+// Broadcast wiring (issue #32): the four parent broadcasts (reset,
+// drain_en, drain_slot, scrub_en) are propagated W→E through each row
+// via the mac_tmem_cell `*_w` / `*_e` abutment feedthrough ports. Parent
+// drives only the westernmost column (gj=0); the cell itself acts as a
+// wire on M4 (`assign *_e = *_w`), so the signal carries east across
+// every row via abutment. No parent routing over the array.
+//
+// `clk` is still a single broadcast (CTS responsibility, see #33).
+//
+// Dataflow (matches compute_array.sv):
+//   - a enters at the WEST edge, flows EAST through each row (a_pipe).
+//   - b enters at the SOUTH edge, flows NORTH up each column (b_pipe).
 //   - compute / slot / accum flow east with a (same packet).
-//   - drain / scrub are broadcast as in the canonical leaf.
-//   - drain_data[i][j] is exposed flat as a single output port.
+//   - drain enters at the NORTH edge (from cell[i+1][j]), flows SOUTH
+//     down each column (drain_pipe). The chip output is the TOP row's
+//     drain_pipe[0][*] — no per-row mux, identical to compute_array.
 
 `default_nettype none
 
@@ -29,37 +38,38 @@ module mac_array_small #(
     input  wire [$clog2(N_SLOTS)-1:0]        edge_slot,
     input  wire                              edge_accum,
 
-    // North edge: one b-byte per column.
+    // South edge: one b-byte per column (b flows S→N through the array).
     // edge_b[j*8 +: 8] feeds col j's row 0.
     input  wire [N*8-1:0]                    edge_b,
 
-    // Drain (broadcast). Production-style: per-row local 4-way mux
-    // produces one row's worth of drain (N×32 = 128 bits) per drain_row
-    // selection. STORE reads this as one matmul-result-row per cycle.
-    // Std-cell mux logic naturally fits the horizontal channels between
-    // rows of macros, so wires stay local to a row instead of fanning
-    // 16×32 bits across the whole die.
+    // Drain bus = TOP row's drain_pipe[0][*] (no per-row mux).
     input  wire                              drain_en,
     input  wire [$clog2(N_SLOTS)-1:0]        drain_slot,
-    input  wire [$clog2(M)-1:0]              drain_row_sel,
     output wire [N*32-1:0]                   drain_row_data,
 
     input  wire                              scrub_en
 );
 
-    // Inter-cell pipe arrays.
-    //
-    // a_pipe[i][j]  = mac(i, j).a_out — feeds mac(i, j+1).a_in
-    // b_pipe[i][j]  = mac(i, j).b_out — feeds mac(i+1, j).b_in
-    // c_pipe[i][j], s_pipe[i][j], acc_pipe[i][j] flow east with a.
-    wire [7:0]                            a_pipe   [0:M-1][0:N-1];
-    wire [7:0]                            b_pipe   [0:M-1][0:N-1];
-    wire                                  c_pipe   [0:M-1][0:N-1];
-    wire [$clog2(N_SLOTS)-1:0]            s_pipe   [0:M-1][0:N-1];
-    wire                                  acc_pipe [0:M-1][0:N-1];
-    // 2-D unpacked array of each cell's drain_data; muxed into a single
-    // 32-bit output port below.
-    wire [31:0]                           drain_data_cell [0:M-1][0:N-1];
+    // Inter-cell pipe arrays for systolic data flow.
+    wire [7:0]                            a_pipe       [0:M-1][0:N-1];
+    wire [7:0]                            b_pipe       [0:M-1][0:N-1];
+    wire                                  compute_pipe [0:M-1][0:N-1];
+    wire [$clog2(N_SLOTS)-1:0]            slot_pipe    [0:M-1][0:N-1];
+    wire                                  accum_pipe   [0:M-1][0:N-1];
+    wire [31:0]                           drain_pipe   [0:M-1][0:N-1];
+
+    // Broadcast feedthrough chain (W→E per row).
+    // *_chain_w[i][j] = signal entering cell (i, j) on its west edge.
+    // *_chain_e[i][j] = signal exiting cell (i, j) on its east edge.
+    // Internally each cell asserts `*_e = *_w`, so the chain is a wire.
+    wire                       reset_chain_w      [0:M-1][0:N-1];
+    wire                       reset_chain_e      [0:M-1][0:N-1];
+    wire                       drain_en_chain_w   [0:M-1][0:N-1];
+    wire                       drain_en_chain_e   [0:M-1][0:N-1];
+    wire [$clog2(N_SLOTS)-1:0] drain_slot_chain_w [0:M-1][0:N-1];
+    wire [$clog2(N_SLOTS)-1:0] drain_slot_chain_e [0:M-1][0:N-1];
+    wire                       scrub_en_chain_w   [0:M-1][0:N-1];
+    wire                       scrub_en_chain_e   [0:M-1][0:N-1];
 
     genvar gi, gj;
     generate
@@ -70,62 +80,64 @@ module mac_array_small #(
                 wire                       c_in_w;
                 wire [$clog2(N_SLOTS)-1:0] s_in_w;
                 wire                       acc_in_w;
+                wire [31:0]                drain_in_w;
 
-                // a, compute, slot, accum come from the west neighbor; the
-                // first column gets them from the west edge.
-                assign a_in_w   = (gj == 0) ? edge_a[gi*8 +: 8] : a_pipe[gi][gj-1];
-                assign c_in_w   = (gj == 0) ? edge_compute     : c_pipe[gi][gj-1];
-                assign s_in_w   = (gj == 0) ? edge_slot        : s_pipe[gi][gj-1];
-                assign acc_in_w = (gj == 0) ? edge_accum       : acc_pipe[gi][gj-1];
+                // a, compute, slot, accum from west neighbor; first column from edge.
+                assign a_in_w   = (gj == 0) ? edge_a[gi*8 +: 8] : a_pipe      [gi][gj-1];
+                assign c_in_w   = (gj == 0) ? edge_compute     : compute_pipe[gi][gj-1];
+                assign s_in_w   = (gj == 0) ? edge_slot        : slot_pipe   [gi][gj-1];
+                assign acc_in_w = (gj == 0) ? edge_accum       : accum_pipe  [gi][gj-1];
 
-                // b comes from the north neighbor; the first row gets b
-                // from the north edge.
+                // b from south neighbor; first row from edge.
                 assign b_in_w   = (gi == 0) ? edge_b[gj*8 +: 8] : b_pipe[gi-1][gj];
 
+                // drain from north neighbor; last row terminates with 0.
+                assign drain_in_w = (gi == M-1) ? 32'd0 : drain_pipe[gi+1][gj];
+
+                // Broadcast chain: col 0 from parent, others from W neighbor's _e.
+                assign reset_chain_w     [gi][gj] = (gj == 0) ? reset       : reset_chain_e     [gi][gj-1];
+                assign drain_en_chain_w  [gi][gj] = (gj == 0) ? drain_en    : drain_en_chain_e  [gi][gj-1];
+                assign drain_slot_chain_w[gi][gj] = (gj == 0) ? drain_slot  : drain_slot_chain_e[gi][gj-1];
+                assign scrub_en_chain_w  [gi][gj] = (gj == 0) ? scrub_en    : scrub_en_chain_e  [gi][gj-1];
+
                 mac_tmem_cell u_cell (
-                    .clk         (clk),
-                    .reset       (reset),
-                    .compute_in  (c_in_w),
-                    .a_in        (a_in_w),
-                    .b_in        (b_in_w),
-                    .slot_in     (s_in_w),
-                    .accum_in    (acc_in_w),
-                    .compute_out (c_pipe[gi][gj]),
-                    .a_out       (a_pipe[gi][gj]),
-                    .b_out       (b_pipe[gi][gj]),
-                    .slot_out    (s_pipe[gi][gj]),
-                    .accum_out   (acc_pipe[gi][gj]),
-                    .drain_en    (drain_en),
-                    .drain_slot  (drain_slot),
-                    .drain_in    (32'd0),
-                    .drain_out   (drain_data_cell[gi][gj]),
-                    .init_en     (1'b0),
-                    .init_slot   ('0),
-                    .init_data   (32'd0),
-                    .scrub_en    (scrub_en)
+                    .clk          (clk),
+                    .reset_w      (reset_chain_w     [gi][gj]),
+                    .reset_e      (reset_chain_e     [gi][gj]),
+                    .compute_in   (c_in_w),
+                    .a_in         (a_in_w),
+                    .b_in         (b_in_w),
+                    .slot_in      (s_in_w),
+                    .accum_in     (acc_in_w),
+                    .compute_out  (compute_pipe[gi][gj]),
+                    .a_out        (a_pipe      [gi][gj]),
+                    .b_out        (b_pipe      [gi][gj]),
+                    .slot_out     (slot_pipe   [gi][gj]),
+                    .accum_out    (accum_pipe  [gi][gj]),
+                    .drain_in     (drain_in_w),
+                    .drain_out    (drain_pipe  [gi][gj]),
+                    .drain_en_w   (drain_en_chain_w  [gi][gj]),
+                    .drain_en_e   (drain_en_chain_e  [gi][gj]),
+                    .drain_slot_w (drain_slot_chain_w[gi][gj]),
+                    .drain_slot_e (drain_slot_chain_e[gi][gj]),
+                    .init_en      (1'b0),
+                    .init_slot    ('0),
+                    .init_data    (32'd0),
+                    .scrub_en_w   (scrub_en_chain_w  [gi][gj]),
+                    .scrub_en_e   (scrub_en_chain_e  [gi][gj])
                 );
 
             end
         end
     endgenerate
 
-    // Per-row packed drain bus: drain_per_row[i] holds row i's full
-    // N×32 drain_data (cells gj=0..N-1 of row i packed contiguously).
-    // Synthesizes into M parallel local muxes — one per row's std-cell
-    // strip — instead of one centralized 16-way mux.
-    wire [N*32-1:0] drain_per_row [0:M-1];
-    genvar dri, drj;
+    // Chip drain output = top row's drain_out, like compute_array.
+    genvar gj_drain;
     generate
-        for (dri = 0; dri < M; dri = dri + 1) begin : gen_drain_row_pack
-            for (drj = 0; drj < N; drj = drj + 1) begin : gen_drain_col_pack
-                assign drain_per_row[dri][drj*32 +: 32] =
-                    drain_data_cell[dri][drj];
-            end
+        for (gj_drain = 0; gj_drain < N; gj_drain = gj_drain + 1) begin : g_drain_top
+            assign drain_row_data[gj_drain*32 +: 32] = drain_pipe[0][gj_drain];
         end
     endgenerate
-
-    // Final M-way row pick — small mux at the chip edge.
-    assign drain_row_data = drain_per_row[drain_row_sel];
 
 endmodule
 

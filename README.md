@@ -42,10 +42,15 @@ for d in gmem smem barrier mac_tmem_cell compute_array load store reset_seq cmdp
 
 | File | Purpose |
 |------|---------|
-| `ISA.md`           | Instruction set reference |
-| `ARCHITECTURE.md`  | System block diagram, module map, spec format |
-| `DEVELOPMENT.md`   | **Read before writing code.** Workflow, TB conventions, debugging, tribal knowledge. |
-| `tech/README.md`   | Tape-out flow. Start with `tech/sky130/smoke/` to validate your synthesis toolchain. |
+| `ISA.md`                       | Instruction set reference |
+| `ARCHITECTURE.md`              | System block diagram, module map, spec format |
+| `DEVELOPMENT.md`               | **Read before writing code.** Workflow, TB conventions, debugging, tribal knowledge. |
+| `tech/README.md`               | Tape-out flow. Start with `tech/sky130/smoke/` to validate your synthesis toolchain. |
+| `tech/FAILURES.md`             | **Debug lookup.** OpenROAD/OpenLane error codes we've hit, with root causes and fixes. Grep this before re-debugging. |
+| `tech/asap7/problems/`         | Long-form postmortems for asap7 P&R issues (one file per issue: PDN, hold, LVS, antenna, IR, abutment, …). |
+| `tech/asap7/PDK_GAPS.md`       | asap7 PDK limitations that block sign-off (antenna, RC extraction, …). |
+| `tech/asap7/DESIGN.md`         | ORFS design constraints, layer-stack decisions, PDN strategy. |
+| `tech/asap7/TILE_SPEC.md`      | Boundary contract for abutment-ready tiles (issue #32). |
 
 ## Layout
 

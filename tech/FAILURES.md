@@ -101,6 +101,66 @@ overflow is bounded below by routing demand — capacity issue, not effort
 issue. Raise iteration count won't help. Treat it as a definite signal
 to change geometry/tie-cells/density, not as transient noise.
 
+### GRT-0116 — global routing finished with congestion
+
+> error: `[ERROR GRT-0116] Global routing finished with congestion.
+> Check the congestion regions in the DRC Viewer.`
+
+Two distinct flavors — diagnose by reading the `[INFO GRT-0096] Final
+congestion report` table:
+
+1. **High overall layer usage (>50%) on one or two layers** — true
+   demand-vs-capacity shortage. Genuine routability problem; fixes are
+   the GRT-0118 menu (broaden core, reduce buffer pressure, etc.).
+
+2. **Low total usage (<10%) but high `Max H` / `Max V` per gcell** —
+   localized hotspots. Some gcells want N tracks but have 0. Almost
+   always means **a routing layer is unavailable in a region** because a
+   macro's LEF marks it as `OBS`. The parent router squeezes wires
+   through what little space remains around the OBS edges.
+
+   Hit on issue #32 Phase B: tile LEF declared OBS on M1..M6 over the
+   full 34.56 µm² tile face. Five parent broadcasts (`drain_en`,
+   `drain_slot[0..1]`, `scrub_en`, `reset`) had to route from a die-edge
+   input port to all 16 abutted tile pins — but with `MAX_ROUTING_LAYER
+   = M7` (vertical), there was NO horizontal layer available over the
+   array. Router jammed them into 0-track M2/M3 gcells at tile edges →
+   45,973 total overflow at 5% usage.
+
+   **Fix:** don't route over abutted macros. Convert parent broadcasts
+   to W↔E abutment-feedthrough pin pairs (`*_w` input on W edge, `*_e`
+   output on E edge, internal `assign *_e = *_w`). Parent drives only
+   the westernmost column; abutment propagates the signal east via
+   pin-to-pin metal touching. See `tech/asap7/problems/C1_abutment_layer_planning.md`.
+
+### DRT-0199 — boundary shorts at abutted-macro seams
+
+> log: `[INFO DRT-0199]   Number of violations = N` (does not converge)
+
+Symptom: routing report shows tiny M4 (or other pin-layer) shorts at
+exact tile-to-tile boundary x or y coordinates, one short per pin pair
+the parent has to wire across. DRT iterates 60+ times trying to fix
+them; doesn't converge.
+
+Root cause: `write_abstract_lef -bloat_occupied_layers` marks every
+routing layer the macro used as a single rectangle covering the full
+macro face. If the **pin layer itself** is in that OBS, DRT can't land
+pin-access vias next to the pin without colliding with the OBS — so it
+draws tiny wrong-way jogs at the boundary that DRC flags as shorts
+between the macro's pin metal and the parent's connection wire.
+
+**Fix:** in the LEF post-process, strip the pin layer (and any other
+sparse-internal-usage layer) from the OBS list. For asap7 abutment-ready
+tiles with W/E M4 pins, strip M4 in addition to the usual M1/M2/M5/M6/M7.
+Keeping only M3 in OBS still prevents broad parent over-tile routing
+but lets DRT freely place pin-access vias.
+
+Diagnostic shortcut: **DRT iteration speed is a correctness signal.**
+A converging design clears in 4–6 iterations (~2 min for a 4×4 abutted
+harness). A non-converging design wastes 30+ min churning through max
+iterations. If iter 0 starts >1000 violations OR iter 3 still shows
+>100, abort early and re-diagnose — don't wait for it to finish.
+
 ### DRT-0xxxx — detailed routing antenna / spacing
 
 We haven't hit this yet on compute_array since we keep failing at GR.
@@ -304,21 +364,103 @@ change. Outputs misclassify regions.
   hand-code a coordinate. Render scripts should assert against DEF
   positions before drawing — see `scripts/README.md` section 9.5.
 
+### SDC constraint masks a real timing path
+
+> A `set_false_path` (or `set_multicycle_path`, `set_clock_groups`,
+> etc.) tells STA to *ignore* a path. Used wrongly, it hides a real
+> bug — the build closes with margin to spare even though the
+> underlying physical path doesn't actually meet timing at scale.
+
+Caught on issue #32 PR #36 review. The fix RTL added a combinational
+W→E broadcast feedthrough chain (`assign *_e = *_w`) across each row
+of the mac tile array. Four signals went through it: `reset`,
+`drain_slot`, `scrub_en`, and `drain_en`. The first three are
+quasi-static (held many cycles by their producers) so `set_false_path`
+on them is correct. **`drain_en` is not** — it's a single-cycle
+snapshot pulse from `cmd_unit.sv`'s `D_IDLE → D_PULSE` transition that
+every cell must capture on the SAME clock edge to load
+`storage[drain_slot]` simultaneously. False-pathing it would let STA
+*and the optimizer* both ignore the ~1100 µm M4 ripple across a
+32-wide chain; at M=N=4 the chain closes anyway (the harness can't
+catch the bug); at M=N=32 cells in far columns would miss the pulse
+and `drain_row_data` would come out column-misaligned.
+
+How this class of bug evades the defenses we have:
+
+1. **cocotb/Verilator sim does not model wire delay.** RTL is
+   correct; the bug is purely in the SDC. Sim has nothing to detect.
+2. **Small builds close regardless of the constraint** — the masked
+   path is short enough at 4×4 to meet timing whether STA times it or
+   ignores it. The harness reports "clean."
+3. **No gate-level SDF simulation in this repo.** That would be the
+   only automated check that catches a constraint-vs-reality mismatch.
+4. **STA reports look identical** with or without the wrong constraint
+   in a small build, so a reviewer skimming the WNS/TNS numbers can't
+   see anything wrong.
+
+**Detection rule (the rule reviewers must apply manually):**
+
+> Any `set_false_path` on a downstream signal requires you to look at
+> the *producer FSM* of that signal and classify it:
+>
+> - **Quasi-static** (producer holds it stable across many cycles
+>   before consumers sample): `set_false_path` is correct.
+> - **Single-cycle pulse with multiple consumers that must capture
+>   the same edge**: NEVER `set_false_path`. Let STA time it, see if
+>   it closes at scale, and treat any failure as real architectural
+>   information.
+> - **Multi-cycle phase** (producer holds for N cycles, consumer
+>   samples once per phase): consider `set_multicycle_path -setup N`
+>   instead of `set_false_path`.
+
+Every existing `set_false_path` in this repo (10 total — 3 quasi-static
+broadcasts on this PR + 4 block-level IO false-paths in
+`compute_array.sdc` deferring to chip_top closure via #28) was audited
+against this rule and found correct.
+
+**Add to PR-review checklist:** any commit that touches `*.sdc` must
+include either (a) classification of every new constraint against this
+rule or (b) an explicit comment in the SDC explaining why STA can
+safely ignore the path. See `tech/asap7/TILE_SPEC.md` §
+"Broadcast feedthrough timing contract" for the canonical worked
+example.
+
+### Quality-gate skips (SKIP_LAST_GASP, GRT_ALLOW_CONGESTION, etc.)
+
+Same class of risk: an env knob that *tells the tool to give up on a
+quality requirement* lets a build report "clean" while leaving real
+violations behind.
+
+| Knob | What it skips | What can leak through |
+|---|---|---|
+| `SKIP_LAST_GASP=1` | OpenROAD's post-route timing repair pass | residual hold violations (CTS adds buffers; main repair fixes most; last_gasp catches the rest). Bad if you call the build "tape-out clean." |
+| `GRT_ALLOW_CONGESTION` | (not a real env var; was tried and failed) | n/a |
+| relaxed `clk_period` | shifts the target frequency lower | real high-frequency closure problems |
+
+**Rule:** every skip needs a `# WHY:` comment in the config and a
+periodic re-validation that the skipped pass would have reported clean
+anyway. Don't ship a tape-out with a quality knob disabled.
+
 ---
 
 ## Frequency on this project
 
 | Failure | Hits |
 |---|---|
-| GRT-0118 (overflow) | 6 |
-| PSM-0069 (PDN) | 4 |
-| Hardcoded-coord render bug | 3 |
-| `--from` resume confusion | 2 |
-| Tcl inline comment | 1 |
-| Killed openroad PID by mistake | 1 |
-| DPL-0036 (PoC only) | 1 |
-| yosys missing module | 1 |
-| `read_db` modified LEF didn't apply | 1 |
+| GRT-0118 (overflow)                        | 6 |
+| PSM-0069 (PDN)                             | 4 |
+| Hardcoded-coord render bug                 | 3 |
+| GRT-0116 (broadcast over abutted macro)    | 3 |
+| DRT-0199 (M4 boundary shorts on abutment)  | 3 |
+| `--from` resume confusion                  | 2 |
+| Tcl inline comment                         | 1 |
+| Killed openroad PID by mistake             | 1 |
+| DPL-0036 (PoC only)                        | 1 |
+| yosys missing module                       | 1 |
+| `read_db` modified LEF didn't apply        | 1 |
+| Wrong `set_false_path` masking real path   | 1 |
 
-GRT-0118 dominates because compute_array's b-skew row is the routing
-bottleneck and we kept iterating on it.
+GRT-0118 dominates because compute_array's b-skew row was the routing
+bottleneck and we kept iterating on it. GRT-0116 + DRT-0199 are the
+abutment-tile pair we hit on issue #32 Phase B (3 iterations each before
+we landed the right fix in `tech/asap7/problems/C1_abutment_layer_planning.md`).
