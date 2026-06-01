@@ -529,10 +529,15 @@ ship broken silicon if left unaddressed.
       the `.log` ends with a one-line `SUMMARY:` (e.g.
       `435 DRC violations — cmd_unit: M4.S.5=354, V1.S.4=20, …`). Exit 0 =
       CLEAN, 1 = violations, 2 = vacuous (no deck), 3 = tool/env failure.
-      Note: ORFS already runs this deck inline during hardening
-      (`RUN_KLAYOUT_DRC=1` in `run.sh`); `drc.sh` makes it a standalone,
-      grep-able sign-off step. KLayout's flat-polygon DRC is slow on large
-      blocks (~10 min on `cmd_unit` under host contention).
+      Note: although `run.sh` sets `RUN_KLAYOUT_DRC=1`, the `generate_abstract`
+      flow does **not** invoke the `drc` target — no `6_drc.*` artifacts are
+      produced — so DRC has effectively never run on these blocks. `drc.sh` is
+      the first actual DRC check, and a sweep found **every** hardened leaf
+      dirty (reset_seq 14, skew_lane_a/b 59, cmd_unit 435, barrier 1156,
+      mac_tmem_cell 1325), dominated by `M4.S.5` (M4 metal spacing). Whether
+      these are genuine or an asap7 deck-vs-router rule mismatch is a separate
+      investigation (predictive PDK — see PDK_GAPS.md). KLayout's flat-polygon
+      DRC is slow on large blocks (~10 min on `cmd_unit` under host contention).
 - [x] `orfs/density_check.sh <module>` — metal-density early-warning
       check. Walks `6_final.gds`, computes global density per layer
       (M1..M9), compares to conservative PDK-swap-ready bands (20/70%
