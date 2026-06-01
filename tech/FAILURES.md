@@ -101,6 +101,66 @@ overflow is bounded below by routing demand — capacity issue, not effort
 issue. Raise iteration count won't help. Treat it as a definite signal
 to change geometry/tie-cells/density, not as transient noise.
 
+### GRT-0116 — global routing finished with congestion
+
+> error: `[ERROR GRT-0116] Global routing finished with congestion.
+> Check the congestion regions in the DRC Viewer.`
+
+Two distinct flavors — diagnose by reading the `[INFO GRT-0096] Final
+congestion report` table:
+
+1. **High overall layer usage (>50%) on one or two layers** — true
+   demand-vs-capacity shortage. Genuine routability problem; fixes are
+   the GRT-0118 menu (broaden core, reduce buffer pressure, etc.).
+
+2. **Low total usage (<10%) but high `Max H` / `Max V` per gcell** —
+   localized hotspots. Some gcells want N tracks but have 0. Almost
+   always means **a routing layer is unavailable in a region** because a
+   macro's LEF marks it as `OBS`. The parent router squeezes wires
+   through what little space remains around the OBS edges.
+
+   Hit on issue #32 Phase B: tile LEF declared OBS on M1..M6 over the
+   full 34.56 µm² tile face. Five parent broadcasts (`drain_en`,
+   `drain_slot[0..1]`, `scrub_en`, `reset`) had to route from a die-edge
+   input port to all 16 abutted tile pins — but with `MAX_ROUTING_LAYER
+   = M7` (vertical), there was NO horizontal layer available over the
+   array. Router jammed them into 0-track M2/M3 gcells at tile edges →
+   45,973 total overflow at 5% usage.
+
+   **Fix:** don't route over abutted macros. Convert parent broadcasts
+   to W↔E abutment-feedthrough pin pairs (`*_w` input on W edge, `*_e`
+   output on E edge, internal `assign *_e = *_w`). Parent drives only
+   the westernmost column; abutment propagates the signal east via
+   pin-to-pin metal touching. See `tech/asap7/problems/C1_abutment_layer_planning.md`.
+
+### DRT-0199 — boundary shorts at abutted-macro seams
+
+> log: `[INFO DRT-0199]   Number of violations = N` (does not converge)
+
+Symptom: routing report shows tiny M4 (or other pin-layer) shorts at
+exact tile-to-tile boundary x or y coordinates, one short per pin pair
+the parent has to wire across. DRT iterates 60+ times trying to fix
+them; doesn't converge.
+
+Root cause: `write_abstract_lef -bloat_occupied_layers` marks every
+routing layer the macro used as a single rectangle covering the full
+macro face. If the **pin layer itself** is in that OBS, DRT can't land
+pin-access vias next to the pin without colliding with the OBS — so it
+draws tiny wrong-way jogs at the boundary that DRC flags as shorts
+between the macro's pin metal and the parent's connection wire.
+
+**Fix:** in the LEF post-process, strip the pin layer (and any other
+sparse-internal-usage layer) from the OBS list. For asap7 abutment-ready
+tiles with W/E M4 pins, strip M4 in addition to the usual M1/M2/M5/M6/M7.
+Keeping only M3 in OBS still prevents broad parent over-tile routing
+but lets DRT freely place pin-access vias.
+
+Diagnostic shortcut: **DRT iteration speed is a correctness signal.**
+A converging design clears in 4–6 iterations (~2 min for a 4×4 abutted
+harness). A non-converging design wastes 30+ min churning through max
+iterations. If iter 0 starts >1000 violations OR iter 3 still shows
+>100, abort early and re-diagnose — don't wait for it to finish.
+
 ### DRT-0xxxx — detailed routing antenna / spacing
 
 We haven't hit this yet on compute_array since we keep failing at GR.
@@ -310,15 +370,19 @@ change. Outputs misclassify regions.
 
 | Failure | Hits |
 |---|---|
-| GRT-0118 (overflow) | 6 |
-| PSM-0069 (PDN) | 4 |
-| Hardcoded-coord render bug | 3 |
-| `--from` resume confusion | 2 |
-| Tcl inline comment | 1 |
-| Killed openroad PID by mistake | 1 |
-| DPL-0036 (PoC only) | 1 |
-| yosys missing module | 1 |
-| `read_db` modified LEF didn't apply | 1 |
+| GRT-0118 (overflow)                        | 6 |
+| PSM-0069 (PDN)                             | 4 |
+| Hardcoded-coord render bug                 | 3 |
+| GRT-0116 (broadcast over abutted macro)    | 3 |
+| DRT-0199 (M4 boundary shorts on abutment)  | 3 |
+| `--from` resume confusion                  | 2 |
+| Tcl inline comment                         | 1 |
+| Killed openroad PID by mistake             | 1 |
+| DPL-0036 (PoC only)                        | 1 |
+| yosys missing module                       | 1 |
+| `read_db` modified LEF didn't apply        | 1 |
 
-GRT-0118 dominates because compute_array's b-skew row is the routing
-bottleneck and we kept iterating on it.
+GRT-0118 dominates because compute_array's b-skew row was the routing
+bottleneck and we kept iterating on it. GRT-0116 + DRT-0199 are the
+abutment-tile pair we hit on issue #32 Phase B (3 iterations each before
+we landed the right fix in `tech/asap7/problems/C1_abutment_layer_planning.md`).
