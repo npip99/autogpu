@@ -35,14 +35,21 @@ export SDC_FILE      = /work/tech/asap7/orfs/mac_array_small_abut.sdc
 #     core boundary. On-grid (162.972/0.054 = 3018; 163.08/0.27 = 604).
 #   - DIE: core + 5 µm margin.
 export FLOORPLAN_DEF =
-export DIE_AREA   = 0 0 200 200
-export CORE_AREA  = 5.022 5.13 194.4 194.4
+export DIE_AREA   = 0 0 250 250
+export CORE_AREA  = 5.022 5.13 244.296 244.35
 
 # Hardened-leaf macro: the abutment-ready mac_tmem_cell_tile (Phase A).
 # The tile's DESIGN_NAME is mac_tmem_cell (same RTL), so the LEF/LIB/GDS
 # below override the platform's stdcell mac_tmem_cell with the tile.
+#
+# IMPORTANT: use mac_tmem_cell_tile.lef (post-processed), NOT
+# mac_tmem_cell.lef (raw write_abstract_lef output). The raw LEF marks
+# OBS on M1..M6 across the full tile face, which blocks parent routing
+# over the array. The post-processed version strips OBS down to {M3, M4}
+# so the parent can use M1/M2/M5/M6 over the macro (M3/M4 still blocked
+# where the actual internal routes and pins live).
 ASAP7_RESULTS = /work/build/orfs/results/asap7
-export ADDITIONAL_LEFS = $(ASAP7_RESULTS)/mac_tmem_cell_tile/base/mac_tmem_cell.lef
+export ADDITIONAL_LEFS = $(ASAP7_RESULTS)/mac_tmem_cell_tile/base/mac_tmem_cell_tile.lef
 export ADDITIONAL_LIBS = $(ASAP7_RESULTS)/mac_tmem_cell_tile/base/mac_tmem_cell_typ.lib
 export ADDITIONAL_GDS  = $(ASAP7_RESULTS)/mac_tmem_cell_tile/base/6_final.gds
 

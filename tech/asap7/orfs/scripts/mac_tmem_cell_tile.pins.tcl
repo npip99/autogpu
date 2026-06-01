@@ -9,53 +9,54 @@
 #   - N edge pins on M5 vertical   at y=tile_h     (abutment-symmetric X)
 #
 # Abutment invariants enforced here:
-#   - a_in[k] / a_out[k]       share Y across W/E
-#   - compute_in / _out        share Y
-#   - slot_in[k] / slot_out[k] share Y
-#   - accum_in / _out          share Y
-#   - b_in[k] / b_out[k]       share X across S/N
-#   - drain_out[k] / drain_in[k] share X across S/N (drain flows N→S,
-#     so out is on S edge, in is on N edge)
+#   - a_in[k] / a_out[k]                share Y across W/E
+#   - compute_in / compute_out          share Y
+#   - slot_in[k] / slot_out[k]          share Y
+#   - accum_in / accum_out              share Y
+#   - reset_w / reset_e                 share Y       (broadcast feedthrough)
+#   - drain_en_w / drain_en_e           share Y       (broadcast feedthrough)
+#   - drain_slot_w[k] / drain_slot_e[k] share Y       (broadcast feedthrough)
+#   - scrub_en_w / scrub_en_e           share Y       (broadcast feedthrough)
+#   - b_in[k] / b_out[k]                share X across S/N
+#   - drain_out[k] / drain_in[k]        share X across S/N (drain flows N→S)
 #
-# Tile-only extras on N edge: clk, reset, drain_en, drain_slot[0..1],
-# scrub_en. Placed east of the drain bus so they don't conflict.
+# N-only: clk (single pin; needs a real clock tree at parent, see #33).
 
 set TILE_W   34.56
 set TILE_H   34.56
 
-# ---- W/E edge (M4 horizontal, 12 pins per edge, pitch 2.5 µm) --------
-# Y values shared by W (a_in/compute_in/slot_in/accum_in) and
-# E (a_out/compute_out/slot_out/accum_out).
-set we_y [list 2.5 5.0 7.5 10.0 12.5 15.0 17.5 20.0 22.5 25.0 27.5 30.0]
-
-# Pairs of (W_pin_name, E_pin_name).
+# ---- W/E edge (M4 horizontal) ----------------------------------------
+# 12 datapath pairs at y=2.5..30.0 (pitch 2.5 µm) + 5 broadcast
+# feedthrough pairs at y=30.7..33.5 (pitch 0.7 µm). All pairs share Y
+# between W (input) and E (output) so abutment forms continuous nets.
 set we_pins [list \
-    {a_in[0]}     {a_out[0]} \
-    {a_in[1]}     {a_out[1]} \
-    {a_in[2]}     {a_out[2]} \
-    {a_in[3]}     {a_out[3]} \
-    {a_in[4]}     {a_out[4]} \
-    {a_in[5]}     {a_out[5]} \
-    {a_in[6]}     {a_out[6]} \
-    {a_in[7]}     {a_out[7]} \
-    {compute_in}  {compute_out} \
-    {slot_in[0]}  {slot_out[0]} \
-    {slot_in[1]}  {slot_out[1]} \
-    {accum_in}    {accum_out} \
+    {a_in[0]}       {a_out[0]}       2.5  \
+    {a_in[1]}       {a_out[1]}       5.0  \
+    {a_in[2]}       {a_out[2]}       7.5  \
+    {a_in[3]}       {a_out[3]}      10.0  \
+    {a_in[4]}       {a_out[4]}      12.5  \
+    {a_in[5]}       {a_out[5]}      15.0  \
+    {a_in[6]}       {a_out[6]}      17.5  \
+    {a_in[7]}       {a_out[7]}      20.0  \
+    {compute_in}    {compute_out}   22.5  \
+    {slot_in[0]}    {slot_out[0]}   25.0  \
+    {slot_in[1]}    {slot_out[1]}   27.5  \
+    {accum_in}      {accum_out}     30.0  \
+    {reset_w}       {reset_e}       30.7  \
+    {drain_en_w}    {drain_en_e}    31.4  \
+    {drain_slot_w[0]} {drain_slot_e[0]} 32.1  \
+    {drain_slot_w[1]} {drain_slot_e[1]} 32.8  \
+    {scrub_en_w}    {scrub_en_e}    33.5  \
 ]
 
-set i 0
-foreach {w_pin e_pin} $we_pins {
-    set y [lindex $we_y $i]
+foreach {w_pin e_pin y} $we_pins {
     place_pin -pin_name $w_pin -layer M4 -location [list 0.0     $y] -force_to_die_boundary
     place_pin -pin_name $e_pin -layer M4 -location [list $TILE_W $y] -force_to_die_boundary
-    incr i
 }
 
 # ---- S/N edge (M5 vertical) ------------------------------------------
 # Shared X positions for S (b_in, drain_out) and N (b_out, drain_in)
-# enforce N/S abutment symmetry. North-only extras (clk, reset, drain_en,
-# drain_slot, scrub_en) sit east of the drain bus on N edge.
+# enforce N/S abutment symmetry. N-only: clk (deferred to #33 clock infra).
 
 # b[k]: shared X for b_in[k] (S) and b_out[k] (N).
 for {set k 0} {$k < 8} {incr k} {
@@ -72,16 +73,5 @@ for {set k 0} {$k < 32} {incr k} {
     place_pin -pin_name "drain_in\[$k\]"  -layer M5 -location [list $x $TILE_H] -force_to_die_boundary
 }
 
-# N-only: clk, reset, parent broadcast controls. Placed east of the
-# drain bus so they don't conflict with the abutment-symmetric pins.
-set n_only [list \
-    {clk}           29.4 \
-    {reset}         30.1 \
-    {drain_en}      30.8 \
-    {drain_slot[0]} 31.5 \
-    {drain_slot[1]} 32.2 \
-    {scrub_en}      32.9 \
-]
-foreach {pin_name x} $n_only {
-    place_pin -pin_name $pin_name -layer M5 -location [list $x $TILE_H] -force_to_die_boundary
-}
+# N-only: clk. (Other former broadcasts moved to W/E feedthrough above.)
+place_pin -pin_name clk -layer M5 -location [list 29.4 $TILE_H] -force_to_die_boundary

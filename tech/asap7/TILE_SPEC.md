@@ -84,14 +84,27 @@ naturally extends from interior to boundary). asap7:
 M2 H · M3 V · M4 H · M5 V · M6 H · M7 V.
 
 - **WEST edge (M4 horizontal pins, at x=0):** `a_in[7:0]`, `compute_in`,
-  `slot_in[1:0]`, `accum_in` — **12 pins** total.
+  `slot_in[1:0]`, `accum_in` (12 datapath pins) + `reset_w`, `drain_en_w`,
+  `drain_slot_w[1:0]`, `scrub_en_w` (5 broadcast-feedthrough inputs) —
+  **17 pins** total.
 - **EAST edge (M4 horizontal pins, at x=tile_w):** `a_out[7:0]`,
-  `compute_out`, `slot_out[1:0]`, `accum_out` — **12 pins** total.
+  `compute_out`, `slot_out[1:0]`, `accum_out` (12 datapath pins) +
+  `reset_e`, `drain_en_e`, `drain_slot_e[1:0]`, `scrub_en_e` (5
+  broadcast-feedthrough outputs) — **17 pins** total.
 - **SOUTH edge (M5 vertical pins, at y=0):** `b_in[7:0]`,
   `drain_out[31:0]` — **40 pins** total.
 - **NORTH edge (M5 vertical pins, at y=tile_h):** `b_out[7:0]`,
-  `drain_in[31:0]`, `clk`, `reset`, `drain_en`, `drain_slot[1:0]`,
-  `scrub_en` — **46 pins** total.
+  `drain_in[31:0]`, `clk` — **41 pins** total.
+
+**Broadcast feedthrough rule (issue #32 root-cause fix):** the four
+former parent-broadcast signals (`reset`, `drain_en`, `drain_slot[1:0]`,
+`scrub_en`) are NOT N-only single pins anymore. They are abutment-
+feedthrough pairs (`*_w` input on W, `*_e` output on E) with `assign
+*_e = *_w` inside the tile. The parent drives ONLY the westernmost
+column's `*_w` pins; abutment carries each broadcast east through every
+row. This is the only way the parent never has to route a wire over the
+abutted tile area (which is blocked M1..M6 by the tile LEF OBS).
+`clk` is the lone exception — it stays N-only until #33 lands.
 
 ### Abutment invariants
 
@@ -104,7 +117,10 @@ metal shapes to merge into one wire on contact:
 - **W/E abutment** requires `a_in[k]` and `a_out[k]` to be at the
   **same Y** on opposite edges (same layer M4). When tile B is placed
   east of tile A, the M4 stubs from each side meet at `(tile_w, Y_k)`
-  and merge.
+  and merge. **Same Y-share rule applies to every broadcast feedthrough
+  pair** (`reset_w/reset_e`, `drain_en_w/drain_en_e`, etc.) — that's
+  what makes the parent's drive into column 0 propagate east through
+  the array via abutment.
 - **N/S abutment** requires `b_in[k]` and `b_out[k]` to be at the
   **same X** on opposite edges (same layer M5). Same for
   `drain_in[k]` and `drain_out[k]`. When tile B is placed north of

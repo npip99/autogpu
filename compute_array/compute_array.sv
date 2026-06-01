@@ -505,27 +505,36 @@ module compute_array #(
                 assign b_in_w   = (gi == 0) ? edge_b_bytes_flat[gj*8 +: 8]      : b_pipe[gi-1][gj];
                 assign drain_in_w = (gi == MMA_M-1) ? 32'd0 : drain_pipe[gi+1][gj];
 
+                // Compute_array still uses parent fan-to-all for broadcasts
+                // (works in today's non-abutted layout). Each cell's _w pin
+                // receives the broadcast directly; _e is left unconnected.
+                // Phase C will switch this to the feedthrough chain that
+                // mac_array_small now uses.
                 mac_tmem_cell u_cell (
-                    .clk         (clk),
-                    .reset       (reset),
-                    .compute_in  (c_in_w),
-                    .a_in        (a_in_w),
-                    .b_in        (b_in_w),
-                    .slot_in     (s_in_w),
-                    .accum_in    (acc_in_w),
-                    .compute_out (compute_pipe[gi][gj]),
-                    .a_out       (a_pipe      [gi][gj]),
-                    .b_out       (b_pipe      [gi][gj]),
-                    .slot_out    (slot_pipe   [gi][gj]),
-                    .accum_out   (accum_pipe  [gi][gj]),
-                    .drain_in    (drain_in_w),
-                    .drain_out   (drain_pipe  [gi][gj]),
-                    .drain_en    (cells_drain_en_piped),
-                    .drain_slot  (cells_drain_slot_piped),
-                    .init_en     (1'b0),
-                    .init_slot   ('0),
-                    .init_data   (32'd0),
-                    .scrub_en    (scrub_en_piped)
+                    .clk          (clk),
+                    .reset_w      (reset),
+                    .reset_e      (),
+                    .compute_in   (c_in_w),
+                    .a_in         (a_in_w),
+                    .b_in         (b_in_w),
+                    .slot_in      (s_in_w),
+                    .accum_in     (acc_in_w),
+                    .compute_out  (compute_pipe[gi][gj]),
+                    .a_out        (a_pipe      [gi][gj]),
+                    .b_out        (b_pipe      [gi][gj]),
+                    .slot_out     (slot_pipe   [gi][gj]),
+                    .accum_out    (accum_pipe  [gi][gj]),
+                    .drain_in     (drain_in_w),
+                    .drain_out    (drain_pipe  [gi][gj]),
+                    .drain_en_w   (cells_drain_en_piped),
+                    .drain_en_e   (),
+                    .drain_slot_w (cells_drain_slot_piped),
+                    .drain_slot_e (),
+                    .init_en      (1'b0),
+                    .init_slot    ('0),
+                    .init_data    (32'd0),
+                    .scrub_en_w   (scrub_en_piped),
+                    .scrub_en_e   ()
                 );
             end
         end
