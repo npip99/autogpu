@@ -342,6 +342,7 @@ tech/asap7/
     ├── antenna_check.sh            post-route antenna sign-off (A4)
     ├── ir_drop.sh                  post-route IR-drop sign-off (A5)
     ├── lvs.sh                      post-route cell-instance LVS (A3)
+    ├── drc.sh                      post-route KLayout DRC sign-off (#24)
     ├── density_check.sh            metal-density early-warning vs PDK-swap bands
     ├── <module>.config.mk          one per module (mac_tmem_cell, compute_array,
     │                               cmdproc, smem, chip_top, …)
@@ -519,6 +520,19 @@ ship broken silicon if left unaddressed.
       instances (above budget) are listed by name + (x,y) + layer.
       Activity factor and supply voltage are documented in every report.
 - [x] `orfs/lvs.sh` — cell-instance LVS. See "LVS infrastructure" below.
+- [x] `orfs/drc.sh <module> [--gds path]` — geometric DRC sign-off. Runs
+      the asap7 KLayout deck (`platforms/asap7/drc/asap7.lydrc`, shipped in
+      the image) against `6_final.gds` — the same deck + `-rd` contract the
+      ORFS `make drc` rule uses, but re-runnable standalone without redoing
+      the flow. Postprocesses the `.lyrdb` marker database into per-rule
+      counts. Output `build/orfs/reports/asap7/<module>/base/{drc.lyrdb,drc.log}`;
+      the `.log` ends with a one-line `SUMMARY:` (e.g.
+      `435 DRC violations — cmd_unit: M4.S.5=354, V1.S.4=20, …`). Exit 0 =
+      CLEAN, 1 = violations, 2 = vacuous (no deck), 3 = tool/env failure.
+      Note: ORFS already runs this deck inline during hardening
+      (`RUN_KLAYOUT_DRC=1` in `run.sh`); `drc.sh` makes it a standalone,
+      grep-able sign-off step. KLayout's flat-polygon DRC is slow on large
+      blocks (~10 min on `cmd_unit` under host contention).
 - [x] `orfs/density_check.sh <module>` — metal-density early-warning
       check. Walks `6_final.gds`, computes global density per layer
       (M1..M9), compares to conservative PDK-swap-ready bands (20/70%
@@ -535,13 +549,13 @@ numerically but encode different distinctions per tool — a future
 aggregator that runs several tools needs a per-tool mapping table to
 arrive at a single tape-out verdict.
 
-| exit | `verify_macro_power.tcl` | `antenna_check.sh`        | `ir_drop.sh`           | `lvs.sh`               | `density_check.sh`     |
-|------|--------------------------|---------------------------|------------------------|------------------------|------------------------|
-| 0    | CLEAN                    | CLEAN                     | PASS                   | CLEAN                  | WITHIN BANDS           |
-| 1    | (real PDN bug)           | usage / artifact missing  | FAIL (Vdrop > budget)  | FAIL (mismatch)        | OVER max (re-floorplan)|
-| 2    | —                        | VIOLATIONS                | BLOCKED (PSM-0069)     | config / artifact error| config / artifact error|
-| 3    | —                        | openroad invocation failed| tool / env failure     | —                      | UNDER min (needs fill) |
-| 4    | —                        | VACUOUS PASS (no PDK rules)| —                     | —                      | —                      |
+| exit | `verify_macro_power.tcl` | `antenna_check.sh`        | `ir_drop.sh`           | `lvs.sh`               | `density_check.sh`     | `drc.sh`               |
+|------|--------------------------|---------------------------|------------------------|------------------------|------------------------|------------------------|
+| 0    | CLEAN                    | CLEAN                     | PASS                   | CLEAN                  | WITHIN BANDS           | CLEAN                  |
+| 1    | (real PDN bug)           | usage / artifact missing  | FAIL (Vdrop > budget)  | FAIL (mismatch)        | OVER max (re-floorplan)| VIOLATIONS             |
+| 2    | —                        | VIOLATIONS                | BLOCKED (PSM-0069)     | config / artifact error| config / artifact error| VACUOUS (no deck)      |
+| 3    | —                        | openroad invocation failed| tool / env failure     | —                      | UNDER min (needs fill) | tool / env failure     |
+| 4    | —                        | VACUOUS PASS (no PDK rules)| —                     | —                      | —                      | —                      |
 
 Why they differ (not a bug, but worth knowing):
 
