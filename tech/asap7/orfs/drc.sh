@@ -6,14 +6,21 @@
 #   ./drc.sh compute_array_tiny_bcast0
 #   ./drc.sh mac_tmem_cell --gds /path/to/other.gds
 #
-# Runs the asap7 KLayout DRC deck
-# (/OpenROAD-flow-scripts/flow/platforms/asap7/drc/asap7.lydrc, shipped in
-# the orfs:latest image) against the post-route GDS and postprocesses the
-# KLayout report database (.lyrdb) into a one-line SUMMARY of violation
-# counts per rule category. Mirrors the ORFS `make drc` invocation
-# (klayout -rd in_gds=… -rd report_file=… -r asap7.lydrc) so the numbers
-# match what the flow itself would report, but is re-runnable standalone
-# against any existing 6_final.gds without redoing the flow.
+# Runs the asap7 KLayout DRC deck (asap7.lydrc, shipped in the orfs:latest
+# image) against the post-route GDS and postprocesses the KLayout report
+# database (.lyrdb) into a one-line SUMMARY of violation counts per rule
+# category. Re-runnable standalone against any existing 6_final.gds without
+# redoing the flow.
+#
+# DECK CORRECTION (#39): the shipped deck (laurentc2's community KLayout port)
+# encodes M4.S.5/M5.S.5 as a 25nm spacing check, but the official ASAP7 DRM
+# nominal M4/M5 spacing is 24nm (rules M4.S.1/M5.S.1). The 1nm-high value
+# false-flags the DRM-compliant 24nm routing grid on every short edge. Rather
+# than fork the 561-line deck (which would drift from the unpinned :latest
+# image), we COPY the image's current deck at runtime and patch only those two
+# lines 25nm->24nm — so we always track upstream and override the minimum. If
+# the patched pattern is absent (deck changed/fixed upstream), drc.sh warns
+# instead of silently mis-patching.
 #
 # This fills the DRC slot in the sign-off matrix alongside ir_drop.sh,
 # lvs.sh, antenna_check.sh, and density_check.sh; report path + exit-code
@@ -50,13 +57,15 @@ if [[ ! -f "$GDS" ]]; then
     exit 3
 fi
 
-# asap7 DRC deck lives inside the image at a fixed path.
-DRC_DECK_GUEST="/OpenROAD-flow-scripts/flow/platforms/asap7/drc/asap7.lydrc"
+# Image's shipped deck (source of truth, tracks :latest); patched copy lives
+# under the report dir (gitignored build artifact, not a committed fork).
+DRC_DECK_SRC="/OpenROAD-flow-scripts/flow/platforms/asap7/drc/asap7.lydrc"
 
 REPORT_DIR_HOST="$REPO_ROOT/build/orfs/reports/asap7/$MODULE/base"
 REPORT_DIR_GUEST="/work/build/orfs/reports/asap7/$MODULE/base"
 RDB_HOST="$REPORT_DIR_HOST/drc.lyrdb"
 RDB_GUEST="$REPORT_DIR_GUEST/drc.lyrdb"
+DECK_GUEST="$REPORT_DIR_GUEST/asap7.patched.lydrc"
 LOG_HOST="$REPORT_DIR_HOST/drc.log"
 mkdir -p "$REPORT_DIR_HOST"
 rm -f "$RDB_HOST"
@@ -78,22 +87,37 @@ echo "Running DRC for $MODULE..."
 echo "  layout: $GDS"
 echo "  deck:   asap7.lydrc"
 
-# -b: batch (no GUI), exit when done. Same deck + -rd contract the ORFS
-# `make drc` rule uses, run directly (klayout.sh is just a passthrough).
+# Inside the container: verify the deck exists, copy it to a writable patched
+# copy, correct M4.S.5/M5.S.5 spacing 25nm->24nm (#39 — warn if the pattern is
+# gone upstream), then run KLayout. -b: batch (no GUI). Same -rd contract as
+# the ORFS `make drc` rule (klayout.sh is just a passthrough).
+PATCH='
+  [ -f "$SRC" ] || exit 42
+  cp "$SRC" "$DECK"
+  for L in m4 m5; do
+    if grep -q "${L}.space(25.nm" "$DECK"; then
+      sed -i "s/${L}.space(25.nm, projection)/${L}.space(24.nm, projection)/g" "$DECK"
+    else
+      echo "WARN[#39]: ${L}.space(25.nm) not found in upstream deck — the deck changed; re-verify the M4.S.5/M5.S.5 24nm correction is still needed/correct." >&2
+    fi
+  done
+  klayout -b -rd in_gds="$GDS" -rd report_file="$RDB" -r "$DECK"'
 set +e
 sg docker -c "docker run --rm --user $(id -u):$(id -g) \
     -v $REPO_ROOT:/work \
     ${EXTRA_MOUNTS[*]} \
+    -e SRC=$DRC_DECK_SRC -e DECK=$DECK_GUEST \
+    -e GDS=$GDS_GUEST -e RDB=$RDB_GUEST \
     openroad/orfs:latest \
-    bash -c '[[ -f $DRC_DECK_GUEST ]] || exit 42; \
-      klayout -b -rd in_gds=$GDS_GUEST -rd report_file=$RDB_GUEST -r $DRC_DECK_GUEST'" \
+    bash -c '$PATCH'" \
     > "$LOG_HOST" 2>&1
 RC=$?
 set -e
 cat "$LOG_HOST"
+grep -q "WARN\[#39\]" "$LOG_HOST" && echo "  ⚠ deck-correction drift — see WARN[#39] above"
 
 if [[ $RC -eq 42 ]]; then
-    echo "SUMMARY: VACUOUS — no asap7 DRC deck in image ($DRC_DECK_GUEST)" | tee -a "$LOG_HOST"
+    echo "SUMMARY: VACUOUS — no asap7 DRC deck in image ($DRC_DECK_SRC)" | tee -a "$LOG_HOST"
     exit 2
 fi
 if [[ $RC -ne 0 || ! -f "$RDB_HOST" ]]; then

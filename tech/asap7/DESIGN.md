@@ -520,23 +520,28 @@ ship broken silicon if left unaddressed.
       instances (above budget) are listed by name + (x,y) + layer.
       Activity factor and supply voltage are documented in every report.
 - [x] `orfs/lvs.sh` — cell-instance LVS. See "LVS infrastructure" below.
-- [x] `orfs/drc.sh <module> [--gds path]` — geometric DRC sign-off. Runs
-      the asap7 KLayout deck (`platforms/asap7/drc/asap7.lydrc`, shipped in
-      the image) against `6_final.gds` — the same deck + `-rd` contract the
-      ORFS `make drc` rule uses, but re-runnable standalone without redoing
-      the flow. Postprocesses the `.lyrdb` marker database into per-rule
-      counts. Output `build/orfs/reports/asap7/<module>/base/{drc.lyrdb,drc.log}`;
-      the `.log` ends with a one-line `SUMMARY:` (e.g.
-      `435 DRC violations — cmd_unit: M4.S.5=354, V1.S.4=20, …`). Exit 0 =
-      CLEAN, 1 = violations, 2 = vacuous (no deck), 3 = tool/env failure.
+- [x] `orfs/drc.sh <module> [--gds path]` — geometric DRC sign-off. Runs the
+      asap7 KLayout deck (`asap7.lydrc`, shipped in the image) against
+      `6_final.gds`, re-runnable standalone without redoing the flow.
+      Postprocesses the `.lyrdb` marker database into per-rule counts. Output
+      `build/orfs/reports/asap7/<module>/base/{drc.lyrdb,drc.log,asap7.patched.lydrc}`;
+      the `.log` ends with a one-line `SUMMARY:`. Exit 0 = CLEAN, 1 =
+      violations, 2 = vacuous (no deck), 3 = tool/env failure.
       Note: although `run.sh` sets `RUN_KLAYOUT_DRC=1`, the `generate_abstract`
-      flow does **not** invoke the `drc` target — no `6_drc.*` artifacts are
-      produced — so DRC has effectively never run on these blocks. `drc.sh` is
-      the first actual DRC check, and a sweep found **every** hardened leaf
-      dirty (reset_seq 14, skew_lane_a/b 59, cmd_unit 435, barrier 1156,
-      mac_tmem_cell 1325), dominated by `M4.S.5` (M4 metal spacing). Whether
-      these are genuine or an asap7 deck-vs-router rule mismatch is a separate
-      investigation (predictive PDK — see PDK_GAPS.md). KLayout's flat-polygon
+      flow does **not** invoke the `drc` target (no `6_drc.*` artifacts), so
+      DRC had effectively never run on these blocks — `drc.sh` is the first
+      actual check.
+      **Deck correction (#39):** the shipped deck is laurentc2's community
+      KLayout port; its `M4.S.5`/`M5.S.5` encode a **25 nm** spacing, but the
+      official ASAP7 DRM nominal M4/M5 spacing is **24 nm** (`M4.S.1`/`M5.S.1`).
+      That 1 nm over-strict value false-flagged the DRM-compliant 24 nm routing
+      grid on every short edge — the bulk of the raw counts. `drc.sh` copies the
+      image deck at runtime and patches those two lines `25→24` (warns if the
+      pattern is gone upstream), rather than committing a fork that would drift
+      from the unpinned `:latest` image. With the correction, `skew_lane_a` 59 →
+      33; the remaining counts are credible minority rules (via-AUX, LIG.S,
+      M1.S.6, …) still to be DRM-classified — see #39. Authoritative sign-off is
+      the ASAP7 Calibre deck; this KLayout port is a fast early-warning. KLayout
       DRC is slow on large blocks (~10 min on `cmd_unit` under host contention).
 - [x] `orfs/density_check.sh <module>` — metal-density early-warning
       check. Walks `6_final.gds`, computes global density per layer
