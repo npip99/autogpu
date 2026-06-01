@@ -24,7 +24,7 @@
 #   2 = BLOCKED (PSM-0069 grid disconnection — fix PDN first)
 #   3 = tool / env failure (openroad crashed, docker probe failed, bad args)
 #
-# Requires: docker, openroad/orfs:latest image, the same prerequisites as
+# Requires: docker, ${ORFS_IMAGE} image, the same prerequisites as
 # run.sh (a completed `./run.sh <module>` so 6_final.odb / .spef exist).
 
 usage() {
@@ -85,6 +85,7 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+source "$SCRIPT_DIR/orfs_image.sh"   # pinned ORFS image (was :latest)
 WORK_HOST="$REPO_ROOT/build/orfs"
 WORK_GUEST="/work/build/orfs"
 ODB="$WORK_HOST/results/asap7/$MODULE/base/6_final.odb"
@@ -113,7 +114,7 @@ sg docker -c "docker run --rm --user $(id -u):$(id -g) \
     -e FLOW_HOME=/OpenROAD-flow-scripts/flow \
     -e WORK_HOME=$WORK_GUEST \
     -w /OpenROAD-flow-scripts/flow \
-    openroad/orfs:latest \
+    ${ORFS_IMAGE} \
     make -s -f /work/tech/asap7/orfs/scripts/_ir_drop_env.mk \
         DESIGN_CONFIG=/work/tech/asap7/orfs/${MODULE}.config.mk \
         print-env" \
@@ -136,7 +137,7 @@ run_unchecked sg docker -c "docker run --rm --user $(id -u):$(id -g) \
     --env-file $ENV_FILE \
     $ACTIVITY_ARG \
     -w /OpenROAD-flow-scripts/flow \
-    openroad/orfs:latest \
+    ${ORFS_IMAGE} \
     /OpenROAD-flow-scripts/tools/install/OpenROAD/bin/openroad -exit -no_splash \
         /work/tech/asap7/orfs/scripts/ir_drop.tcl" \
     > "$DOCKER_OUT" 2>&1

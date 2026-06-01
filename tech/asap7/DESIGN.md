@@ -338,10 +338,13 @@ tech/asap7/
 │   ├── A5_ir_drop.md
 │   └── A6_chip_top.md
 └── orfs/
+    ├── orfs_image.sh               pinned ORFS image digest (sourced by all the below)
     ├── run.sh                      driver: docker → openroad/orfs (build flow)
     ├── antenna_check.sh            post-route antenna sign-off (A4)
     ├── ir_drop.sh                  post-route IR-drop sign-off (A5)
     ├── lvs.sh                      post-route cell-instance LVS (A3)
+    ├── drc.sh                      post-route KLayout DRC sign-off (#24)
+    ├── drc_waivers.tsv             auditable DRC waivers (deck artifacts / Calibre-deferred, #39)
     ├── density_check.sh            metal-density early-warning vs PDK-swap bands
     ├── <module>.config.mk          one per module (mac_tmem_cell, compute_array,
     │                               cmdproc, smem, chip_top, …)
@@ -486,6 +489,20 @@ ship broken silicon if left unaddressed.
   real PDK (under NDA: TSMC N7/N6, GF12LP+; or open: SkyWater 130 — but
   not 7 nm in that case). ORFS support for real foundry PDKs is limited.
 
+### Toolchain pinning (reproducibility)
+
+`run.sh` and every sign-off script (`drc.sh`, `lvs.sh`, `ir_drop.sh`,
+`antenna_check.sh`, `density_check.sh`, `scripts/render_odb.sh`,
+`scripts/gen_lef.sh`) source **`tech/asap7/orfs/orfs_image.sh`**, which pins the
+ORFS container to an immutable digest
+(`openroad/orfs@sha256:cf4186a5…`, OpenROAD `26Q2-1164-g08f67ee5ec`, image built
+2026-05-18) instead of the floating `openroad/orfs:latest`. With `:latest` the
+PDK, DRC deck, router, and tool versions could all change silently between
+builds; the digest makes a build reproducible. To adopt a newer ORFS, re-pin in
+that one file (instructions in its header) **and re-validate the flow** — never
+chase `:latest` implicitly. (The render step in `run.sh` separately pins
+`ghcr.io/efabless/openlane2:2.3.10`.)
+
 ### Verification tooling that exists
 
 - [x] `scripts/verify_macro_power.tcl` — walks post-route ODB, flags any
@@ -519,6 +536,31 @@ ship broken silicon if left unaddressed.
       instances (above budget) are listed by name + (x,y) + layer.
       Activity factor and supply voltage are documented in every report.
 - [x] `orfs/lvs.sh` — cell-instance LVS. See "LVS infrastructure" below.
+- [x] `orfs/drc.sh <module> [--gds path]` — geometric DRC sign-off. Runs the
+      asap7 KLayout deck (`asap7.lydrc`, shipped in the image) **unmodified**
+      against `6_final.gds`, re-runnable standalone without redoing the flow.
+      Output `build/orfs/reports/asap7/<module>/base/{drc.lyrdb,drc.log}`; the
+      `.log` ends with a one-line `SUMMARY:`. Exit 0 = CLEAN (no *unwaived*
+      violations), 1 = unwaived violations, 2 = vacuous (no deck), 3 = tool/env.
+      Note: although `run.sh` sets `RUN_KLAYOUT_DRC=1`, the `generate_abstract`
+      flow does **not** invoke the `drc` target (no `6_drc.*` artifacts), so
+      DRC had effectively never run on these blocks — `drc.sh` is the first
+      actual check.
+      **Waiver list (`drc_waivers.tsv`, #39).** The shipped deck is laurentc2's
+      unofficial KLayout port and over-flags: its `M4.S.5`/`M5.S.5` encode a
+      25 nm spacing, but the official ASAP7 DRM nominal is **24 nm**
+      (`M4.S.1`/`M5.S.1`) and the real M4.S.5 is a parallel-run-length ≥44 nm
+      rule — so those hits (the bulk) are deck artifacts on a DRM-compliant grid.
+      Rather than mutate the authoritative deck, `drc.sh` runs it unmodified and
+      classifies each marker against `drc_waivers.tsv` — a reviewable list of
+      known port artifacts (class `ARTIFACT`) and router-blind / PDK-internal
+      checks deferred to Calibre (class `DEFER`: `M1.S.2`, `M1.S.6`, `V1.S.4`,
+      `LIG.S.4-5`, `Vx.My.AUX.2`), each with a one-line justification. **The gate
+      fails only on *unwaived* violations**, so exit 0 means "no new/unexplained
+      DRC" (CI-usable) and every suppression is auditable. `skew_lane_a`: 59 raw
+      → 0 unwaived (CLEAN). Authoritative sign-off remains the ASAP7 Calibre
+      deck; this is a fast early-warning. KLayout DRC is slow on large blocks
+      (~10 min on `cmd_unit` under host contention).
 - [x] `orfs/density_check.sh <module>` — metal-density early-warning
       check. Walks `6_final.gds`, computes global density per layer
       (M1..M9), compares to conservative PDK-swap-ready bands (20/70%
@@ -535,13 +577,13 @@ numerically but encode different distinctions per tool — a future
 aggregator that runs several tools needs a per-tool mapping table to
 arrive at a single tape-out verdict.
 
-| exit | `verify_macro_power.tcl` | `antenna_check.sh`        | `ir_drop.sh`           | `lvs.sh`               | `density_check.sh`     |
-|------|--------------------------|---------------------------|------------------------|------------------------|------------------------|
-| 0    | CLEAN                    | CLEAN                     | PASS                   | CLEAN                  | WITHIN BANDS           |
-| 1    | (real PDN bug)           | usage / artifact missing  | FAIL (Vdrop > budget)  | FAIL (mismatch)        | OVER max (re-floorplan)|
-| 2    | —                        | VIOLATIONS                | BLOCKED (PSM-0069)     | config / artifact error| config / artifact error|
-| 3    | —                        | openroad invocation failed| tool / env failure     | —                      | UNDER min (needs fill) |
-| 4    | —                        | VACUOUS PASS (no PDK rules)| —                     | —                      | —                      |
+| exit | `verify_macro_power.tcl` | `antenna_check.sh`        | `ir_drop.sh`           | `lvs.sh`               | `density_check.sh`     | `drc.sh`               |
+|------|--------------------------|---------------------------|------------------------|------------------------|------------------------|------------------------|
+| 0    | CLEAN                    | CLEAN                     | PASS                   | CLEAN                  | WITHIN BANDS           | CLEAN (0 unwaived)     |
+| 1    | (real PDN bug)           | usage / artifact missing  | FAIL (Vdrop > budget)  | FAIL (mismatch)        | OVER max (re-floorplan)| UNWAIVED violations    |
+| 2    | —                        | VIOLATIONS                | BLOCKED (PSM-0069)     | config / artifact error| config / artifact error| VACUOUS (no deck)      |
+| 3    | —                        | openroad invocation failed| tool / env failure     | —                      | UNDER min (needs fill) | tool / env failure     |
+| 4    | —                        | VACUOUS PASS (no PDK rules)| —                     | —                      | —                      | —                      |
 
 Why they differ (not a bug, but worth knowing):
 

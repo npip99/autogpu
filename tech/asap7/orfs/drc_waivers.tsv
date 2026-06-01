@@ -1,0 +1,24 @@
+# DRC waivers for drc.sh — known asap7-KLayout-port artifacts and checks the
+# OpenROAD router cannot satisfy (deferred to the authoritative ASAP7 Calibre
+# deck). The shipped KLayout deck is run UNMODIFIED; drc.sh classifies each
+# violation as waived (listed here, with justification) or unwaived. drc.sh
+# fails (exit 1) only on UNWAIVED violations — so a clean block is one with no
+# *new/unexplained* DRC, and every suppression here is auditable.
+#
+# Format (tab-separated):  rule_id <TAB> class <TAB> justification
+#   class ARTIFACT — the KLayout port mis-encodes the rule vs the official DRM
+#                    (the geometry is DRM-clean; the check is wrong)
+#   class DEFER    — real/plausible rule, but router-blind or PDK-internal
+#                    geometry this flow cannot act on; Calibre signs it off
+# See issue #39 for the DRM investigation behind these.
+#
+# rule_id	class	justification
+M4.S.5	ARTIFACT	DRM nominal M4 spacing is 24nm (M4.S.1); the real M4.S.5 is parallel-run-length>=44nm, NOT a spacing. laurentc2's port mis-encodes it as space(25nm), false-flagging the compliant 24nm grid on every short edge. asap7_drm_201207a.pdf 3.14.
+M5.S.5	ARTIFACT	DRM nominal M5 spacing is 24nm (M5.S.1); identical 25nm-spacing mis-encoding of a parallel-run-length rule as M4.S.5.
+M1.S.2	DEFER	M1 width-dependent spacing (25nm when one edge >36nm). TritonRoute self-DRC=0 — the router does not model it; not fixable by re-hardening. Calibre signs off. (Deck also leaves this rule's category name blank.)
+M1.S.6	DEFER	M1 corner-to-corner (euclidian) 20nm. Router does not model diagonal corner spacing; self-DRC=0. Defer to Calibre.
+V1.S.4	DEFER	V1 corner-to-corner spacing w/ a 5nm M2 end-cap — exotic via-corner rule the router does not model. Defer to Calibre.
+LIG.S.4-5	DEFER	Local-interconnect (LIG) spacing INSIDE the asap7 standard cells — geometry this flow does not author. Defer to Calibre.
+V2.M3.AUX.2	DEFER	Via-to-metal exact-width match from the fixed asap7 via cells — not flow-authored geometry. Defer to Calibre.
+V4.M5.AUX.2	DEFER	Via-to-metal exact-width match (V4/M5), as V2.M3.AUX.2.
+V5.M6.AUX.2	DEFER	Via-to-metal exact-width match (V5/M6), as V2.M3.AUX.2.

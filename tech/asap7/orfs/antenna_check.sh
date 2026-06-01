@@ -9,7 +9,7 @@
 # is purely a sign-off pass — it does not modify the design. (The actual
 # repair_antennas pass is already integrated into the ORFS route step;
 # see `scripts/global_route.tcl` and `scripts/detail_route.tcl` inside
-# the openroad/orfs:latest image.)
+# the ${ORFS_IMAGE} image.)
 #
 # DEFAULT (no flag, no env var): runs against the stock asap7 platform
 # LEFs. They ship with ZERO antenna rules, so the check returns "0
@@ -58,6 +58,7 @@ MODULE="${1:?usage: $0 [--with-overlay] <module_name>}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+source "$SCRIPT_DIR/orfs_image.sh"   # pinned ORFS image (was :latest)
 CONFIG_FILE="$SCRIPT_DIR/${MODULE}.config.mk"
 RESULTS_HOST="$REPO_ROOT/build/orfs/results/asap7/$MODULE/base"
 REPORT_DIR_HOST="$REPO_ROOT/build/orfs/reports/asap7/$MODULE/base"
@@ -156,7 +157,7 @@ sg docker -c "docker run --rm --user $(id -u):$(id -g) \
     -e ODB_FILE=$ODB_GUEST \
     -e REPORT_FILE=$REPORT_GUEST \
     $OVERLAY_ENV \
-    openroad/orfs:latest \
+    ${ORFS_IMAGE} \
     /OpenROAD-flow-scripts/tools/install/OpenROAD/bin/openroad -no_init -no_splash -exit \
     /work/tech/asap7/orfs/scripts/antenna_check.tcl"
 OR_RC=$?
@@ -191,7 +192,7 @@ else
     # failure (image gone, sg permission revoked) does not silently
     # report 0 rules → VACUOUS PASS.
     set +e
-    RULE_COUNT_RAW=$(sg docker -c "docker run --rm openroad/orfs:latest \
+    RULE_COUNT_RAW=$(sg docker -c "docker run --rm ${ORFS_IMAGE} \
         grep -c -E '^[[:space:]]*ANTENNA' $TECH_LEF_GUEST" 2>/dev/null)
     DOCKER_RC=$?
     set -e
