@@ -364,6 +364,83 @@ change. Outputs misclassify regions.
   hand-code a coordinate. Render scripts should assert against DEF
   positions before drawing — see `scripts/README.md` section 9.5.
 
+### SDC constraint masks a real timing path
+
+> A `set_false_path` (or `set_multicycle_path`, `set_clock_groups`,
+> etc.) tells STA to *ignore* a path. Used wrongly, it hides a real
+> bug — the build closes with margin to spare even though the
+> underlying physical path doesn't actually meet timing at scale.
+
+Caught on issue #32 PR #36 review. The fix RTL added a combinational
+W→E broadcast feedthrough chain (`assign *_e = *_w`) across each row
+of the mac tile array. Four signals went through it: `reset`,
+`drain_slot`, `scrub_en`, and `drain_en`. The first three are
+quasi-static (held many cycles by their producers) so `set_false_path`
+on them is correct. **`drain_en` is not** — it's a single-cycle
+snapshot pulse from `cmd_unit.sv`'s `D_IDLE → D_PULSE` transition that
+every cell must capture on the SAME clock edge to load
+`storage[drain_slot]` simultaneously. False-pathing it would let STA
+*and the optimizer* both ignore the ~1100 µm M4 ripple across a
+32-wide chain; at M=N=4 the chain closes anyway (the harness can't
+catch the bug); at M=N=32 cells in far columns would miss the pulse
+and `drain_row_data` would come out column-misaligned.
+
+How this class of bug evades the defenses we have:
+
+1. **cocotb/Verilator sim does not model wire delay.** RTL is
+   correct; the bug is purely in the SDC. Sim has nothing to detect.
+2. **Small builds close regardless of the constraint** — the masked
+   path is short enough at 4×4 to meet timing whether STA times it or
+   ignores it. The harness reports "clean."
+3. **No gate-level SDF simulation in this repo.** That would be the
+   only automated check that catches a constraint-vs-reality mismatch.
+4. **STA reports look identical** with or without the wrong constraint
+   in a small build, so a reviewer skimming the WNS/TNS numbers can't
+   see anything wrong.
+
+**Detection rule (the rule reviewers must apply manually):**
+
+> Any `set_false_path` on a downstream signal requires you to look at
+> the *producer FSM* of that signal and classify it:
+>
+> - **Quasi-static** (producer holds it stable across many cycles
+>   before consumers sample): `set_false_path` is correct.
+> - **Single-cycle pulse with multiple consumers that must capture
+>   the same edge**: NEVER `set_false_path`. Let STA time it, see if
+>   it closes at scale, and treat any failure as real architectural
+>   information.
+> - **Multi-cycle phase** (producer holds for N cycles, consumer
+>   samples once per phase): consider `set_multicycle_path -setup N`
+>   instead of `set_false_path`.
+
+Every existing `set_false_path` in this repo (10 total — 3 quasi-static
+broadcasts on this PR + 4 block-level IO false-paths in
+`compute_array.sdc` deferring to chip_top closure via #28) was audited
+against this rule and found correct.
+
+**Add to PR-review checklist:** any commit that touches `*.sdc` must
+include either (a) classification of every new constraint against this
+rule or (b) an explicit comment in the SDC explaining why STA can
+safely ignore the path. See `tech/asap7/TILE_SPEC.md` §
+"Broadcast feedthrough timing contract" for the canonical worked
+example.
+
+### Quality-gate skips (SKIP_LAST_GASP, GRT_ALLOW_CONGESTION, etc.)
+
+Same class of risk: an env knob that *tells the tool to give up on a
+quality requirement* lets a build report "clean" while leaving real
+violations behind.
+
+| Knob | What it skips | What can leak through |
+|---|---|---|
+| `SKIP_LAST_GASP=1` | OpenROAD's post-route timing repair pass | residual hold violations (CTS adds buffers; main repair fixes most; last_gasp catches the rest). Bad if you call the build "tape-out clean." |
+| `GRT_ALLOW_CONGESTION` | (not a real env var; was tried and failed) | n/a |
+| relaxed `clk_period` | shifts the target frequency lower | real high-frequency closure problems |
+
+**Rule:** every skip needs a `# WHY:` comment in the config and a
+periodic re-validation that the skipped pass would have reported clean
+anyway. Don't ship a tape-out with a quality knob disabled.
+
 ---
 
 ## Frequency on this project
@@ -381,6 +458,7 @@ change. Outputs misclassify regions.
 | DPL-0036 (PoC only)                        | 1 |
 | yosys missing module                       | 1 |
 | `read_db` modified LEF didn't apply        | 1 |
+| Wrong `set_false_path` masking real path   | 1 |
 
 GRT-0118 dominates because compute_array's b-skew row was the routing
 bottleneck and we kept iterating on it. GRT-0116 + DRT-0199 are the
