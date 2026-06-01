@@ -129,6 +129,42 @@ metal shapes to merge into one wire on contact:
 These symmetry requirements are enforced by the pin-placement TCL
 emitted in Phase A.
 
+### Broadcast feedthrough timing contract
+
+The four broadcast feedthrough pairs (`reset_w/reset_e`,
+`drain_en_w/drain_en_e`, `drain_slot_w/drain_slot_e[1:0]`,
+`scrub_en_w/scrub_en_e`) are **combinational pass-throughs** inside the
+tile (`assign *_e = *_w`). When tiles abut, the parent's drive into
+column 0 ripples east across the row as one long M4 wire:
+
+- M=N=4 (validated): 4 hops × ~35 µm = ~140 µm of M4 + 3 abutment vias.
+- M=N=32: 32 hops × ~35 µm = ~1100 µm of M4 + 31 abutment vias.
+
+At 300 MHz (3333 ps) the 1100 µm ripple cannot close as a
+single-edge timing path. The contract is that **every signal on these
+chains is quasi-static during its active window** — held stable for many
+cycles before any cell samples it:
+
+| Signal | Active duration | Sampling cell |
+|---|---|---|
+| `reset` | held active for ≥ N cycles by reset_seq (and inactive thereafter for ≥ N cycles before any compute begins) | every cell's `always_ff` |
+| `drain_en` | one pulse per drain op, but cells sample at predictable cycles within the drain phase (which is N-deep) | one cell per phase |
+| `drain_slot[1:0]` | constant for the entire drain op (≥ N cycles) | every cell during drain |
+| `scrub_en` | one pulse per scrub, gated by the boot/reset sequence (multi-cycle window) | every cell during scrub |
+
+Because the consumer's sample edge is many cycles after the source
+launches, the launch-to-sample slack is multi-period and the
+combinational ripple resolves before sampling.
+
+**SDC requirement:** the abut SDCs declare `set_false_path -through
+<chain pin>` for each feedthrough signal so STA does not try to close
+them as single-cycle paths. See `tech/asap7/orfs/mac_array_small_abut.sdc`
+and `tech/asap7/orfs/compute_array_abut.sdc`.
+
+**If you add a new broadcast feedthrough:** you must (1) extend the SDC
+false-path list, and (2) verify that the producer holds it stable for
+the full row-traversal duration plus one sampling cycle.
+
 ### Edge power rails (ring per tile, abuts into a 2-D grid)
 
 Each tile has a four-sided power ring:

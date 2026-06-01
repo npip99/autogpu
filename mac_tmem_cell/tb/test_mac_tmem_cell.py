@@ -34,13 +34,13 @@ async def _drive_defaults(dut) -> None:
     dut.b_in.value = 0
     dut.slot_in.value = 0
     dut.accum_in.value = 0
-    dut.drain_en.value = 0
-    dut.drain_slot.value = 0
+    dut.drain_en_w.value = 0
+    dut.drain_slot_w.value = 0
     dut.drain_in.value = 0
     dut.init_en.value = 0
     dut.init_slot.value = 0
     dut.init_data.value = 0
-    dut.scrub_en.value = 0
+    dut.scrub_en_w.value = 0
 
 
 def _read_storage(dut, n_slots: int) -> list[int]:
@@ -69,7 +69,7 @@ async def test_directed(dut):
     """Canned operations with known values, exact match to pymodel."""
     await start_clock(dut)
     await _drive_defaults(dut)
-    await reset(dut)
+    await reset(dut, signal_name="reset_w")
 
     py = MacTmemCell(n_slots=TMEM_SLOTS)
 
@@ -117,8 +117,8 @@ async def test_directed(dut):
     dut.b_in.value = 0
     dut.slot_in.value = 0
     dut.accum_in.value = 0
-    dut.drain_en.value = 1
-    dut.drain_slot.value = 0
+    dut.drain_en_w.value = 1
+    dut.drain_slot_w.value = 0
     await RisingEdge(dut.clk)
     py.tick(drain_en=1, drain_slot=0)
     await ReadOnly()
@@ -131,8 +131,8 @@ async def test_directed(dut):
     await NextTimeStep()
 
     # --- Cycle 4: idle with drain_in=0; drain_out should register 0 ---
-    dut.drain_en.value = 0
-    dut.drain_slot.value = 0
+    dut.drain_en_w.value = 0
+    dut.drain_slot_w.value = 0
     dut.drain_in.value = 0
     await RisingEdge(dut.clk)
     py.tick()
@@ -143,7 +143,7 @@ async def test_directed(dut):
     await NextTimeStep()
 
     # --- Cycle 5: scrub everything ---
-    dut.scrub_en.value = 1
+    dut.scrub_en_w.value = 1
     await RisingEdge(dut.clk)
     py.tick(scrub_en=1)
     await ReadOnly()
@@ -152,7 +152,7 @@ async def test_directed(dut):
     )
     await NextTimeStep()
 
-    dut.scrub_en.value = 0
+    dut.scrub_en_w.value = 0
 
 
 def _rand_inputs(rng: random.Random) -> dict:
@@ -195,10 +195,17 @@ async def test_random_vs_pymodel(dut):
     """500 random cycles of mixed ops; lockstep with pymodel; check every output."""
     await start_clock(dut)
     await _drive_defaults(dut)
-    await reset(dut)
+    await reset(dut, signal_name="reset_w")
 
     py = MacTmemCell(n_slots=TMEM_SLOTS)
     rng = random.Random(0xC0FFEE)
+
+    # pymodel keeps the pre-rename signal names (drain_en, drain_slot,
+    # scrub_en); the DUT has those renamed to *_w as part of the abutment
+    # feedthrough rework (issue #32). Map py→dut on the poke side only.
+    PY_TO_DUT = {"drain_en": "drain_en_w",
+                 "drain_slot": "drain_slot_w",
+                 "scrub_en": "scrub_en_w"}
 
     N = 500
     for cyc in range(N):
@@ -206,7 +213,7 @@ async def test_random_vs_pymodel(dut):
 
         # Drive DUT.
         for name, val in inputs.items():
-            getattr(dut, name).value = val
+            getattr(dut, PY_TO_DUT.get(name, name)).value = val
 
         await RisingEdge(dut.clk)
         py.tick(**inputs)
