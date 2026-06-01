@@ -18,13 +18,16 @@ set non_clock_inputs [all_inputs -no_clocks]
 set_input_delay  [expr $clk_period * $clk_io_pct] -clock $clk_name $non_clock_inputs
 set_output_delay [expr $clk_period * $clk_io_pct] -clock $clk_name [all_outputs]
 
-# Broadcast feedthrough chain timing contract (see TILE_SPEC.md):
-# reset_w, drain_en_w, drain_slot_w[1:0], scrub_en_w form a 32-hop
-# combinational ripple across each row (~1100 µm of M4 wire). They are
-# quasi-static during their active window — reset is held many cycles,
-# drain_en pulses span many cycles before any cell samples in always_ff.
-# Declare false-path so STA doesn't try to close them as single-cycle.
+# Broadcast feedthrough chains are combinational W→E rows. Three of
+# the four are quasi-static (false-pathed below); drain_en_w is a
+# single-cycle snapshot pulse that MUST close. See TILE_SPEC.md
+# § "Broadcast feedthrough timing contract" for full reasoning.
+#
+# At M=N=32 the drain_en chain is 32 hops × ~35 µm = ~1100 µm of M4.
+# Letting STA time it surfaces whether the ripple closes inside one
+# clock at the target frequency — a real architectural data point #40
+# needs (the snapshot pulse cannot be pipelined the way push_a/b was
+# in PR #34, because every column must sample the same edge).
 set_false_path -through [get_pins -hierarchical *u_cell/reset_w]
-set_false_path -through [get_pins -hierarchical *u_cell/drain_en_w]
 set_false_path -through [get_pins -hierarchical *u_cell/drain_slot_w*]
 set_false_path -through [get_pins -hierarchical *u_cell/scrub_en_w]

@@ -140,30 +140,41 @@ column 0 ripples east across the row as one long M4 wire:
 - M=N=4 (validated): 4 hops × ~35 µm = ~140 µm of M4 + 3 abutment vias.
 - M=N=32: 32 hops × ~35 µm = ~1100 µm of M4 + 31 abutment vias.
 
-At 300 MHz (3333 ps) the 1100 µm ripple cannot close as a
-single-edge timing path. The contract is that **every signal on these
-chains is quasi-static during its active window** — held stable for many
-cycles before any cell samples it:
+**Three signals are quasi-static; one is a single-cycle snapshot pulse.
+They have DIFFERENT timing contracts** — do not lump them together:
 
-| Signal | Active duration | Sampling cell |
-|---|---|---|
-| `reset` | held active for ≥ N cycles by reset_seq (and inactive thereafter for ≥ N cycles before any compute begins) | every cell's `always_ff` |
-| `drain_en` | one pulse per drain op, but cells sample at predictable cycles within the drain phase (which is N-deep) | one cell per phase |
-| `drain_slot[1:0]` | constant for the entire drain op (≥ N cycles) | every cell during drain |
-| `scrub_en` | one pulse per scrub, gated by the boot/reset sequence (multi-cycle window) | every cell during scrub |
+| Signal | Class | Active duration | Sampling cell | SDC treatment |
+|---|---|---|---|---|
+| `reset` | quasi-static | held ≥ N cycles by `reset_seq` (inactive ≥ N cycles before any compute begins) | every cell's `always_ff` | **`set_false_path`** |
+| `drain_slot[1:0]` | quasi-static | constant for the entire drain op (`drain_saved_slot`, ≥ N cycles) | every cell during drain | **`set_false_path`** |
+| `scrub_en` | quasi-static | one pulse per scrub gated by boot/reset (multi-cycle window) | every cell during scrub | **`set_false_path`** |
+| `drain_en` | **single-cycle snapshot pulse** | **exactly 1 cycle** (`cmd_unit` `D_IDLE → D_PULSE` asserts; `D_PULSE → D_STREAM` clears) | **every cell on the SAME edge** to load `storage[drain_slot]` simultaneously; data then shifts north over MMA_M cycles | **MUST close as single-cycle path — no false_path, no multicycle** |
 
-Because the consumer's sample edge is many cycles after the source
-launches, the launch-to-sample slack is multi-period and the
-combinational ripple resolves before sampling.
+For the three quasi-static signals, the launch-to-sample slack is
+multi-period and the combinational ripple resolves long before
+sampling — false_path is correct.
 
-**SDC requirement:** the abut SDCs declare `set_false_path -through
-<chain pin>` for each feedthrough signal so STA does not try to close
-them as single-cycle paths. See `tech/asap7/orfs/mac_array_small_abut.sdc`
-and `tech/asap7/orfs/compute_array_abut.sdc`.
+`drain_en` is fundamentally different. If column j samples the snapshot
+one cycle late, its `storage[slot]` goes into the wrong row of
+`drain_pipe` and `drain_row_data[j*32 +: 32]` comes out column-
+misaligned. The same-edge-capture requirement is **a real timing path
+that STA must enforce**, not a path to relax. **Removing `drain_en` from
+the false_path list is intentional**: at M=N=4 it closes easily (~140 µm
+ripple), at M=N=32 it likely won't (~1100 µm ripple) — that's genuine
+information #40 must act on. The snapshot cannot be pipelined the way
+PR #34 pipelined `push_a/b` (a staggered wavefront breaks the same-edge
+requirement); #40 will need a different solution — balanced low-skew
+distribution, or a redesign that tolerates per-column phase offset
+(e.g. each column gets its own `drain_row_valid` with matching delay).
 
-**If you add a new broadcast feedthrough:** you must (1) extend the SDC
-false-path list, and (2) verify that the producer holds it stable for
-the full row-traversal duration plus one sampling cycle.
+**SDC files:** see `tech/asap7/orfs/mac_array_small_abut.sdc` and
+`tech/asap7/orfs/compute_array_abut.sdc`.
+
+**If you add a new broadcast feedthrough:** classify it first. If
+producer holds it stable for the full row-traversal duration plus one
+sampling cycle, you can `set_false_path`. If consumers must capture
+the same edge, **time it for real** and accept that the path width
+limits how wide the chain can grow.
 
 ### Edge power rails (ring per tile, abuts into a 2-D grid)
 

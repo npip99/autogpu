@@ -21,16 +21,22 @@ set_input_delay  [expr $clk_period * $clk_io_pct] -clock $clk_name $non_clock_in
 set_output_delay [expr $clk_period * $clk_io_pct] -clock $clk_name [all_outputs]
 
 # Broadcast feedthrough chains are combinational across the W→E row
-# (`assign *_e = *_w` inside each tile). At M=N=4 the chain is 4 hops
-# (~140 µm). At M=N=32 it grows to 32 hops (~1100 µm) which will not
-# meet a single-cycle path. The contract is that these signals must be
+# (`assign *_e = *_w` inside each tile). Three of the four signals are
 # QUASI-STATIC during their active window (see tech/asap7/TILE_SPEC.md
-# § "Broadcast feedthrough timing contract"): reset is held many
-# cycles, drain_en/scrub_en pulses span many cycles before the receiver
-# samples. Declare false-path on the chain endpoints so STA doesn't
-# block on it. (multicycle would also work but false_path is more honest:
-# the signals don't have a meaningful single-edge timing window.)
+# § "Broadcast feedthrough timing contract") and are false-pathed here:
+#
+#   - reset_w     : held many cycles by reset_seq
+#   - drain_slot_w: constant for the whole drain op (drain_saved_slot)
+#   - scrub_en_w  : multi-cycle scrub window
+#
+# drain_en_w is INTENTIONALLY NOT false-pathed. It's a single-cycle
+# snapshot pulse: cmd_unit's D_IDLE→D_PULSE asserts it for exactly one
+# clock, every cell must capture it on the SAME edge to load
+# storage[drain_slot] simultaneously, then data shifts north over
+# MMA_M cycles. Disabling STA on drain_en would mask a real
+# 32-column functional hazard — let STA time it as a normal single-cycle
+# path. At M=N=4 (this harness) it closes easily; at M=N=32 it likely
+# won't, which is genuine information #40 must act on.
 set_false_path -through [get_pins -hierarchical *u_cell/reset_w]
-set_false_path -through [get_pins -hierarchical *u_cell/drain_en_w]
 set_false_path -through [get_pins -hierarchical *u_cell/drain_slot_w*]
 set_false_path -through [get_pins -hierarchical *u_cell/scrub_en_w]
