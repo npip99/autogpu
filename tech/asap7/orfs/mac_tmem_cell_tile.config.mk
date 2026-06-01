@@ -30,10 +30,15 @@ export SDC_FILE       = /work/tech/asap7/orfs/mac_tmem_cell.sdc
 
 # Fixed die size on the asap7 site grid (640 × 0.054 µm = 34.56 µm
 # horizontally; 128 × 0.27 µm = 34.56 µm vertically — clean both axes).
-# 1 µm core margin leaves room for the edge power ring + boundary pin stubs.
+# 2 µm core inset leaves a halo on all four edges where the tile's
+# internal routing won't go. This is what the parent's pin-access
+# vias land in — without it, parent vias collide with the macro's
+# M3/M4 OBS at the abutment seam and produce shorts in DRT. (First
+# attempt was 1 µm and produced 45 boundary shorts at Phase B's 4×4
+# harness; 2 µm should give 2× the via landing room.)
 export FLOORPLAN_DEF =
 export DIE_AREA   = 0 0 34.56 34.56
-export CORE_AREA  = 1 1 33.56 33.56
+export CORE_AREA  = 2 2 32.56 32.56
 
 # Abutment-ready IO pin placement: see TILE_SPEC.md for the boundary
 # contract (which signal on which edge, which layer, which side).
