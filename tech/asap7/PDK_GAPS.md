@@ -11,6 +11,21 @@ This file pairs with `DESIGN.md` ("Sign-off gaps" section). DESIGN.md
 says *what the chip is missing*; this file says *why the PDK can't even
 check*.
 
+## Posture: treat asap7 as a real fab
+
+The goal is to get as close to a real-foundry tape-out as possible. Treat
+**every** sign-off violation the flow produces (DRC, LVS, antenna, IR-drop,
+density, timing) as a **real tape-out gate** — to fix or root-cause, never
+to wave away with "asap7 is only a predictive PDK so it doesn't really
+block." A violation a real fab would reject is one we fix here.
+
+The *only* legitimate "asap7 can't" is a genuine **missing-PDK-data gap** —
+something the PDK lacks the rules/decks to even check (the items catalogued
+below). Those are documented and ported to a real PDK. That is different
+from excusing a fixable violation the flow actually emitted (e.g. the
+`M4.S.5` DRC spacing hits `drc.sh` found on the hardened leaves — those are
+real, and tracked for fix, not dismissed).
+
 ## Antenna sign-off — `tech/asap7/orfs/problems/A4_antenna.md`
 
 ### Evidence
