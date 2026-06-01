@@ -15,6 +15,7 @@ ODB="${2:?usage: $0 <module> <odb_basename>}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+source "$SCRIPT_DIR/../orfs_image.sh"   # pinned ORFS image (was :latest)
 ODB_PATH="$REPO_ROOT/build/orfs/results/asap7/$MODULE/base/${ODB}.odb"
 
 if [[ ! -f "$ODB_PATH" ]]; then
@@ -41,7 +42,7 @@ EOF
 sg docker -c "docker run --rm --user $(id -u):$(id -g) \
     -v $REPO_ROOT:/work \
     -v /tmp:/tmp \
-    openroad/orfs:latest \
+    ${ORFS_IMAGE} \
     /OpenROAD-flow-scripts/tools/install/OpenROAD/bin/openroad -exit $TCL_TMP" 2>&1 | tail -3
 rm -f "$TCL_TMP"
 

@@ -37,6 +37,7 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+source "$SCRIPT_DIR/orfs_image.sh"   # pinned ORFS image (was :latest)
 
 GDS="$REPO_ROOT/build/orfs/results/asap7/$MODULE/base/6_final.gds"
 if [[ ! -f "$GDS" ]]; then
@@ -72,7 +73,7 @@ fi
 set +e
 sg docker -c "docker run --rm --user $(id -u):$(id -g) \
     -v $REPO_ROOT:/work \
-    openroad/orfs:latest \
+    ${ORFS_IMAGE} \
     klayout -b -r /work/tech/asap7/orfs/scripts/density_check.py \
       -rd gds=$GDS_GUEST \
       -rd top=$TOP_CELL \

@@ -10,6 +10,7 @@ MODULE="${1:?usage: $0 <module_name>}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+source "$SCRIPT_DIR/orfs_image.sh"   # pinned ORFS image (was :latest)
 SV2V_FILE="$REPO_ROOT/build/sv2v/chip_top.v"
 
 if [[ ! -f "$SV2V_FILE" ]]; then
@@ -52,7 +53,7 @@ fi
 sg docker -c "docker run --rm --user $(id -u):$(id -g) \
     -v $REPO_ROOT:/work \
     -w /OpenROAD-flow-scripts/flow \
-    openroad/orfs:latest \
+    ${ORFS_IMAGE} \
     make \
       DESIGN_CONFIG=/work/tech/asap7/orfs/${MODULE}.config.mk \
       WORK_HOME=$WORK_GUEST \
@@ -79,7 +80,7 @@ sg docker -c "docker run --rm --user $(id -u):$(id -g) \
     -e RESULTS_DIR=/work/build/orfs/results/asap7/$MODULE/base \
     -e TECH_LEF=/OpenROAD-flow-scripts/flow/platforms/asap7/lef/asap7_tech_1x_201209.lef \
     -e SC_LEF=/OpenROAD-flow-scripts/flow/platforms/asap7/lef/asap7sc7p5t_28_R_1x_220121a.lef \
-    openroad/orfs:latest \
+    ${ORFS_IMAGE} \
     /OpenROAD-flow-scripts/tools/install/OpenROAD/bin/openroad -exit \
     /work/tech/asap7/orfs/scripts/rewrite_abstract_lef.tcl" 2>&1 | tail -3
 # Post-process: strip OBS so the parent design can use these layers over

@@ -13,6 +13,7 @@ EXTRAS=("$@")
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+source "$SCRIPT_DIR/../orfs_image.sh"   # pinned ORFS image (was :latest)
 
 RESULTS_HOST="$REPO_ROOT/build/orfs/results/asap7/$MODULE/base"
 if [[ ! -f "$RESULTS_HOST/6_final.odb" ]]; then
@@ -48,7 +49,7 @@ sg docker -c "docker run --rm --user $(id -u):$(id -g) \
     -e EXTRA_LEFS='$EXTRA_LEFS_GUEST' \
     -e EXTRA_LIBS='$EXTRA_LIBS_GUEST' \
     -e LIBERTY_FILES='$LIBERTY_FILES' \
-    openroad/orfs:latest \
+    ${ORFS_IMAGE} \
     /OpenROAD-flow-scripts/tools/install/OpenROAD/bin/openroad -exit \
     /work/tech/asap7/orfs/scripts/gen_lef_from_odb.tcl"
 

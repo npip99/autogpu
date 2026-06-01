@@ -29,6 +29,7 @@ shift || true
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+source "$SCRIPT_DIR/orfs_image.sh"   # pinned ORFS image (was :latest)
 RESULTS_HOST="$REPO_ROOT/build/orfs/results/asap7/$MODULE/base"
 RESULTS_GUEST="/work/build/orfs/results/asap7/$MODULE/base"
 
@@ -101,7 +102,7 @@ set +e
 sg docker -c "docker run --rm --user $(id -u):$(id -g) \
     -v $REPO_ROOT:/work \
     ${EXTRA_MOUNTS[*]} \
-    openroad/orfs:latest \
+    ${ORFS_IMAGE} \
     klayout -b -r /work/tech/asap7/orfs/scripts/lvs.py \
       -rd gds=$GDS_GUEST \
       -rd verilog=$VERILOG_GUEST \

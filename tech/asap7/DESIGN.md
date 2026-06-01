@@ -338,6 +338,7 @@ tech/asap7/
 │   ├── A5_ir_drop.md
 │   └── A6_chip_top.md
 └── orfs/
+    ├── orfs_image.sh               pinned ORFS image digest (sourced by all the below)
     ├── run.sh                      driver: docker → openroad/orfs (build flow)
     ├── antenna_check.sh            post-route antenna sign-off (A4)
     ├── ir_drop.sh                  post-route IR-drop sign-off (A5)
@@ -486,6 +487,20 @@ ship broken silicon if left unaddressed.
   but cannot be physically taped out. For literal tape-out, switch to a
   real PDK (under NDA: TSMC N7/N6, GF12LP+; or open: SkyWater 130 — but
   not 7 nm in that case). ORFS support for real foundry PDKs is limited.
+
+### Toolchain pinning (reproducibility)
+
+`run.sh` and every sign-off script (`drc.sh`, `lvs.sh`, `ir_drop.sh`,
+`antenna_check.sh`, `density_check.sh`, `scripts/render_odb.sh`,
+`scripts/gen_lef.sh`) source **`tech/asap7/orfs/orfs_image.sh`**, which pins the
+ORFS container to an immutable digest
+(`openroad/orfs@sha256:cf4186a5…`, OpenROAD `26Q2-1164-g08f67ee5ec`, image built
+2026-05-18) instead of the floating `openroad/orfs:latest`. With `:latest` the
+PDK, DRC deck, router, and tool versions could all change silently between
+builds; the digest makes a build reproducible. To adopt a newer ORFS, re-pin in
+that one file (instructions in its header) **and re-validate the flow** — never
+chase `:latest` implicitly. (The render step in `run.sh` separately pins
+`ghcr.io/efabless/openlane2:2.3.10`.)
 
 ### Verification tooling that exists
 

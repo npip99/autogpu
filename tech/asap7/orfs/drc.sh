@@ -42,6 +42,7 @@ shift || true
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+source "$SCRIPT_DIR/orfs_image.sh"   # pinned ORFS image (was :latest)
 RESULTS_HOST="$REPO_ROOT/build/orfs/results/asap7/$MODULE/base"
 
 GDS="$RESULTS_HOST/6_final.gds"
@@ -108,7 +109,7 @@ sg docker -c "docker run --rm --user $(id -u):$(id -g) \
     ${EXTRA_MOUNTS[*]} \
     -e SRC=$DRC_DECK_SRC -e DECK=$DECK_GUEST \
     -e GDS=$GDS_GUEST -e RDB=$RDB_GUEST \
-    openroad/orfs:latest \
+    ${ORFS_IMAGE} \
     bash -c '$PATCH'" \
     > "$LOG_HOST" 2>&1
 RC=$?
