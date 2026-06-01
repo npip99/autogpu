@@ -62,6 +62,8 @@ module mac_array_small #(
     // *_chain_w[i][j] = signal entering cell (i, j) on its west edge.
     // *_chain_e[i][j] = signal exiting cell (i, j) on its east edge.
     // Internally each cell asserts `*_e = *_w`, so the chain is a wire.
+    wire                       clk_chain_w        [0:M-1][0:N-1];
+    wire                       clk_chain_e        [0:M-1][0:N-1];
     wire                       reset_chain_w      [0:M-1][0:N-1];
     wire                       reset_chain_e      [0:M-1][0:N-1];
     wire                       drain_en_chain_w   [0:M-1][0:N-1];
@@ -94,14 +96,16 @@ module mac_array_small #(
                 // drain from north neighbor; last row terminates with 0.
                 assign drain_in_w = (gi == M-1) ? 32'd0 : drain_pipe[gi+1][gj];
 
-                // Broadcast chain: col 0 from parent, others from W neighbor's _e.
+                // Broadcast + clk chain: col 0 from parent, others from W neighbor's _e.
+                assign clk_chain_w       [gi][gj] = (gj == 0) ? clk         : clk_chain_e       [gi][gj-1];
                 assign reset_chain_w     [gi][gj] = (gj == 0) ? reset       : reset_chain_e     [gi][gj-1];
                 assign drain_en_chain_w  [gi][gj] = (gj == 0) ? drain_en    : drain_en_chain_e  [gi][gj-1];
                 assign drain_slot_chain_w[gi][gj] = (gj == 0) ? drain_slot  : drain_slot_chain_e[gi][gj-1];
                 assign scrub_en_chain_w  [gi][gj] = (gj == 0) ? scrub_en    : scrub_en_chain_e  [gi][gj-1];
 
                 mac_tmem_cell u_cell (
-                    .clk          (clk),
+                    .clk_w        (clk_chain_w       [gi][gj]),
+                    .clk_e        (clk_chain_e       [gi][gj]),
                     .reset_w      (reset_chain_w     [gi][gj]),
                     .reset_e      (reset_chain_e     [gi][gj]),
                     .compute_in   (c_in_w),

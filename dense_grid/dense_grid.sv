@@ -19,7 +19,8 @@ module dense_grid #(parameter int N = 32) (
                 logic [31:0] din;
                 assign din = (c == 0) ? west_in[r*32 +: 32] : drain_pipe[r][c-1];
                 mac_tmem_cell u_cell (
-                    .clk          (clk),
+                    .clk_w        (clk),
+                    .clk_e        (),
                     .reset_w      (reset),
                     .reset_e      (),
                     .compute_in   (1'b0),

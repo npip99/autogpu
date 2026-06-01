@@ -22,14 +22,16 @@ async def start_clock(dut, period_ns: int = 10, signal_name: str = "clk") -> Non
     cocotb.start_soon(Clock(getattr(dut, signal_name), period_ns, unit="ns").start())
 
 
-async def reset(dut, signal_name: str = "reset", cycles: int = 2) -> None:
+async def reset(dut, signal_name: str = "reset", cycles: int = 2,
+                clock_name: str = "clk") -> None:
     """Hold reset high for `cycles` clocks, then release."""
     sig = getattr(dut, signal_name)
+    clk = getattr(dut, clock_name)
     sig.value = 1
     for _ in range(cycles):
-        await RisingEdge(dut.clk)
+        await RisingEdge(clk)
     sig.value = 0
-    await RisingEdge(dut.clk)
+    await RisingEdge(clk)
 
 
 async def wait_until_chip_ready(dut, max_cycles: int = 1000) -> int:

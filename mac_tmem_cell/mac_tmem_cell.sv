@@ -2,14 +2,15 @@
 //
 // Phase 7i-6: systolic drain (drain flows north through the array).
 //
-// Boundary contract (issue #32): four parent broadcasts (reset, drain_en,
-// drain_slot, scrub_en) are exposed as W↔E abutment-feedthrough pairs
-// (`*_w` input, `*_e` output) instead of single fan-to-all pins. Inside
-// the cell, `assign *_e = *_w` makes the tile look like a wire on M4.
-// At the parent, only the westernmost column's `*_w` pins are driven;
-// abutment propagates the signal east. This avoids any parent routing
-// over the abutted tile area (the tile LEF blocks M1..M6 over its face).
-// `clk` remains a single broadcast pin (handled by parent CTS / #33).
+// Boundary contract (issue #32, extended in #40): five parent broadcasts
+// (clk, reset, drain_en, drain_slot, scrub_en) are exposed as W↔E
+// abutment-feedthrough pairs (`*_w` input, `*_e` output) instead of
+// single fan-to-all pins. Inside the cell, `assign *_e = *_w` makes
+// the tile look like a wire on M4. At the parent, only the westernmost
+// column's `*_w` pins are driven; abutment propagates the signal east.
+// This avoids any parent routing over the abutted tile area AND
+// eliminates parent CTS — clk is just another feedthrough, propagating
+// source-synchronous with the data feedthroughs (same per-stage delay).
 //
 // The five-signal compute packet (a, b, compute, slot, accum) flows from
 // west/north neighbors through a single pipeline register per cell and out
@@ -40,7 +41,21 @@
 module mac_tmem_cell #(
     parameter int N_SLOTS = 4
 ) (
-    input  logic                       clk,
+    // ---- Clock feedthrough (W -> E abutment, source-synchronous) -------
+    // clk is treated as just another abutment-feedthrough signal: parent
+    // drives the westernmost column's clk_w; clk_e drives the next tile's
+    // clk_w. Internal flops sample clk_w directly. Because the clock and
+    // the data feedthrough chains are both buffered W->E on the same
+    // M4 layer with comparable per-stage delay (~12 ps each), the clock
+    // edge co-travels with the data — column j's local clock arrives at
+    // T0 + j*~12ps, same as column j's a/b data. This makes systolic
+    // timing self-aligning across the array.
+    //
+    // No parent CTS is needed; the chip's clk pad feeds tile(0,0).clk_w
+    // (via a short chip-edge wire, or via #33's eventual mesh — both
+    // forward-compatible with this contract).
+    input  logic                       clk_w,
+    output logic                       clk_e,
 
     // ---- Broadcast feedthrough pairs (W -> E abutment) -----------------
     // Parent drives the westernmost column's _w; _e propagates east via
@@ -81,6 +96,7 @@ module mac_tmem_cell #(
 );
 
     // ---- Feedthrough wires (zero-delay pass-through) ------------------
+    assign clk_e        = clk_w;
     assign reset_e      = reset_w;
     assign drain_en_e   = drain_en_w;
     assign drain_slot_e = drain_slot_w;
@@ -127,7 +143,7 @@ module mac_tmem_cell #(
 
     // ---- Sequential ---------------------------------------------------
     integer s;
-    always_ff @(posedge clk) begin
+    always_ff @(posedge clk_w) begin
         if (reset_w) begin
             drain_out    <= 32'd0;
             compute_pipe <= 1'b0;
@@ -166,7 +182,7 @@ module mac_tmem_cell #(
 
     // ---- Synthesizable assertions (sim-only) --------------------------
 `ifndef SYNTHESIS
-    always_ff @(posedge clk) begin
+    always_ff @(posedge clk_w) begin
         if (!reset_w) begin
             assert (!(scrub_en_w && compute_in))
                 else $fatal(1, "mac_tmem_cell: scrub_en concurrent with compute_in");

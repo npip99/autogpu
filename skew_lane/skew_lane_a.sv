@@ -15,7 +15,12 @@ module skew_lane_a #(
     parameter int DEPTH   = 32,
     parameter int N_SLOTS = 4
 ) (
-    input  wire                          clk,
+    // clk_w / clk_e: matches mac_tmem_cell_tile's clock contract (#40).
+    // clk_e is an unbuffered combinational pass-through so the abstract
+    // .lib has a clk_w → clk_e arc and the parent can chain clk through
+    // multiple skew_lanes via abutment.
+    input  wire                          clk_w,
+    output wire                          clk_e,
     input  wire                          reset,
     input  wire                          push_now,
     input  wire [7:0]                    push_byte,
@@ -27,7 +32,20 @@ module skew_lane_a #(
     output wire [$clog2(N_SLOTS)-1:0]    edge_slot,
     output wire                          edge_accum
 );
-    skew_lane #(.DEPTH(DEPTH), .N_SLOTS(N_SLOTS)) u (.*);
+    assign clk_e = clk_w;
+    skew_lane #(.DEPTH(DEPTH), .N_SLOTS(N_SLOTS)) u (
+        .clk        (clk_w),
+        .reset      (reset),
+        .push_now   (push_now),
+        .push_byte  (push_byte),
+        .push_slot  (push_slot),
+        .push_accum (push_accum),
+        .tap_index  (tap_index),
+        .edge_valid (edge_valid),
+        .edge_byte  (edge_byte),
+        .edge_slot  (edge_slot),
+        .edge_accum (edge_accum)
+    );
 endmodule
 
 `default_nettype wire

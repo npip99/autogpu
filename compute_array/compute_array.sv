@@ -123,7 +123,8 @@ module compute_array #(
     logic                       u_drain_last;
 
     cmd_unit u_cmd (
-        .clk                  (clk),
+        .clk_w                (clk),
+        .clk_e                (),
         .reset                (reset),
         .mma_issue            (mma_issue),
         .mma_slot             (mma_slot),
@@ -423,7 +424,8 @@ module compute_array #(
             logic [SLOT_W-1:0]     es;
             logic                  ea;
             skew_lane_a u_a (
-                .clk        (clk),
+                .clk_w      (clk),
+                .clk_e      (),
                 .reset      (reset),
                 .push_now   (pn_a_chain[gi_a]),
                 .push_byte  (pa_chain[gi_a][gi_a*8 +: 8]),
@@ -456,7 +458,8 @@ module compute_array #(
             logic [SLOT_W-1:0]     es_unused;
             logic                  ea_unused;
             skew_lane_b u_b (
-                .clk        (clk),
+                .clk_w      (clk),
+                .clk_e      (),
                 .reset      (reset),
                 .push_now   (pn_b_chain[gj_b]),
                 .push_byte  (pb_chain[gj_b][gj_b*8 +: 8]),
@@ -490,8 +493,13 @@ module compute_array #(
     // Broadcast feedthrough chain (W→E per row). Parent drives col 0's
     // *_w; the cell asserts *_e = *_w (M4 wire), so abutment carries the
     // signal east through the array — no parent routing over a macro.
+    // clk is on the same pattern (#40): the chip's clk pad feeds each
+    // row's col-0 clk_w, and clk propagates east through the row via
+    // tile-internal `assign clk_e = clk_w` feedthroughs. No parent CTS.
     // Works in both abutted and non-abutted layouts (in the non-abutted
     // case synth optimizes the chain into the same fan-out as before).
+    logic              clk_chain_w        [MMA_M-1:0][MMA_N-1:0];
+    logic              clk_chain_e        [MMA_M-1:0][MMA_N-1:0];
     logic              reset_chain_w      [MMA_M-1:0][MMA_N-1:0];
     logic              reset_chain_e      [MMA_M-1:0][MMA_N-1:0];
     logic              drain_en_chain_w   [MMA_M-1:0][MMA_N-1:0];
@@ -521,13 +529,17 @@ module compute_array #(
 
                 // Broadcast chain: col 0 from cmd_unit's piped output;
                 // col j>0 from the W neighbor's _e (abutment-fed).
+                // clk follows the same chain — col 0 from the chip clk
+                // pad (via `clk` port), col j>0 from W neighbor's clk_e.
+                assign clk_chain_w       [gi][gj] = (gj == 0) ? clk                    : clk_chain_e       [gi][gj-1];
                 assign reset_chain_w     [gi][gj] = (gj == 0) ? reset                  : reset_chain_e     [gi][gj-1];
                 assign drain_en_chain_w  [gi][gj] = (gj == 0) ? cells_drain_en_piped   : drain_en_chain_e  [gi][gj-1];
                 assign drain_slot_chain_w[gi][gj] = (gj == 0) ? cells_drain_slot_piped : drain_slot_chain_e[gi][gj-1];
                 assign scrub_en_chain_w  [gi][gj] = (gj == 0) ? scrub_en_piped         : scrub_en_chain_e  [gi][gj-1];
 
                 mac_tmem_cell u_cell (
-                    .clk          (clk),
+                    .clk_w        (clk_chain_w       [gi][gj]),
+                    .clk_e        (clk_chain_e       [gi][gj]),
                     .reset_w      (reset_chain_w     [gi][gj]),
                     .reset_e      (reset_chain_e     [gi][gj]),
                     .compute_in   (c_in_w),

@@ -22,7 +22,13 @@ module cmd_unit #(
     parameter int MMA_K   = 32,
     parameter int N_SLOTS = 4
 ) (
-    input  logic                          clk,
+    // clk_w / clk_e: matches mac_tmem_cell_tile's contract (#40).
+    // cmd_unit sits at the W root of the clock feedthrough chain; it
+    // takes clk_w from the chip clk pad and exposes clk_e as a combinational
+    // pass-through to feed the first downstream tile (skew_lane_a[0].clk_w
+    // or directly mac_tmem_cell_tile[0][0].clk_w).
+    input  logic                          clk_w,
+    output logic                          clk_e,
     input  logic                          reset,
 
     // ---- Issue from cmdproc ----
@@ -71,6 +77,11 @@ module cmd_unit #(
     output logic                          drain_en_o,
     output logic [$clog2(N_SLOTS)-1:0]    drain_slot_to_cells
 );
+
+    // clk_e is a combinational pass-through of clk_w (#40). Lets the
+    // abstract .lib carry a clk_w → clk_e arc so parent STA can chain
+    // clock propagation through abutted cmd_unit + skew + mac tiles.
+    assign clk_e = clk_w;
 
     localparam int SLOT_W = $clog2(N_SLOTS);
     localparam int WAVE_DRAIN_CYCLES = MMA_M + MMA_N - 2;
@@ -256,7 +267,7 @@ module cmd_unit #(
     // ------------------------------------------------------------------
     // Sequential
     // ------------------------------------------------------------------
-    always_ff @(posedge clk) begin
+    always_ff @(posedge clk_w) begin
         if (reset) begin
             state           <= S_IDLE;
             mma_busy        <= 1'b0;

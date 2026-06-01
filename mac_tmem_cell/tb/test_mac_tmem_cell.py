@@ -67,9 +67,9 @@ def _check_pipe_out(dut, py: MacTmemCell, cyc: int, inputs: dict) -> None:
 @cocotb.test()
 async def test_directed(dut):
     """Canned operations with known values, exact match to pymodel."""
-    await start_clock(dut)
+    await start_clock(dut, signal_name="clk_w")
     await _drive_defaults(dut)
-    await reset(dut, signal_name="reset_w")
+    await reset(dut, signal_name="reset_w", clock_name="clk_w")
 
     py = MacTmemCell(n_slots=TMEM_SLOTS)
 
@@ -78,7 +78,7 @@ async def test_directed(dut):
     dut.init_en.value = 1
     dut.init_slot.value = 0
     dut.init_data.value = seed_bits
-    await RisingEdge(dut.clk)
+    await RisingEdge(dut.clk_w)
     py.tick(init_en=1, init_slot=0, init_data=seed_bits)
     await ReadOnly()
     assert _read_storage(dut, TMEM_SLOTS) == _py_storage_bits(py), (
@@ -97,7 +97,7 @@ async def test_directed(dut):
     dut.b_in.value = b
     dut.slot_in.value = 0
     dut.accum_in.value = 1
-    await RisingEdge(dut.clk)
+    await RisingEdge(dut.clk_w)
     py.tick(compute_in=1, a_in=a, b_in=b, slot_in=0, accum_in=1)
     await ReadOnly()
     assert _read_storage(dut, TMEM_SLOTS) == _py_storage_bits(py), (
@@ -119,7 +119,7 @@ async def test_directed(dut):
     dut.accum_in.value = 0
     dut.drain_en_w.value = 1
     dut.drain_slot_w.value = 0
-    await RisingEdge(dut.clk)
+    await RisingEdge(dut.clk_w)
     py.tick(drain_en=1, drain_slot=0)
     await ReadOnly()
     assert int(dut.drain_out.value) == int(py.drain_out), (
@@ -134,7 +134,7 @@ async def test_directed(dut):
     dut.drain_en_w.value = 0
     dut.drain_slot_w.value = 0
     dut.drain_in.value = 0
-    await RisingEdge(dut.clk)
+    await RisingEdge(dut.clk_w)
     py.tick()
     await ReadOnly()
     sv = int(dut.drain_out.value)
@@ -144,7 +144,7 @@ async def test_directed(dut):
 
     # --- Cycle 5: scrub everything ---
     dut.scrub_en_w.value = 1
-    await RisingEdge(dut.clk)
+    await RisingEdge(dut.clk_w)
     py.tick(scrub_en=1)
     await ReadOnly()
     assert _read_storage(dut, TMEM_SLOTS) == _py_storage_bits(py), (
@@ -193,9 +193,9 @@ def _rand_inputs(rng: random.Random) -> dict:
 @cocotb.test()
 async def test_random_vs_pymodel(dut):
     """500 random cycles of mixed ops; lockstep with pymodel; check every output."""
-    await start_clock(dut)
+    await start_clock(dut, signal_name="clk_w")
     await _drive_defaults(dut)
-    await reset(dut, signal_name="reset_w")
+    await reset(dut, signal_name="reset_w", clock_name="clk_w")
 
     py = MacTmemCell(n_slots=TMEM_SLOTS)
     rng = random.Random(0xC0FFEE)
@@ -215,7 +215,7 @@ async def test_random_vs_pymodel(dut):
         for name, val in inputs.items():
             getattr(dut, PY_TO_DUT.get(name, name)).value = val
 
-        await RisingEdge(dut.clk)
+        await RisingEdge(dut.clk_w)
         py.tick(**inputs)
 
         await ReadOnly()
