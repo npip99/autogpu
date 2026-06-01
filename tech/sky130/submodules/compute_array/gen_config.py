@@ -185,7 +185,7 @@ def main():
         "FP_IO_VLAYER": "met4",
         "RT_MAX_LAYER": "met5",
         "GRT_OVERFLOW_ITERS": 200,
-        # Option B: reduce hold-buffer pressure (see FAILURES.md GRT-0118)
+        # Option B: reduce hold-buffer pressure (see tech/FAILURES.md GRT-0118)
         # CTS: tighter local skew balance (smaller clusters = less skew
         # between physically-nearby flops → fewer hold violations).
         "CTS_SINK_CLUSTERING_SIZE": 10,

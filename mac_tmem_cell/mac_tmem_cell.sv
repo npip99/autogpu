@@ -2,6 +2,15 @@
 //
 // Phase 7i-6: systolic drain (drain flows north through the array).
 //
+// Boundary contract (issue #32): four parent broadcasts (reset, drain_en,
+// drain_slot, scrub_en) are exposed as W↔E abutment-feedthrough pairs
+// (`*_w` input, `*_e` output) instead of single fan-to-all pins. Inside
+// the cell, `assign *_e = *_w` makes the tile look like a wire on M4.
+// At the parent, only the westernmost column's `*_w` pins are driven;
+// abutment propagates the signal east. This avoids any parent routing
+// over the abutted tile area (the tile LEF blocks M1..M6 over its face).
+// `clk` remains a single broadcast pin (handled by parent CTS / #33).
+//
 // The five-signal compute packet (a, b, compute, slot, accum) flows from
 // west/north neighbors through a single pipeline register per cell and out
 // to east/south neighbors. compute_array's cmd_unit feeds the west + north
@@ -32,7 +41,12 @@ module mac_tmem_cell #(
     parameter int N_SLOTS = 4
 ) (
     input  logic                       clk,
-    input  logic                       reset,
+
+    // ---- Broadcast feedthrough pairs (W -> E abutment) -----------------
+    // Parent drives the westernmost column's _w; _e propagates east via
+    // abutment to the next cell's _w.
+    input  logic                       reset_w,
+    output logic                       reset_e,
 
     // ---- Systolic compute packet ---------------------------------------
     input  logic                       compute_in,
@@ -50,18 +64,27 @@ module mac_tmem_cell #(
     input  logic [31:0]                drain_in,
     output logic [31:0]                drain_out,
 
-    // ---- Drain control (broadcast, registered, 1-cycle latency) --------
-    input  logic                       drain_en,
-    input  logic [$clog2(N_SLOTS)-1:0] drain_slot,
+    // ---- Drain control (W -> E abutment feedthrough) --------------------
+    input  logic                       drain_en_w,
+    output logic                       drain_en_e,
+    input  logic [$clog2(N_SLOTS)-1:0] drain_slot_w,
+    output logic [$clog2(N_SLOTS)-1:0] drain_slot_e,
 
     // ---- Init (broadcast; tcgen05.cp-style; stable port for v1) --------
     input  logic                       init_en,
     input  logic [$clog2(N_SLOTS)-1:0] init_slot,
     input  logic [31:0]                init_data,
 
-    // ---- Scrub (broadcast, one-shot from reset_seq) --------------------
-    input  logic                       scrub_en
+    // ---- Scrub (W -> E abutment feedthrough) ---------------------------
+    input  logic                       scrub_en_w,
+    output logic                       scrub_en_e
 );
+
+    // ---- Feedthrough wires (zero-delay pass-through) ------------------
+    assign reset_e      = reset_w;
+    assign drain_en_e   = drain_en_w;
+    assign drain_slot_e = drain_slot_w;
+    assign scrub_en_e   = scrub_en_w;
 
     // ---- Storage ------------------------------------------------------
     logic [31:0] storage [N_SLOTS];
@@ -105,7 +128,7 @@ module mac_tmem_cell #(
     // ---- Sequential ---------------------------------------------------
     integer s;
     always_ff @(posedge clk) begin
-        if (reset) begin
+        if (reset_w) begin
             drain_out    <= 32'd0;
             compute_pipe <= 1'b0;
             a_pipe       <= 8'd0;
@@ -115,7 +138,7 @@ module mac_tmem_cell #(
             // Storage contents preserved across `reset`; zero via scrub_en.
         end else begin
             // 1. Storage commit (mutex via spec).
-            if (scrub_en) begin
+            if (scrub_en_w) begin
                 for (s = 0; s < N_SLOTS; s = s + 1) begin
                     storage[s] <= 32'd0;
                 end
@@ -133,8 +156,8 @@ module mac_tmem_cell #(
             accum_pipe   <= accum_in;
 
             // 3. Drain: either inject storage[drain_slot] OR forward south.
-            if (drain_en) begin
-                drain_out <= storage[drain_slot];
+            if (drain_en_w) begin
+                drain_out <= storage[drain_slot_w];
             end else begin
                 drain_out <= drain_in;
             end
@@ -144,10 +167,10 @@ module mac_tmem_cell #(
     // ---- Synthesizable assertions (sim-only) --------------------------
 `ifndef SYNTHESIS
     always_ff @(posedge clk) begin
-        if (!reset) begin
-            assert (!(scrub_en && compute_in))
+        if (!reset_w) begin
+            assert (!(scrub_en_w && compute_in))
                 else $fatal(1, "mac_tmem_cell: scrub_en concurrent with compute_in");
-            assert (!(scrub_en && init_en))
+            assert (!(scrub_en_w && init_en))
                 else $fatal(1, "mac_tmem_cell: scrub_en concurrent with init_en");
             assert (!(init_en && compute_in))
                 else $fatal(1, "mac_tmem_cell: init_en concurrent with compute_in");
