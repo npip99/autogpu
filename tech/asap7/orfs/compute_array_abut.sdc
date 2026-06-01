@@ -31,3 +31,17 @@ set_output_delay [expr $clk_period * $clk_io_pct] -clock $clk_name [all_outputs]
 set_false_path -through [get_pins -hierarchical *u_cell/reset_w]
 set_false_path -through [get_pins -hierarchical *u_cell/drain_slot_w*]
 set_false_path -through [get_pins -hierarchical *u_cell/scrub_en_w]
+
+# Block-level I/O false-paths — same scope-shift as compute_array.sdc
+# (PR #27 / issue #25). Without these, block-level STA tries to close
+# chip-IO-to-internal-flop paths using the unrealistic per-port reference
+# clock (no insertion delay at the port, ~ns of insertion at the flop).
+# Result: massive bogus hold violations (#40's compute_array_abut_tiny
+# 4×4 saw 336 hold viol + 2778 buffers + RSZ-0060 max-buffer-count kill
+# at CTS without these). Real IO timing closes at chip_top via the
+# abstract .lib's flop-edge-relative arcs — defer to #28.
+set io_data_inputs [all_inputs -no_clocks]
+set_false_path -hold  -from $io_data_inputs
+set_false_path -hold  -to   [all_outputs]
+set_false_path -setup -from $io_data_inputs
+set_false_path -setup -to   [all_outputs]
