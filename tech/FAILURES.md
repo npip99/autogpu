@@ -4,6 +4,13 @@ Quick lookup for the failure codes we keep seeing, with the actual root
 causes we found and the fixes we applied. When a failure recurs, find the
 matching entry rather than re-debugging from scratch.
 
+**For a NEW failure not listed here, read `RCA_DISCIPLINE.md` FIRST.**
+That file describes the never-guess diagnosis process — capture symptom,
+perf-sample the dominant function, gdb-identify the specific stuck
+object, form ONE testable hypothesis, design an experiment, apply
+fix-vs-workaround explicitly. Every claim in a diagnosis must cite the
+evidence on the same line.
+
 For render/analysis-script bugs (hardcoded coords, matplotlib slowness,
 heatmap CSV caveats) see `scripts/README.md` section 10.
 
