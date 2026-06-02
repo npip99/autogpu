@@ -42,6 +42,13 @@ guessed again. Iterate.
    applying. Workarounds are valid when paired with a tracked issue to
    come back to the real cause.
 
+6. **When a build is stuck (slow or not advancing), RCA first, kill second.**
+   Let it keep running while you investigate (logs, metrics JSON, partial
+   reports). Kill only once RCA has produced either (a) an actual fix to
+   retry with, or (b) a new diagnostic / instrumentation to add so the
+   next iteration captures what this run was missing. Don't kill on
+   suspicion alone — that just resets the clock without changing anything.
+
 ## The process
 
 ### 1. Capture the symptom
