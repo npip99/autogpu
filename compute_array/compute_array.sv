@@ -397,7 +397,10 @@ module compute_array #(
                 assign sa_chain_w_s[gi_a] = sa_chain_e_n[gi_a-1];
             end
             assign clk_chain_a_w[gi_a] = (gi_a == 0) ? clk : clk_chain_a_e[gi_a-1];
-            skew_lane_a #(.CHAIN_WIDTH(CHAIN_W)) u_a (
+            // CHAIN_WIDTH is fixed at 260 in the hardened skew_lane_a macro
+            // (compile-time default); yosys can't pass parameters into a
+            // hardened black box at synth.
+            skew_lane_a u_a (
                 .clk_w      (clk_chain_a_w[gi_a]),
                 .clk_e      (clk_chain_a_e[gi_a]),
                 .reset      (reset),
@@ -449,7 +452,7 @@ module compute_array #(
                 assign sb_chain_w_w[gj_b] = sb_chain_e_e[gj_b-1];
             end
             assign clk_chain_b_w[gj_b] = (gj_b == 0) ? clk : clk_chain_b_e[gj_b-1];
-            skew_lane_b #(.CHAIN_WIDTH(CHAIN_W)) u_b (
+            skew_lane_b u_b (
                 .clk_w      (clk_chain_b_w[gj_b]),
                 .clk_e      (clk_chain_b_e[gj_b]),
                 .reset      (reset),
@@ -547,9 +550,8 @@ module compute_array #(
                     .drain_en_e   (drain_en_chain_e  [gi][gj]),
                     .drain_slot_w (drain_slot_chain_w[gi][gj]),
                     .drain_slot_e (drain_slot_chain_e[gi][gj]),
-                    .init_en      (1'b0),
-                    .init_slot    ('0),
-                    .init_data    (32'd0),
+                    // init_* ports removed from mac_tmem_cell (#40
+                    // take-13 fix, INVARIANTS.md R4a).
                     .scrub_en_w   (scrub_en_chain_w  [gi][gj]),
                     .scrub_en_e   (scrub_en_chain_e  [gi][gj])
                 );
@@ -558,13 +560,18 @@ module compute_array #(
     endgenerate
 
     // ------------------------------------------------------------------
-    // Chip drain output = top row's drain_out (gated by drain_row_valid).
+    // Chip drain output = top row's drain_out (UNGATED — per R5 in
+    // tech/INVARIANTS.md). Earlier this was gated by drain_row_valid
+    // for "clean waveforms" during invalid cycles, costing 1024 AND2x2
+    // cells at parent. The receiver (store.sv:193) gates its write
+    // enable on drain_row_valid, so the data lines are don't-care
+    // when valid is low. Outputting raw mac data + valid flag is
+    // standard handshake convention.
     // ------------------------------------------------------------------
     genvar gj_drain;
     generate
         for (gj_drain = 0; gj_drain < MMA_N; gj_drain++) begin : g_drain_top
-            assign drain_row_data[gj_drain*32 +: 32] =
-                drain_row_valid ? drain_pipe[0][gj_drain] : 32'd0;
+            assign drain_row_data[gj_drain*32 +: 32] = drain_pipe[0][gj_drain];
         end
     endgenerate
 

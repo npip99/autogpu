@@ -48,6 +48,7 @@ for d in gmem smem barrier mac_tmem_cell compute_array load store reset_seq cmdp
 | `tech/README.md`               | Tape-out flow. Start with `tech/sky130/smoke/` to validate your synthesis toolchain. |
 | `tech/FAILURES.md`             | **Debug lookup.** OpenROAD/OpenLane error codes we've hit, with root causes and fixes. Grep this before re-debugging. |
 | `tech/RCA_DISCIPLINE.md`       | **Never-guess diagnosis process.** Read FIRST for any new failure not in FAILURES.md. Every causal claim must cite evidence on the same line. |
+| `tech/INVARIANTS.md`           | **High-level build-system + RTL goals** that must always hold (idempotent builds, abutment-only parents, etc.). Each invariant has a "how to check" verifiable line. |
 | `tech/asap7/problems/`         | Long-form postmortems for asap7 P&R issues (one file per issue: PDN, hold, LVS, antenna, IR, abutment, …). |
 | `tech/asap7/PDK_GAPS.md`       | asap7 PDK limitations that block sign-off (antenna, RC extraction, …). |
 | `tech/asap7/DESIGN.md`         | ORFS design constraints, layer-stack decisions, PDN strategy. |

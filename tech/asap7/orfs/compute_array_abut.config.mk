@@ -31,16 +31,12 @@ export SDC_FILE      = /work/tech/asap7/orfs/compute_array_abut.sdc
 # Mac grid fits in x=[126.27, 1232.19], y=[126.27, 1232.19]; cmd_unit
 # at (40,40), skew_a column at x=94.895, skew_b row at y=94.895.
 export FLOORPLAN_DEF =
-# Bumped 1300→1500 to give E+N perimeter strips ~270 µm of empty routing
-# room. Mac mesh stays in SW (per macro_placement.tcl hardcoded coords:
-# mac at x,y ∈ [126.27, 1232.19]). The previous 1300×1300 left only ~68 µm
-# of E/N strip — too tight for the maze router to find detours around
-# congestion on the 8K-fanout chip clk net (perf showed iter 16 spent
-# 97% of CPU in mazeRouteMSMDOrder3D, never converging). W/S strips
-# stay tight (IO_CONSTRAINTS pins SMEM/cmd to W, drain to S — those
-# nets only have short trips to make).
-export DIE_AREA   = 0 0 1500 1500
-export CORE_AREA  = 5 5 1495 1495
+# B6: back to 1300×1300 (pure abutment chain removed the resizer buffer
+# congestion that made the 1500×1500 workaround necessary). Mac grid is
+# at x=[134.895, 1240.815] per the regenerated macro_placement.tcl, so
+# 1300 leaves ~60 µm E/N strip + ~135 µm W/S strip (cmd_unit + skew).
+export DIE_AREA   = 0 0 1300 1300
+export CORE_AREA  = 5 5 1295 1295
 
 # Hardened leaf macros.
 # Tile uses the post-processed mac_tmem_cell_tile.lef (OBS stripped to M3).
@@ -102,4 +98,22 @@ export SKIP_LAST_GASP ?= 1
 # /OpenROAD-flow-scripts/flow/scripts/variables.yaml when in doubt.
 # HOLD_SLACK_MARGIN is no longer needed (parent pa_chain is gone in B4,
 # no parent/macro clock-skew hold storm).
-export GLOBAL_ROUTE_ARGS = -allow_congestion -congestion_iterations 5 -congestion_report_iter_step 5 -verbose
+# Take 13: remove GRT iter cap to let GRT converge naturally. Previous
+# attempts capped at 5 iters and used -allow_congestion, but the post-
+# recover_power incremental GRT call doesn't accept those args and
+# fails with GRT-0116 whenever first-pass GRT leaves residual overflow.
+# With B6's reduced parent fanout + HOLD_SLACK_MARGIN limiting resizer
+# buffer insertion, GRT should converge in reasonable time. If not,
+# diagnose_grt.sh will identify what's actually congesting.
+# export GLOBAL_ROUTE_ARGS = -allow_congestion -congestion_iterations 5 -congestion_report_iter_step 5 -verbose
+export SKIP_INCREMENTAL_REPAIR = 1
+
+# Take 11 had 350 hold-violated endpoints post-CTS → resizer inserted
+# hold buffers (250+ visible at W mac boundary) → GRT-0116 at post-
+# recover_power incremental call. HOLD_SLACK_MARGIN=-2000 ps tells the
+# resizer to stop chasing hold below -2 ns of slack, which leaves real
+# violations un-buffered for chip_top to clean up via clock-tree
+# balancing or post-place CTS optimization. Workaround — real fix is
+# B7: tighten skew_lane's internal clock distribution so adjacent
+# chain registers see matched insertion delay.
+export HOLD_SLACK_MARGIN = -2000

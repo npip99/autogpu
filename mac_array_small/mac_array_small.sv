@@ -124,9 +124,7 @@ module mac_array_small #(
                     .drain_en_e   (drain_en_chain_e  [gi][gj]),
                     .drain_slot_w (drain_slot_chain_w[gi][gj]),
                     .drain_slot_e (drain_slot_chain_e[gi][gj]),
-                    .init_en      (1'b0),
-                    .init_slot    ('0),
-                    .init_data    (32'd0),
+                    // init_* ports removed from mac_tmem_cell (#40, INVARIANTS R4a)
                     .scrub_en_w   (scrub_en_chain_w  [gi][gj]),
                     .scrub_en_e   (scrub_en_chain_e  [gi][gj])
                 );

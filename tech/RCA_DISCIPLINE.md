@@ -165,6 +165,44 @@ the net was created by the resizer when it inserted a buffer. Then the
 critical-path entries in `3_resizer.rpt` tell you which RTL signal that
 buffer chain belongs to.
 
+#### Tracing a specific net to its RTL signal via OpenROAD TCL
+
+When the congestion report names a net but `3_resizer.rpt` doesn't
+cover it (or it's a TIE-cell-driven net, dummy buffer, etc.), query
+the ODB directly. Useful when the resizer report's critical-path
+samples don't cover the actual congestion source — you can pick ANY
+specific net from `congestion-N.rpt`'s `srcs:` list and trace it.
+
+```tcl
+read_db /work/build/orfs/results/asap7/<design>/base/3_place.odb
+set block [ord::get_db_block]
+set net [$block findNet $net_name]
+foreach iterm [$net getITerms] {
+    set inst [$iterm getInst]
+    set pin_name [[$iterm getMTerm] getName]
+    set master_name [[$inst getMaster] getName]
+    set bbox [$inst getBBox]
+    set x [expr [$bbox xMin] / 1000.0]
+    set y [expr [$bbox yMin] / 1000.0]
+    puts "  [$inst getName] / $pin_name @ ($x, $y) master=$master_name"
+}
+```
+
+Run via:
+```bash
+sg docker -c "docker run --rm --user $(id -u):$(id -g) \
+    -v $(pwd):/work -v /tmp/trace.tcl:/tmp/trace.tcl \
+    openroad/orfs@sha256:cf4186a5e6a52eddcad1e53e55e1571dbd6711a8e5e687cdb2a8bdc62bc20f1d \
+    /OpenROAD-flow-scripts/tools/install/OpenROAD/bin/openroad -exit -no_init -no_splash /tmp/trace.tcl"
+```
+
+Used 2026-06-02 to identify the W/E mac mesh boundary congestion as
+TIE cells driving mac_tmem_cell.init_data pins — 34,000 TIE→init
+wires from parent perimeter into mac mesh interior. Could not have
+been identified from `congestion-N.rpt` alone (it shows net IDs and
+bboxes but not what the net DOES). Led to INVARIANTS.md R4a (don't
+expose unused ports) + the mac_tmem_cell port pruning.
+
 ### 5. Form ONE testable hypothesis
 
 After steps 1-4 you have:
@@ -317,6 +355,82 @@ inside one macro and routed only ~35 µm to the next macro's chain
 input. No long fanouts ANYWHERE — not from cmd_unit, not from any
 parent flop. This is the only structure where the placer's freedom and
 the macro flop count are both optimal.
+
+### Session 2026-06-02 — #40 B6 takes 7/8/9 ran B4 silently (sv2v staleness)
+
+- Symptom: B6 RTL added 260-bit chain ports to skew_lane_a/b + chain
+  wiring in compute_array.sv. Three 32×32 build attempts (takes 7, 8, 9)
+  all failed at GRT with the SAME failure pattern as the previous B4
+  attempts — long buffer chain on push_now from u_cmd to skew_a[31].
+- Evidence captured: resizer report showed `u_cmd/push_now_o → ~14
+  buffer cells → gen_a_skew[31].u_a/push_now → edge_byte → mac[31][0]`
+  as a SINGLE-CYCLE combinational path. That's the B4 fan-out pattern,
+  not B6's registered chain. ✓
+- Claim made: "abstract .lib of skew_lane treats chain as combinational"
+  — DISPROVEN by inspecting the .lib (`chain_e_n[0]` has correct
+  `timing { related_pin: clk_w; timing_type: rising_edge }` clk-to-Q arc).
+- Root cause (found by inspecting mtimes):
+  `build/sv2v/chip_top_bcast1.v` mtime was BEFORE the B6 RTL edits.
+  The Makefile target `sv2v-bcast-sweep` (which produces
+  `chip_top_bcast1.v`) had not been re-run after I modified the SV
+  sources. The 32×32 build was compiling against a stale chip_top
+  that still had B4's compute_array logic. The hardened skew_lane
+  macros DID have B6's chain ports — but compute_array.v never
+  connected them, so the chain register inputs floated and the build
+  silently fell back to the B4 broadcast pattern.
+- I had run `make sv2v` (produces `chip_top.v` for standalone macro
+  hardening, MMA=4 tiny) but NOT `make sv2v-bcast-sweep` (produces
+  `chip_top_bcast{0,1,2,3}.v` for compute_array_abut). Different
+  targets, different outputs.
+- Lesson: **before any 32×32 build, verify the sv2v output mtime is
+  newer than every modified RTL file**. The build system doesn't
+  cross-check this. Specifically for compute_array_abut, the relevant
+  artifact is `build/sv2v/chip_top_bcast1.v`. Recipe to add to every
+  pre-launch checklist:
+
+```bash
+ls -la build/sv2v/chip_top_bcast1.v \
+       compute_array/compute_array.sv \
+       skew_lane/*.sv \
+       cmd_unit/cmd_unit.sv \
+       mac_tmem_cell/mac_tmem_cell.sv
+# verify chip_top_bcast1.v mtime is the most recent
+```
+
+  If chip_top_bcast1.v is older than ANY RTL source, run:
+```bash
+make -C tech/sky130 sv2v-bcast-sweep
+```
+  BEFORE launching the build.
+
+  This should ideally be enforced by the Makefile chain
+  (run.sh should depend on sv2v output being newer than RTL).
+  Tracked separately.
+
+### Pattern: yosys cannot pass parameters into a hardened (black-box) macro
+
+Bit me TWICE in #40 (B5 cmd_unit BCAST_PIPE and B6 skew_lane CHAIN_WIDTH).
+When a macro has been hardened — its LEF + abstract .lib are loaded
+as a black box during compute_array synth — yosys treats the cell as
+opaque. Yosys then errors:
+
+```
+ERROR: Module `<macro>' referenced in module `<parent>' in cell `<inst>'
+       does not have a parameter named '<NAME>'.
+```
+
+even when the SV source declares the parameter. The fix is to NOT pass
+parameters at instantiation. Bake the value in via:
+- the macro's standalone sv2v command (`-D NAME=VALUE`), OR
+- the parameter's default value in the macro's SV (`parameter int NAME = K`)
+
+The hardened LEF/.lib captures one chosen value; subsequent
+instantiations must match that value implicitly.
+
+If you genuinely need a parameterized macro at parent synth, you must
+either harden it separately for each value (creating multiple LEFs),
+or accept full Verilog inclusion (`SYNTH_HIERARCHICAL=1` + no LEF) so
+the parameter can be resolved.
 
 ### Mistake patterns to internalize
 

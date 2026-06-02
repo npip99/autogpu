@@ -39,9 +39,7 @@ module dense_grid #(parameter int N = 32) (
                     .drain_en_e   (),
                     .drain_slot_w (2'd0),
                     .drain_slot_e (),
-                    .init_en      (1'b0),
-                    .init_slot    (2'd0),
-                    .init_data    (32'd0),
+                    // init_* ports removed from mac_tmem_cell (#40, INVARIANTS R4a)
                     .scrub_en_w   (scrub_en),
                     .scrub_en_e   ()
                 );

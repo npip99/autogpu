@@ -44,6 +44,33 @@ set_dont_touch [get_nets clk_chain_a_w*]
 set_dont_touch [get_nets clk_chain_b_e*]
 set_dont_touch [get_nets clk_chain_b_w*]
 
+# B6 (#40): multicycle path through the skew_a / skew_b broadcast chain.
+#
+# Each skew_lane_a/b instance has an INTERNAL 260-bit chain register
+# (chain_w_s → chain_e_n, registered on clk_w). The chain spans 32
+# instances, so u_cmd's push_a_bytes output reaches skew_a[31].chain_w_s
+# 32 cycles after u_cmd emits it. The systolic schedule is correct by
+# construction.
+#
+# BUT — ORFS `write_timing_model` produces an abstract skew_lane LEF/.lib
+# that does NOT expose the chain register's pin-to-pin sequential arc.
+# Parent STA sees chain_w_s → chain_e_n as COMBINATIONAL, treating the
+# full u_cmd → skew_a[31] route as a single-cycle path (1500 µm wire).
+# The resizer then inserts buffer chains to "fix" this nonexistent
+# violation, congesting the W mac boundary at GRT.
+#
+# set_multicycle_path tells parent STA the truth: the path is 32 cycles
+# wide. setup 32, hold 31 (standard shift-register pattern).
+#
+# TODO before tape-out: replace this constraint with proper abstract-lib
+# generation that exposes the chain register's sequential arcs natively.
+# Until then, the multicycle is the industry-standard workaround for
+# hardened-macro shift registers. See tech/RCA_DISCIPLINE.md.
+set_multicycle_path 32 -setup -through [get_pins -hierarchical *u_a/chain_w_s*]
+set_multicycle_path 31 -hold  -through [get_pins -hierarchical *u_a/chain_w_s*]
+set_multicycle_path 32 -setup -through [get_pins -hierarchical *u_b/chain_w_w*]
+set_multicycle_path 31 -hold  -through [get_pins -hierarchical *u_b/chain_w_w*]
+
 # Block-level I/O false-paths — same scope-shift as compute_array.sdc
 # (PR #27 / issue #25). Without these, block-level STA tries to close
 # chip-IO-to-internal-flop paths using the unrealistic per-port reference

@@ -85,10 +85,18 @@ module mac_tmem_cell #(
     input  logic [$clog2(N_SLOTS)-1:0] drain_slot_w,
     output logic [$clog2(N_SLOTS)-1:0] drain_slot_e,
 
-    // ---- Init (broadcast; tcgen05.cp-style; stable port for v1) --------
+    // ---- Init (sim/test only — #40 take-13 fix, INVARIANTS.md R4a).
+    // SYNTHESIS-conditional ports: verilator/cocotb TB sees them (no
+    // SYNTHESIS define → ports present, TB can preload storage for
+    // directed tests). Yosys/ORFS hardening sees `SYNTHESIS` defined →
+    // ports absent → no 34K TIE cells at the integrator (compute_array
+    // never used init anyway). If a production consumer ever needs init,
+    // promote the ports to permanent + verify the integration cost.
+`ifndef SYNTHESIS
     input  logic                       init_en,
     input  logic [$clog2(N_SLOTS)-1:0] init_slot,
     input  logic [31:0]                init_data,
+`endif
 
     // ---- Scrub (W -> E abutment feedthrough) ---------------------------
     input  logic                       scrub_en_w,
@@ -158,8 +166,10 @@ module mac_tmem_cell #(
                 for (s = 0; s < N_SLOTS; s = s + 1) begin
                     storage[s] <= 32'd0;
                 end
+`ifndef SYNTHESIS
             end else if (init_en) begin
                 storage[init_slot] <= init_data;
+`endif
             end else if (compute_in) begin
                 storage[slot_in] <= fma_result;
             end
