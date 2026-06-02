@@ -17,22 +17,14 @@ export PLATFORM       = asap7
 export DESIGN_NAME    = compute_array
 export DESIGN_NICKNAME = compute_array_abut
 
-# Use the chip_top_bcast1 sv2v output (MMA=32, BCAST_PIPE=1) — same input
-# as the proven non-abutted compute_array.config.mk so RTL hardens
-# identically up through synthesis.
-# BCAST_PIPE=0 (not 1). PR #27's BCAST_PIPE=1 was the right answer for
-# the OLD fan-out broadcast topology where cmd_unit drove 32 skew_lanes via
-# one corner-to-corner wire (~1500 µm; setup was -451 ps without the pipe).
-# In the #34 chain-restructure + #40 abutment-feedthrough topology, cmd_unit
-# drives push_byte → skew_a[0] (~50 µm), then skew_a[i] → skew_a[i+1] via
-# 35 µm abutment hops. No long fan-out wire. The pa_pipe[0] parent
-# register (capture endpoint at BCAST_PIPE>0) was the source of 26K hold
-# buffer insertions at 32×32 due to clock-skew between cmd_unit's internal
-# CTS (~ns) and parent CTS (parent grew at 32×32 to match). With
-# BCAST_PIPE=0 the launch (cmd_unit internal flop) and capture (skew_a[0]
-# internal flop) both sit inside hardened macros with similar internal CTS
-# insertion → no skew → no hold storm.
-export VERILOG_FILES = /work/build/sv2v/chip_top_bcast0.v
+# BCAST_PIPE=1 (B4 / PR #41 follow-up): cmd_unit's push_a_bytes is
+# registered once at cmd_unit's output edge before fanning out to the 32
+# skew_lanes. Same fix PR #27 used to close the original 1500 µm
+# fan-out's -451 ps setup violation. Required after we removed the
+# parent pa_chain shift register (which had previously served as the
+# fan-out break) — see compute_array.sv comment block above the
+# skew_lane instantiation for the full rationale.
+export VERILOG_FILES = /work/build/sv2v/chip_top_bcast1.v
 export SDC_FILE      = /work/tech/asap7/orfs/compute_array_abut.sdc
 
 # Floorplan numbers must match compute_array_abut.macro_placement.tcl.
@@ -100,21 +92,14 @@ export PDN_TCL = /work/tech/asap7/orfs/compute_array_abut.pdn.tcl
 # need the final timing polish for a candidate tape-out.
 export SKIP_LAST_GASP ?= 1
 
-# Tell the resizer to stop chasing hold below this slack (in ps). At 32×32
-# the parent-level pa_pipe[*] flops capture cmd_unit's registered outputs;
-# cmd_unit's internal CTS adds ~ns of insertion delay while parent CTS has
-# little, so the launch-capture clock skew creates hold violations the
-# resizer can't fully patch (saw WNS=-1813 ps, 26681 hold buffers inserted
-# before RSZ-0060 max-buffer-count kill). -2000 ps lets the resizer stop
-# instead of burning out. WHY: same kind of trade master compute_array
-# made via PR #27 — the real fix is balancing cmd_unit's internal CTS
-# against parent CTS, but that's a separate timing-closure task; for #40
-# we just need geometry + topology to close.
-export HOLD_SLACK_MARGIN = -2000
-
-# Cap GRT extra iterations + allow exit with residual congestion. The 1300×1300
-# build hung iter 16/30 for 78+ min on the 8K-fanout chip clk net (perf:
-# 97% of CPU in grt::FastRouteCore::mazeRouteMSMDOrder3D). Caps stop GRT
-# from chasing every overflow; remaining overflow is handed to DRT which
-# patches it locally instead of globally re-routing the whole clk tree.
-export OR_GLOBAL_ROUTING_ARGS = -allow_congestion -congestion_iterations 5
+# WORKAROUND (#40): GRT iter cap + allow_congestion. Take-4 hit a stuck
+# mazeRouteMSMDOrder3D iter in GRT (perf: 97% CPU, iter stuck >47 min).
+# UNCONFIRMED which specific net causes the spin — see tech/RCA_DISCIPLINE.md
+# for the diagnosis process that should be followed before claiming a
+# root cause. 5-iter cap exits GRT and hands residual overflow to DRT
+# for local fix. ORFS variable is GLOBAL_ROUTE_ARGS (singular ROUTE) —
+# the var that REPLACES the flow's defaults; verify name against
+# /OpenROAD-flow-scripts/flow/scripts/variables.yaml when in doubt.
+# HOLD_SLACK_MARGIN is no longer needed (parent pa_chain is gone in B4,
+# no parent/macro clock-skew hold storm).
+export GLOBAL_ROUTE_ARGS = -allow_congestion -congestion_iterations 5 -congestion_report_iter_step 5 -verbose
