@@ -32,6 +32,18 @@ set_false_path -through [get_pins -hierarchical *u_cell/reset_w]
 set_false_path -through [get_pins -hierarchical *u_cell/drain_slot_w*]
 set_false_path -through [get_pins -hierarchical *u_cell/scrub_en_w]
 
+# skew_a + skew_b clk feedthrough chains: keep CTS/resizer from inserting
+# buffers on the parent-level chain wires (skew_a[i].clk_e → skew_a[i+1].clk_w
+# and same for skew_b). Inserting a buffer would un-match the per-hop
+# insertion delay that the chain achieves by going through one hardened
+# macro per hop. Without this, the resizer's hold-fix pass would chase the
+# parent-CTS skew and re-introduce the same -4ns hold WNS this chain is
+# designed to eliminate.
+set_dont_touch [get_nets clk_chain_a_e*]
+set_dont_touch [get_nets clk_chain_a_w*]
+set_dont_touch [get_nets clk_chain_b_e*]
+set_dont_touch [get_nets clk_chain_b_w*]
+
 # Block-level I/O false-paths — same scope-shift as compute_array.sdc
 # (PR #27 / issue #25). Without these, block-level STA tries to close
 # chip-IO-to-internal-flop paths using the unrealistic per-port reference

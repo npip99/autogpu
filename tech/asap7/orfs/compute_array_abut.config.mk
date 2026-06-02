@@ -20,15 +20,35 @@ export DESIGN_NICKNAME = compute_array_abut
 # Use the chip_top_bcast1 sv2v output (MMA=32, BCAST_PIPE=1) — same input
 # as the proven non-abutted compute_array.config.mk so RTL hardens
 # identically up through synthesis.
-export VERILOG_FILES = /work/build/sv2v/chip_top_bcast1.v
+# BCAST_PIPE=0 (not 1). PR #27's BCAST_PIPE=1 was the right answer for
+# the OLD fan-out broadcast topology where cmd_unit drove 32 skew_lanes via
+# one corner-to-corner wire (~1500 µm; setup was -451 ps without the pipe).
+# In the #34 chain-restructure + #40 abutment-feedthrough topology, cmd_unit
+# drives push_byte → skew_a[0] (~50 µm), then skew_a[i] → skew_a[i+1] via
+# 35 µm abutment hops. No long fan-out wire. The pa_pipe[0] parent
+# register (capture endpoint at BCAST_PIPE>0) was the source of 26K hold
+# buffer insertions at 32×32 due to clock-skew between cmd_unit's internal
+# CTS (~ns) and parent CTS (parent grew at 32×32 to match). With
+# BCAST_PIPE=0 the launch (cmd_unit internal flop) and capture (skew_a[0]
+# internal flop) both sit inside hardened macros with similar internal CTS
+# insertion → no skew → no hold storm.
+export VERILOG_FILES = /work/build/sv2v/chip_top_bcast0.v
 export SDC_FILE      = /work/tech/asap7/orfs/compute_array_abut.sdc
 
 # Floorplan numbers must match compute_array_abut.macro_placement.tcl.
 # Mac grid fits in x=[126.27, 1232.19], y=[126.27, 1232.19]; cmd_unit
 # at (40,40), skew_a column at x=94.895, skew_b row at y=94.895.
 export FLOORPLAN_DEF =
-export DIE_AREA   = 0 0 1300 1300
-export CORE_AREA  = 5 5 1295 1295
+# Bumped 1300→1500 to give E+N perimeter strips ~270 µm of empty routing
+# room. Mac mesh stays in SW (per macro_placement.tcl hardcoded coords:
+# mac at x,y ∈ [126.27, 1232.19]). The previous 1300×1300 left only ~68 µm
+# of E/N strip — too tight for the maze router to find detours around
+# congestion on the 8K-fanout chip clk net (perf showed iter 16 spent
+# 97% of CPU in mazeRouteMSMDOrder3D, never converging). W/S strips
+# stay tight (IO_CONSTRAINTS pins SMEM/cmd to W, drain to S — those
+# nets only have short trips to make).
+export DIE_AREA   = 0 0 1500 1500
+export CORE_AREA  = 5 5 1495 1495
 
 # Hardened leaf macros.
 # Tile uses the post-processed mac_tmem_cell_tile.lef (OBS stripped to M3).
@@ -54,6 +74,11 @@ export ADDITIONAL_GDS = \
 # lanes + 1 cmd_unit). Abutted mac grid, channeled skew/cmd perimeter.
 export MACRO_PLACEMENT_TCL = /work/tech/asap7/orfs/compute_array_abut.macro_placement.tcl
 
+# Pin compute_array's perimeter pins by chip-top adjacency (smem-W, store-S).
+# Eliminates the drain_row_data L-shape wrap-around that was the source of
+# the east-strip congestion at GRT.
+export IO_CONSTRAINTS = /work/tech/asap7/orfs/scripts/compute_array_abut.pins.tcl
+
 # Keep yosys from flattening the hierarchy — the 1089 named instances
 # must stay visible for the macro placer to bind them.
 export SYNTH_HIERARCHICAL = 1
@@ -74,3 +99,22 @@ export PDN_TCL = /work/tech/asap7/orfs/compute_array_abut.pdn.tcl
 # Skip last_gasp on first iteration (saves ~10 min). Re-enable when we
 # need the final timing polish for a candidate tape-out.
 export SKIP_LAST_GASP ?= 1
+
+# Tell the resizer to stop chasing hold below this slack (in ps). At 32×32
+# the parent-level pa_pipe[*] flops capture cmd_unit's registered outputs;
+# cmd_unit's internal CTS adds ~ns of insertion delay while parent CTS has
+# little, so the launch-capture clock skew creates hold violations the
+# resizer can't fully patch (saw WNS=-1813 ps, 26681 hold buffers inserted
+# before RSZ-0060 max-buffer-count kill). -2000 ps lets the resizer stop
+# instead of burning out. WHY: same kind of trade master compute_array
+# made via PR #27 — the real fix is balancing cmd_unit's internal CTS
+# against parent CTS, but that's a separate timing-closure task; for #40
+# we just need geometry + topology to close.
+export HOLD_SLACK_MARGIN = -2000
+
+# Cap GRT extra iterations + allow exit with residual congestion. The 1300×1300
+# build hung iter 16/30 for 78+ min on the 8K-fanout chip clk net (perf:
+# 97% of CPU in grt::FastRouteCore::mazeRouteMSMDOrder3D). Caps stop GRT
+# from chasing every overflow; remaining overflow is handed to DRT which
+# patches it locally instead of globally re-routing the whole clk tree.
+export OR_GLOBAL_ROUTING_ARGS = -allow_congestion -congestion_iterations 5

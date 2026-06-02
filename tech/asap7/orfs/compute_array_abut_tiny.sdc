@@ -20,6 +20,15 @@ set_false_path -through [get_pins -hierarchical *u_cell/reset_w]
 set_false_path -through [get_pins -hierarchical *u_cell/drain_slot_w*]
 set_false_path -through [get_pins -hierarchical *u_cell/scrub_en_w]
 
+# skew_a/skew_b clk feedthrough chains (mirrors compute_array_abut.sdc).
+# At 4×4 scale this is academic — parent CTS to 4 endpoints is balanced
+# enough not to trigger the failure — but we keep the constraint here so
+# the 4×4 sanity check exercises the same architecture as the 32×32 build.
+set_dont_touch [get_nets clk_chain_a_e*]
+set_dont_touch [get_nets clk_chain_a_w*]
+set_dont_touch [get_nets clk_chain_b_e*]
+set_dont_touch [get_nets clk_chain_b_w*]
+
 # Block-level I/O false-paths — same scope-shift as compute_array.sdc
 # (PR #27 / issue #25). At block level the chip-IO ports' input/output
 # delays don't reflect the real chip_top boundary timing; trying to close

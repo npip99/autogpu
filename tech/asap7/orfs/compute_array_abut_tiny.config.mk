@@ -39,6 +39,10 @@ export ADDITIONAL_GDS = \
 export MACRO_PLACEMENT_TCL = /work/tech/asap7/orfs/compute_array_abut_tiny.macro_placement.tcl
 export SYNTH_HIERARCHICAL = 1
 
+# Pin compute_array's perimeter pins by chip-top adjacency (smem-W, store-S).
+# See compute_array_abut.pins.tcl for the rationale.
+export IO_CONSTRAINTS = /work/tech/asap7/orfs/scripts/compute_array_abut.pins.tcl
+
 # Mac tiles abut with zero channel. Skew/cmd have implicit ~10 µm channels
 # (placed at fixed coords in the macro_placement TCL).
 export MACRO_PLACE_HALO    = 0 0

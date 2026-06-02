@@ -410,11 +410,23 @@ module compute_array #(
     // tap_index=0 (skew_lane runs as a live pass-through — the i-cycle
     // systolic delay is now in the chain instead).
     // Outputs feed the west edge of cell (i, 0).
+    //
+    // Clock distribution: chain clk through the skew_a column via the
+    // clk_w/clk_e feedthrough on each hardened skew_lane_a macro (same
+    // pattern as the mac mesh below). Parent CTS only drives skew_a[0];
+    // skew_a[i] for i>0 takes clk from skew_a[i-1].clk_e at the parent
+    // level (a short north-jog wire — set_dont_touch in the SDC keeps
+    // the resizer from inserting buffers and breaking the matched-delay
+    // chain). Without this, parent CTS sees 32 separate skew_a endpoints
+    // and ends up with widely-different insertion delays → hold storm.
     // ------------------------------------------------------------------
     logic [MMA_M-1:0]            edge_compute;
     logic [MMA_M*8-1:0]          edge_a_bytes_flat;
     logic [MMA_M*SLOT_W-1:0]     edge_slot_flat;
     logic [MMA_M-1:0]            edge_accum;
+
+    logic                        clk_chain_a_w [MMA_M-1:0];
+    logic                        clk_chain_a_e [MMA_M-1:0];
 
     genvar gi_a;
     generate
@@ -423,9 +435,10 @@ module compute_array #(
             logic [7:0]            eb;
             logic [SLOT_W-1:0]     es;
             logic                  ea;
+            assign clk_chain_a_w[gi_a] = (gi_a == 0) ? clk : clk_chain_a_e[gi_a-1];
             skew_lane_a u_a (
-                .clk_w      (clk),
-                .clk_e      (),
+                .clk_w      (clk_chain_a_w[gi_a]),
+                .clk_e      (clk_chain_a_e[gi_a]),
                 .reset      (reset),
                 .push_now   (pn_a_chain[gi_a]),
                 .push_byte  (pa_chain[gi_a][gi_a*8 +: 8]),
@@ -447,8 +460,18 @@ module compute_array #(
     // ------------------------------------------------------------------
     // b-side skew_lanes: one per col. Each col j consumes chain stage j;
     // tap_index=0 (live pass-through, j-cycle delay now in the chain).
+    //
+    // Clock distribution: chain clk W→E through the skew_b row via the
+    // clk_w/clk_e feedthrough (mirror of the skew_a column chain above).
+    // The first 32×32 abut run failed CTS with -4216 ps hold WNS on
+    // gen_b_skew[17].u_b/push_byte[5] — parent CTS picked imbalanced trees
+    // to the 32 independent skew_b clk endpoints. This chain reduces
+    // adjacent-skew_b clock-tree skew to one macro's internal CTS delta.
     // ------------------------------------------------------------------
     logic [MMA_N*8-1:0]          edge_b_bytes_flat;
+
+    logic                        clk_chain_b_w [MMA_N-1:0];
+    logic                        clk_chain_b_e [MMA_N-1:0];
 
     genvar gj_b;
     generate
@@ -457,9 +480,10 @@ module compute_array #(
             logic [7:0]            eb;
             logic [SLOT_W-1:0]     es_unused;
             logic                  ea_unused;
+            assign clk_chain_b_w[gj_b] = (gj_b == 0) ? clk : clk_chain_b_e[gj_b-1];
             skew_lane_b u_b (
-                .clk_w      (clk),
-                .clk_e      (),
+                .clk_w      (clk_chain_b_w[gj_b]),
+                .clk_e      (clk_chain_b_e[gj_b]),
                 .reset      (reset),
                 .push_now   (pn_b_chain[gj_b]),
                 .push_byte  (pb_chain[gj_b][gj_b*8 +: 8]),
