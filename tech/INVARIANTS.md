@@ -74,6 +74,17 @@ regions, parent SDC fragments) come from the manifest.
 **Check:** see #43 for the manifest-driven framework spec. Not yet
 landed.
 
+### B6. Long-running ORFS work runs inside `screen`, never raw shell
+
+So the build survives shell disconnect, has an addressable name, and
+can be killed cleanly (raw `pkill` orphans the docker container).
+
+```bash
+screen -dmS harden-<macro> bash -c \
+  'NUM_CORES=4 ./tech/asap7/orfs/run.sh <macro> 2>&1 | tee /tmp/h_<macro>.log'
+# screen -ls | screen -r <name> | screen -X -S <name> quit
+```
+
 ---
 
 ## RTL & macro design
