@@ -17,9 +17,13 @@ export PLATFORM       = asap7
 export DESIGN_NAME    = compute_array
 export DESIGN_NICKNAME = compute_array_abut
 
-# Use the chip_top_bcast1 sv2v output (MMA=32, BCAST_PIPE=1) — same input
-# as the proven non-abutted compute_array.config.mk so RTL hardens
-# identically up through synthesis.
+# BCAST_PIPE=1 (B4 / PR #41 follow-up): cmd_unit's push_a_bytes is
+# registered once at cmd_unit's output edge before fanning out to the 32
+# skew_lanes. Same fix PR #27 used to close the original 1500 µm
+# fan-out's -451 ps setup violation. Required after we removed the
+# parent pa_chain shift register (which had previously served as the
+# fan-out break) — see compute_array.sv comment block above the
+# skew_lane instantiation for the full rationale.
 export VERILOG_FILES = /work/build/sv2v/chip_top_bcast1.v
 export SDC_FILE      = /work/tech/asap7/orfs/compute_array_abut.sdc
 
@@ -27,6 +31,10 @@ export SDC_FILE      = /work/tech/asap7/orfs/compute_array_abut.sdc
 # Mac grid fits in x=[126.27, 1232.19], y=[126.27, 1232.19]; cmd_unit
 # at (40,40), skew_a column at x=94.895, skew_b row at y=94.895.
 export FLOORPLAN_DEF =
+# B6: back to 1300×1300 (pure abutment chain removed the resizer buffer
+# congestion that made the 1500×1500 workaround necessary). Mac grid is
+# at x=[134.895, 1240.815] per the regenerated macro_placement.tcl, so
+# 1300 leaves ~60 µm E/N strip + ~135 µm W/S strip (cmd_unit + skew).
 export DIE_AREA   = 0 0 1300 1300
 export CORE_AREA  = 5 5 1295 1295
 
@@ -54,6 +62,11 @@ export ADDITIONAL_GDS = \
 # lanes + 1 cmd_unit). Abutted mac grid, channeled skew/cmd perimeter.
 export MACRO_PLACEMENT_TCL = /work/tech/asap7/orfs/compute_array_abut.macro_placement.tcl
 
+# Pin compute_array's perimeter pins by chip-top adjacency (smem-W, store-S).
+# Eliminates the drain_row_data L-shape wrap-around that was the source of
+# the east-strip congestion at GRT.
+export IO_CONSTRAINTS = /work/tech/asap7/orfs/scripts/compute_array_abut.pins.tcl
+
 # Keep yosys from flattening the hierarchy — the 1089 named instances
 # must stay visible for the macro placer to bind them.
 export SYNTH_HIERARCHICAL = 1
@@ -74,3 +87,33 @@ export PDN_TCL = /work/tech/asap7/orfs/compute_array_abut.pdn.tcl
 # Skip last_gasp on first iteration (saves ~10 min). Re-enable when we
 # need the final timing polish for a candidate tape-out.
 export SKIP_LAST_GASP ?= 1
+
+# WORKAROUND (#40): GRT iter cap + allow_congestion. Take-4 hit a stuck
+# mazeRouteMSMDOrder3D iter in GRT (perf: 97% CPU, iter stuck >47 min).
+# UNCONFIRMED which specific net causes the spin — see tech/RCA_DISCIPLINE.md
+# for the diagnosis process that should be followed before claiming a
+# root cause. 5-iter cap exits GRT and hands residual overflow to DRT
+# for local fix. ORFS variable is GLOBAL_ROUTE_ARGS (singular ROUTE) —
+# the var that REPLACES the flow's defaults; verify name against
+# /OpenROAD-flow-scripts/flow/scripts/variables.yaml when in doubt.
+# HOLD_SLACK_MARGIN is no longer needed (parent pa_chain is gone in B4,
+# no parent/macro clock-skew hold storm).
+# Take 13: remove GRT iter cap to let GRT converge naturally. Previous
+# attempts capped at 5 iters and used -allow_congestion, but the post-
+# recover_power incremental GRT call doesn't accept those args and
+# fails with GRT-0116 whenever first-pass GRT leaves residual overflow.
+# With B6's reduced parent fanout + HOLD_SLACK_MARGIN limiting resizer
+# buffer insertion, GRT should converge in reasonable time. If not,
+# diagnose_grt.sh will identify what's actually congesting.
+# export GLOBAL_ROUTE_ARGS = -allow_congestion -congestion_iterations 5 -congestion_report_iter_step 5 -verbose
+export SKIP_INCREMENTAL_REPAIR = 1
+
+# Take 11 had 350 hold-violated endpoints post-CTS → resizer inserted
+# hold buffers (250+ visible at W mac boundary) → GRT-0116 at post-
+# recover_power incremental call. HOLD_SLACK_MARGIN=-2000 ps tells the
+# resizer to stop chasing hold below -2 ns of slack, which leaves real
+# violations un-buffered for chip_top to clean up via clock-tree
+# balancing or post-place CTS optimization. Workaround — real fix is
+# B7: tighten skew_lane's internal clock distribution so adjacent
+# chain registers see matched insertion delay.
+export HOLD_SLACK_MARGIN = -2000

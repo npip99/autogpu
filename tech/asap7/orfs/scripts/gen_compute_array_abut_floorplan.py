@@ -18,7 +18,7 @@ from pathlib import Path
 
 ROWS, COLS = 32, 32
 TILE     = 34.56     # mac_tmem_cell_tile width = height (exact, abutment pitch)
-SKEW_W   = 21.375    # skew_lane_a/b (square)
+SKEW_W   = 30.0      # skew_lane_a/b (square — grown in B6 for 260-bit chain register)
 CMD      = 44.895    # cmd_unit (square)
 EDGE     = 40.0      # die edge margin
 GAP_CS   = 10.0      # cmd ↔ skew gap

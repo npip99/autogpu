@@ -1,8 +1,8 @@
 # Build helpers for sky130 synthesis.
 #
 # Usage:
-#   make sv2v   # preprocess SystemVerilog -> plain Verilog
-#   make synth  # run OpenLane (depends on sv2v output)
+#   make sv2v -D SYNTHESIS   # preprocess SystemVerilog -> plain Verilog
+#   make synth  # run OpenLane (depends on sv2v -D SYNTHESIS output)
 
 REPO_ROOT := $(realpath $(dir $(lastword $(MAKEFILE_LIST)))../..)
 BUILD_DIR := $(REPO_ROOT)/build/sv2v
@@ -35,7 +35,7 @@ SV_SOURCES := \
     $(REPO_ROOT)/reset_seq/reset_seq.sv \
     $(REPO_ROOT)/top/chip_top.sv
 
-.PHONY: sv2v synth clean
+.PHONY: sv2v -D SYNTHESIS synth clean
 
 sv2v: $(BUILD_DIR)/chip_top.v $(BUILD_DIR)/mac_array_small.v $(BUILD_DIR)/tile_buf_8row.v $(BUILD_DIR)/cmd_unit.v $(BUILD_DIR)/skew_lane_a.v $(BUILD_DIR)/skew_lane_b.v $(BUILD_DIR)/smem.v $(BUILD_DIR)/smem_asap7.v $(BUILD_DIR)/smem_bank_asap7.v $(BUILD_DIR)/chip_top_asap7_tiny.v
 
@@ -46,7 +46,7 @@ $(BUILD_DIR)/chip_top.v: $(SV_SOURCES)
 	# arrays like smem's bank_rdata, which Yosys 0.46 rejects.
 	# -D USE_SKY130_MACRO makes sram_1rw instantiate the sky130 SRAM macro
 	# instead of the FF behavioral fallback (validated in smem cocotb).
-	sv2v -I $(REPO_ROOT)/common/fpnew -D USE_SKY130_MACRO --exclude=Always $(SV_SOURCES) --top=chip_top -w $@
+	sv2v -D SYNTHESIS -I $(REPO_ROOT)/common/fpnew -D USE_SKY130_MACRO --exclude=Always $(SV_SOURCES) --top=chip_top -w $@
 
 # Sweep target — generate chip_top.v variants with different broadcast
 # pipeline depths in compute_array. Each variant produces a separate
@@ -57,7 +57,7 @@ sv2v-bcast-sweep: $(BUILD_DIR)/chip_top_bcast0.v $(BUILD_DIR)/chip_top_bcast1.v 
 
 $(BUILD_DIR)/chip_top_bcast%.v: $(SV_SOURCES)
 	@mkdir -p $(BUILD_DIR)
-	sv2v -I $(REPO_ROOT)/common/fpnew -D USE_SKY130_MACRO -D BCAST_PIPE=$* --exclude=Always $(SV_SOURCES) --top=chip_top -w $@
+	sv2v -D SYNTHESIS -I $(REPO_ROOT)/common/fpnew -D USE_SKY130_MACRO -D BCAST_PIPE=$* --exclude=Always $(SV_SOURCES) --top=chip_top -w $@
 
 # Tiny compute_array (MMA_M=MMA_N=4 → 16 mac cells instead of 1024) for
 # fast iteration on hierarchical-PnR bugs. Same broadcast topology as the
@@ -85,53 +85,53 @@ TINY_SOURCES := \
 
 $(BUILD_DIR)/compute_array_tiny_bcast%.v: $(TINY_SOURCES)
 	@mkdir -p $(BUILD_DIR)
-	sv2v -I $(REPO_ROOT)/common/fpnew -D MMA_M=4 -D MMA_N=4 -D MMA_K=4 -D BCAST_PIPE=$* --exclude=Always $(TINY_SOURCES) --top=compute_array -w $@
+	sv2v -D SYNTHESIS -I $(REPO_ROOT)/common/fpnew -D MMA_M=4 -D MMA_N=4 -D MMA_K=4 -D BCAST_PIPE=$* --exclude=Always $(TINY_SOURCES) --top=compute_array -w $@
 
-# Standalone sv2v output for tile_buf_8row — the 8-row × 1024-bit banked
+# Standalone sv2v -D SYNTHESIS output for tile_buf_8row — the 8-row × 1024-bit banked
 # storage submodule. Hardens once as a leaf macro; store.sv will later
 # instantiate 4 of these as hardened children.
 $(BUILD_DIR)/tile_buf_8row.v: $(REPO_ROOT)/tile_buf_8row/tile_buf_8row.sv
 	@mkdir -p $(BUILD_DIR)
-	sv2v --exclude=Always $^ --top=tile_buf_8row -w $@
+	sv2v -D SYNTHESIS --exclude=Always $^ --top=tile_buf_8row -w $@
 
-# Standalone sv2v output for the cmd_unit submodule: one control block,
+# Standalone sv2v -D SYNTHESIS output for the cmd_unit submodule: one control block,
 # the only non-array macro inside compute_array.
 $(BUILD_DIR)/cmd_unit.v: $(REPO_ROOT)/cmd_unit/cmd_unit.sv
 	@mkdir -p $(BUILD_DIR)
-	sv2v --exclude=Always $^ --top=cmd_unit -w $@
+	sv2v -D SYNTHESIS --exclude=Always $^ --top=cmd_unit -w $@
 
 $(BUILD_DIR)/skew_lane_a.v: $(REPO_ROOT)/skew_lane/skew_lane.sv $(REPO_ROOT)/skew_lane/skew_lane_a.sv
 	@mkdir -p $(BUILD_DIR)
-	sv2v --exclude=Always $^ --top=skew_lane_a -w $@
+	sv2v -D SYNTHESIS --exclude=Always $^ --top=skew_lane_a -w $@
 
 $(BUILD_DIR)/skew_lane_b.v: $(REPO_ROOT)/skew_lane/skew_lane.sv $(REPO_ROOT)/skew_lane/skew_lane_b.sv
 	@mkdir -p $(BUILD_DIR)
-	sv2v --exclude=Always $^ --top=skew_lane_b -w $@
+	sv2v -D SYNTHESIS --exclude=Always $^ --top=skew_lane_b -w $@
 
-# Standalone sv2v output for smem — only depends on sram_1rw.sv.
+# Standalone sv2v -D SYNTHESIS output for smem — only depends on sram_1rw.sv.
 # Avoids parsing all of chip_top.v which makes yosys mem2reg + opt
 # passes ~10× slower (had smem stuck at stage 02 for 30+ min).
 $(BUILD_DIR)/smem.v: $(REPO_ROOT)/smem/smem.sv $(REPO_ROOT)/smem/smem_bank.sv $(REPO_ROOT)/mem/sram_1rw.sv
 	@mkdir -p $(BUILD_DIR)
-	sv2v -D USE_SKY130_MACRO --exclude=Always $^ --top=smem -w $@
+	sv2v -D SYNTHESIS -D USE_SKY130_MACRO --exclude=Always $^ --top=smem -w $@
 
 # asap7 variant — same sources but USE_ASAP7_FAKERAM selects the
 # ORFS-shipped fakeram7_256x32 macro in sram_1rw.sv. Distinct output path
-# because sky130 and asap7 macro names differ and the chip_top sv2v output
+# because sky130 and asap7 macro names differ and the chip_top sv2v -D SYNTHESIS output
 # can't host both.
 $(BUILD_DIR)/smem_asap7.v: $(REPO_ROOT)/smem/smem.sv $(REPO_ROOT)/smem/smem_bank.sv $(REPO_ROOT)/mem/sram_1rw.sv
 	@mkdir -p $(BUILD_DIR)
-	sv2v -D USE_ASAP7_FAKERAM --exclude=Always $^ --top=smem -w $@
+	sv2v -D SYNTHESIS -D USE_ASAP7_FAKERAM --exclude=Always $^ --top=smem -w $@
 
-# Standalone sv2v output for smem_bank — single hardened bank macro
+# Standalone sv2v -D SYNTHESIS output for smem_bank — single hardened bank macro
 # containing one fakeram7 + per-output-dword gating logic. Used by the
 # bank-side gating refactor of smem.sv to spread the bank_rdata mux
 # fanout across 32 hardened bank instances instead of a central mux.
 $(BUILD_DIR)/smem_bank_asap7.v: $(REPO_ROOT)/smem/smem_bank.sv $(REPO_ROOT)/mem/sram_1rw.sv
 	@mkdir -p $(BUILD_DIR)
-	sv2v -D USE_ASAP7_FAKERAM --exclude=Always $^ --top=smem_bank -w $@
+	sv2v -D SYNTHESIS -D USE_ASAP7_FAKERAM --exclude=Always $^ --top=smem_bank -w $@
 
-# asap7 chip_top variant — full design tree (sv2v output is the entire
+# asap7 chip_top variant — full design tree (sv2v -D SYNTHESIS output is the entire
 # flat netlist) with USE_ASAP7_FAKERAM (smem uses fakeram7 macros) and
 # MMA dimensions overridable via -D. The default MMA_M/N/K=4 makes a
 # small "tiny" chip_top that lines up with compute_array_tiny's hardened
@@ -143,18 +143,18 @@ $(BUILD_DIR)/smem_bank_asap7.v: $(REPO_ROOT)/smem/smem_bank.sv $(REPO_ROOT)/mem/
 MMA_DIM ?= 4
 $(BUILD_DIR)/chip_top_asap7_tiny.v: $(SV_SOURCES)
 	@mkdir -p $(BUILD_DIR)
-	sv2v -I $(REPO_ROOT)/common/fpnew \
+	sv2v -D SYNTHESIS -I $(REPO_ROOT)/common/fpnew \
 	     -D USE_ASAP7_FAKERAM \
 	     -D MMA_M=$(MMA_DIM) -D MMA_N=$(MMA_DIM) -D MMA_K=$(MMA_DIM) \
 	     --exclude=Always $(SV_SOURCES) --top=chip_top -w $@
 
-# Chip-top-only sv2v output for stub-mode chip_top synthesis. Contains
+# Chip-top-only sv2v -D SYNTHESIS output for stub-mode chip_top synthesis. Contains
 # just chip_top.sv (no submodule bodies). Combined with v-stub/*.v
 # blackbox stubs, this lets yosys synthesize chip_top with submodules
 # as opaque macros.
 $(BUILD_DIR)/chip_top_only.v: $(REPO_ROOT)/top/chip_top.sv
 	@mkdir -p $(BUILD_DIR)
-	sv2v --exclude=Always $^ --top=chip_top -w $@
+	sv2v -D SYNTHESIS --exclude=Always $^ --top=chip_top -w $@
 
 # Verilog blackbox stub for a submodule — same module header (params +
 # ports + widths) as the real SV, body empty, `(* blackbox *)` attribute.
@@ -162,7 +162,7 @@ $(BUILD_DIR)/v-stub/%.v: $(REPO_ROOT)/tech/sky130/scripts/gen_stub_verilog.py
 	@mkdir -p $(BUILD_DIR)/v-stub
 	uv run python $< $* $(REPO_ROOT)
 
-# Separate sv2v output for the small systolic synth-proof wrapper (it's
+# Separate sv2v -D SYNTHESIS output for the small systolic synth-proof wrapper (it's
 # not reachable from chip_top, so the main run drops it).
 $(BUILD_DIR)/mac_array_small.v: \
 		$(REPO_ROOT)/common/fpnew/cf_math_pkg.sv \
@@ -176,7 +176,7 @@ $(BUILD_DIR)/mac_array_small.v: \
 		$(REPO_ROOT)/mac_tmem_cell/mac_tmem_cell.sv \
 		$(REPO_ROOT)/mac_array_small/mac_array_small.sv
 	@mkdir -p $(BUILD_DIR)
-	sv2v -I $(REPO_ROOT)/common/fpnew --exclude=Always $^ --top=mac_array_small -w $@
+	sv2v -D SYNTHESIS -I $(REPO_ROOT)/common/fpnew --exclude=Always $^ --top=mac_array_small -w $@
 
 synth: sv2v
 	sg docker -c './run.sh < /dev/null'
@@ -308,10 +308,10 @@ $(REPO_ROOT)/tech/sky130/config.stub.yaml: \
 STUB ?=
 
 ifeq ($(STUB),1)
-  CHIPTOP_DEPS := sv2v stubs $(REPO_ROOT)/tech/sky130/config.stub.yaml
+  CHIPTOP_DEPS := sv2v -D SYNTHESIS stubs $(REPO_ROOT)/tech/sky130/config.stub.yaml
   CHIPTOP_CFG  := config.stub.yaml
 else
-  CHIPTOP_DEPS := sv2v reals $(REPO_ROOT)/tech/sky130/config.yaml
+  CHIPTOP_DEPS := sv2v -D SYNTHESIS reals $(REPO_ROOT)/tech/sky130/config.yaml
   CHIPTOP_CFG  := config.yaml
 endif
 
@@ -322,4 +322,4 @@ chip-top: $(CHIPTOP_DEPS)
 # dense_grid: NxN mac_tmem_cell macros, trivially chained. PoC of fast PnR.
 $(BUILD_DIR)/dense_grid.v: $(REPO_ROOT)/mac_tmem_cell/mac_tmem_cell.sv $(REPO_ROOT)/dense_grid/dense_grid.sv
 	@mkdir -p $(BUILD_DIR)
-	sv2v --exclude=Always $^ --top=dense_grid -w $@
+	sv2v -D SYNTHESIS --exclude=Always $^ --top=dense_grid -w $@

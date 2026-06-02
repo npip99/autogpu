@@ -47,6 +47,7 @@ set we_pins [list \
     {drain_slot_w[0]} {drain_slot_e[0]} 32.1  \
     {drain_slot_w[1]} {drain_slot_e[1]} 32.8  \
     {scrub_en_w}    {scrub_en_e}    33.5  \
+    {clk_w}         {clk_e}         34.2  \
 ]
 
 foreach {w_pin e_pin y} $we_pins {
@@ -73,5 +74,6 @@ for {set k 0} {$k < 32} {incr k} {
     place_pin -pin_name "drain_in\[$k\]"  -layer M5 -location [list $x $TILE_H] -force_to_die_boundary
 }
 
-# N-only: clk. (Other former broadcasts moved to W/E feedthrough above.)
-place_pin -pin_name clk -layer M5 -location [list 29.4 $TILE_H] -force_to_die_boundary
+# N edge: no signals (clk moved to W/E feedthrough above, #40). Only the
+# b_in/b_out + drain_in/drain_out pin pairs declared earlier remain on
+# N/S edges. The tile now has truly zero N-only pins.

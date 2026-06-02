@@ -11,17 +11,49 @@ MODULE="${1:?usage: $0 <module_name>}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 source "$SCRIPT_DIR/orfs_image.sh"   # pinned ORFS image (was :latest)
-SV2V_FILE="$REPO_ROOT/build/sv2v/chip_top.v"
+
+CONFIG_FILE="$SCRIPT_DIR/${MODULE}.config.mk"
+if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo "ERROR: $CONFIG_FILE missing."
+    exit 1
+fi
+
+# ---- sv2v staleness check (#40 lesson: takes 7-9 silently ran B4 RTL) ----
+# Find which sv2v output this module's config uses (typically chip_top.v
+# for standalone macro hardens, or chip_top_bcast{N}.v for parent designs)
+# and confirm it's newer than every RTL source file. If stale, regenerate.
+SV2V_FILE=$(grep -oE "VERILOG_FILES = /work/build/sv2v/[a-zA-Z0-9_]+\.v" "$CONFIG_FILE" | head -1 | awk '{print $NF}' | sed "s|/work|$REPO_ROOT|")
+if [[ -z "$SV2V_FILE" ]]; then
+    SV2V_FILE="$REPO_ROOT/build/sv2v/chip_top.v"
+fi
 
 if [[ ! -f "$SV2V_FILE" ]]; then
     echo "ERROR: $SV2V_FILE missing. Run 'make -C $REPO_ROOT/tech/sky130 sv2v' first."
     exit 1
 fi
 
-CONFIG_FILE="$SCRIPT_DIR/${MODULE}.config.mk"
-if [[ ! -f "$CONFIG_FILE" ]]; then
-    echo "ERROR: $CONFIG_FILE missing."
-    exit 1
+# Check sv2v output age against ALL RTL sources. If any source is newer,
+# the sv2v output is stale and the build would silently compile the wrong
+# RTL into the macro/design (bit us 3 times in #40 — see RCA_DISCIPLINE.md).
+STALE_FILES=$(find \
+    "$REPO_ROOT/compute_array" "$REPO_ROOT/skew_lane" "$REPO_ROOT/cmd_unit" \
+    "$REPO_ROOT/mac_tmem_cell" "$REPO_ROOT/mac_array_small" \
+    "$REPO_ROOT/cmdproc" "$REPO_ROOT/smem" "$REPO_ROOT/barrier" \
+    "$REPO_ROOT/load" "$REPO_ROOT/store" "$REPO_ROOT/reset_seq" \
+    "$REPO_ROOT/top" "$REPO_ROOT/common" "$REPO_ROOT/tile_buf_8row" \
+    "$REPO_ROOT/mem" \
+    -name "*.sv" -newer "$SV2V_FILE" 2>/dev/null | head -5)
+if [[ -n "$STALE_FILES" ]]; then
+    echo "ERROR: $SV2V_FILE is STALE (RTL files newer than sv2v output):"
+    echo "$STALE_FILES" | sed 's|^|    |'
+    case "$SV2V_FILE" in
+        *chip_top_bcast*) TARGET="sv2v-bcast-sweep" ;;
+        *compute_array_tiny_bcast*) TARGET="sv2v-tiny-bcast-sweep" ;;
+        *) TARGET="sv2v" ;;
+    esac
+    echo "Fix:  make -C $REPO_ROOT/tech/sky130 $TARGET"
+    echo "(or set ALLOW_STALE_SV2V=1 to override — but only if you know why)"
+    [[ -z "$ALLOW_STALE_SV2V" ]] && exit 1
 fi
 
 # Build artifacts (logs/, objects/, reports/, results/) live under

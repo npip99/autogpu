@@ -16,13 +16,31 @@
 //   - drain_busy, drain_done, drain_row_valid, drain_row_idx, drain_last
 //   - drain_en_o, drain_slot_to_cells (broadcast to cells)
 
+// B6 (#40): cmd_unit outputs are combinational — the broadcast pipeline
+// lives in the skew_lane chain registers (skew_lane_a.chain_w_s/chain_e_n
+// abutment chain). cmd_unit drives only the CHAIN HEAD: skew_a[0] and
+// skew_b[0]. Pin placement (cmd_unit.pins.tcl) puts push_a_bytes on N
+// edge (toward skew_a column) and push_b_bytes on E edge (toward skew_b
+// row); push_now/push_slot/push_accum sit in the NE corner accessible
+// from both chains via a 2-fanout parent net.
+//
+// B5's internal BCAST_PIPE registers were a wrong turn (RCA_DISCIPLINE.md
+// case study) — pinning the source at SW corner made fan-out distances
+// worse instead of better. Reverted here.
+
 module cmd_unit #(
     parameter int MMA_M   = 32,
     parameter int MMA_N   = 32,
     parameter int MMA_K   = 32,
     parameter int N_SLOTS = 4
 ) (
-    input  logic                          clk,
+    // clk_w / clk_e: matches mac_tmem_cell_tile's contract (#40).
+    // cmd_unit sits at the W root of the clock feedthrough chain; it
+    // takes clk_w from the chip clk pad and exposes clk_e as a combinational
+    // pass-through to feed the first downstream tile (skew_lane_a[0].clk_w
+    // or directly mac_tmem_cell_tile[0][0].clk_w).
+    input  logic                          clk_w,
+    output logic                          clk_e,
     input  logic                          reset,
 
     // ---- Issue from cmdproc ----
@@ -71,6 +89,11 @@ module cmd_unit #(
     output logic                          drain_en_o,
     output logic [$clog2(N_SLOTS)-1:0]    drain_slot_to_cells
 );
+
+    // clk_e is a combinational pass-through of clk_w (#40). Lets the
+    // abstract .lib carry a clk_w → clk_e arc so parent STA can chain
+    // clock propagation through abutted cmd_unit + skew + mac tiles.
+    assign clk_e = clk_w;
 
     localparam int SLOT_W = $clog2(N_SLOTS);
     localparam int WAVE_DRAIN_CYCLES = MMA_M + MMA_N - 2;
@@ -220,7 +243,9 @@ module cmd_unit #(
         endcase
     end
 
-    // Expose push payload to skew_lanes.
+    // Expose push payload to skew_lanes — combinational outputs (B6).
+    // skew_lane chain registers absorb the broadcast pipeline; cmd_unit's
+    // outputs are the chain HEAD (drive skew_a[0]/skew_b[0] only).
     assign push_now_o   = push_now;
     assign push_a_bytes = push_a_data;
     assign push_b_bytes = push_b_data;
@@ -256,7 +281,7 @@ module cmd_unit #(
     // ------------------------------------------------------------------
     // Sequential
     // ------------------------------------------------------------------
-    always_ff @(posedge clk) begin
+    always_ff @(posedge clk_w) begin
         if (reset) begin
             state           <= S_IDLE;
             mma_busy        <= 1'b0;

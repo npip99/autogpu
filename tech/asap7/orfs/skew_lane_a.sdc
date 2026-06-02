@@ -1,7 +1,7 @@
 current_design skew_lane_a
 
 set clk_name    core_clock
-set clk_port    clk
+set clk_port    clk_w
 set clk_period  1000
 set clk_io_pct  0.2
 

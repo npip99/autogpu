@@ -3,9 +3,14 @@
 // Phase 7i-7: three-macro hierarchy.
 //
 //   - 1 cmd_unit        : K-loop FSM + drain pulse generator. Tiny.
-//   - MMA_M skew_lane   : a-skew, one per row. Each tap_index = row_index.
-//   - MMA_N skew_lane   : b-skew, one per col. Each tap_index = col_index.
+//   - MMA_M skew_lane_a : a-skew, one per row. Stacked S→N along W column;
+//                         each instance holds one stage of the 260-bit
+//                         broadcast chain register (B6 #40).
+//   - MMA_N skew_lane_b : b-skew, one per col. Stacked W→E along S row;
+//                         same chain-register layout, mirror axis.
 //                         b-side instances tie push_slot/push_accum to 0.
+//                         The internal skew_lane is purely combinational
+//                         (#44 stripped the dead 31-stage shift register).
 //   - MMA_M*MMA_N cells : mac_tmem_cell systolic mesh with south->north drain.
 //
 // Drain output = top row of cells' drain_out (no mux).
@@ -81,9 +86,6 @@ module compute_array #(
 );
 
     localparam int SLOT_W = $clog2(N_SLOTS);
-    // skew_lane DEPTH must be >= max(MMA_M, MMA_N) so tap_index <= depth-1.
-    // We make it large enough to cover both axes from the same hardened macro.
-    localparam int SKEW_DEPTH = (MMA_M > MMA_N) ? MMA_M : MMA_N;
 
     // ------------------------------------------------------------------
     // cmd_unit
@@ -122,8 +124,15 @@ module compute_array #(
     logic [$clog2(MMA_M)-1:0]   u_drain_row_idx;
     logic                       u_drain_last;
 
+    // B5 (#40): cmd_unit is a hardened black box at synth time. The
+    // BCAST_PIPE register stages are baked INTO the cmd_unit LEF (built
+    // with -DBCAST_PIPE=1 in the standalone sv2v rule — see
+    // tech/sky130/Makefile). Yosys cannot pass parameters into a
+    // hardened module, so we instantiate it positionally — the macro's
+    // output ports already carry the registered values.
     cmd_unit u_cmd (
-        .clk                  (clk),
+        .clk_w                (clk),
+        .clk_e                (),
         .reset                (reset),
         .mma_issue            (mma_issue),
         .mma_slot             (mma_slot),
@@ -164,68 +173,64 @@ module compute_array #(
     );
 
     // ------------------------------------------------------------------
-    // Broadcast pipeline. `BCAST_PIPE=0 is a direct wire; >0 inserts N
-    // D-FF stages on every broadcast signal so the long wire from cmd_unit
-    // (SW corner) to the NE-most consumer is cut into segments of
-    // ~1.5/(N+1) mm each. Sets the achievable Fmax of the hierarchical
-    // layout. Resolved at sv2v preprocess time (`BCAST_PIPE macro), not
-    // at parameter elaboration, so sv2v emits the right code per variant.
+    // Broadcast pipeline — B5 (#40) partial absorption.
+    //
+    // After B5, cmd_unit ITSELF holds the BCAST_PIPE flops for the push_*
+    // family (push_now, push_a_bytes, push_b_bytes, push_slot, push_accum).
+    // Those outputs are already registered when they leave the hardened
+    // cmd_unit macro, so the *_piped signals here are direct wires from
+    // cmd_unit's output ports — no parent shift register, no parent flops.
+    //
+    // Why: the parent pa_pipe/pb_pipe block previously held ~16K parent
+    // flops (256-bit BCAST_PIPE register × MMA dimensions × stages). At
+    // 32×32 the resizer had to insert buffer chains from those parent
+    // flops to each skew_lane macro, congesting the W mac boundary at
+    // GRT. Hiding the flops INSIDE cmd_unit's macro eliminates those
+    // long parent-flop→skew wires entirely (the placer puts cmd_unit
+    // adjacent to skew_a[0] / skew_b[0], so the macro→macro wires are
+    // short by construction).
+    //
+    // Drain pipe (cells_drain_en, cells_drain_slot) and scrub_en stay at
+    // parent for now — their fanout is small (drain_en/slot → 1024 mac
+    // cells but via existing feedthrough chains; scrub_en is one signal
+    // through the same chains). Absorbing those into cmd_unit too would
+    // be a follow-up.
     // ------------------------------------------------------------------
-    // Size-safe array decl: PIPE_SZ is at least 1 even when BCAST_PIPE=0.
-    // The unused element gets optimized away by yosys; the generate-if
-    // below decides whether we emit a real shift register or direct wires.
     localparam int PIPE_SZ = (BCAST_PIPE > 0) ? BCAST_PIPE : 1;
 
-    logic                       pn_pipe  [0:PIPE_SZ-1];
-    logic [MMA_M*8-1:0]         pa_pipe  [0:PIPE_SZ-1];
-    logic [MMA_N*8-1:0]         pb_pipe  [0:PIPE_SZ-1];
-    logic [SLOT_W-1:0]          ps_pipe  [0:PIPE_SZ-1];
-    logic                       pac_pipe [0:PIPE_SZ-1];
     logic                       dre_pipe [0:PIPE_SZ-1];
     logic [SLOT_W-1:0]          drs_pipe [0:PIPE_SZ-1];
     logic                       sc_pipe  [0:PIPE_SZ-1];
 
     generate
-        if (BCAST_PIPE > 0) begin : gen_bcast_pipe
+        if (BCAST_PIPE > 0) begin : gen_drain_scrub_pipe
             always_ff @(posedge clk) begin
-                pn_pipe[0]  <= push_now;
-                pa_pipe[0]  <= push_a_bytes;
-                pb_pipe[0]  <= push_b_bytes;
-                ps_pipe[0]  <= push_slot;
-                pac_pipe[0] <= push_accum;
                 dre_pipe[0] <= cells_drain_en;
                 drs_pipe[0] <= cells_drain_slot;
                 sc_pipe[0]  <= scrub_en;
                 for (int s = 1; s < BCAST_PIPE; s++) begin
-                    pn_pipe[s]  <= pn_pipe[s-1];
-                    pa_pipe[s]  <= pa_pipe[s-1];
-                    pb_pipe[s]  <= pb_pipe[s-1];
-                    ps_pipe[s]  <= ps_pipe[s-1];
-                    pac_pipe[s] <= pac_pipe[s-1];
                     dre_pipe[s] <= dre_pipe[s-1];
                     drs_pipe[s] <= drs_pipe[s-1];
                     sc_pipe[s]  <= sc_pipe[s-1];
                 end
             end
-            assign push_now_piped         = pn_pipe[PIPE_SZ-1];
-            assign push_a_bytes_piped     = pa_pipe[PIPE_SZ-1];
-            assign push_b_bytes_piped     = pb_pipe[PIPE_SZ-1];
-            assign push_slot_piped        = ps_pipe[PIPE_SZ-1];
-            assign push_accum_piped       = pac_pipe[PIPE_SZ-1];
             assign cells_drain_en_piped   = dre_pipe[PIPE_SZ-1];
             assign cells_drain_slot_piped = drs_pipe[PIPE_SZ-1];
             assign scrub_en_piped         = sc_pipe[PIPE_SZ-1];
-        end else begin : gen_bcast_direct
-            assign push_now_piped         = push_now;
-            assign push_a_bytes_piped     = push_a_bytes;
-            assign push_b_bytes_piped     = push_b_bytes;
-            assign push_slot_piped        = push_slot;
-            assign push_accum_piped       = push_accum;
+        end else begin : gen_drain_scrub_direct
             assign cells_drain_en_piped   = cells_drain_en;
             assign cells_drain_slot_piped = cells_drain_slot;
             assign scrub_en_piped         = scrub_en;
         end
     endgenerate
+
+    // Push family: cmd_unit registers internally (B5), so the *_piped
+    // wires are direct from cmd_unit's already-registered outputs.
+    assign push_now_piped     = push_now;
+    assign push_a_bytes_piped = push_a_bytes;
+    assign push_b_bytes_piped = push_b_bytes;
+    assign push_slot_piped    = push_slot;
+    assign push_accum_piped   = push_accum;
 
     // ------------------------------------------------------------------
     // Output pipe: BCAST_PIPE D-FF stages on every cmd_unit -> chip
@@ -310,110 +315,74 @@ module compute_array #(
     endgenerate
 
     // ------------------------------------------------------------------
-    // Spatial broadcast relay (issue #31). Replaces the single global
-    // fan-out from `push_{a,b}_bytes_piped` (one BCAST_PIPE register driving
-    // 32 skew_lanes across ~1600 µm) with a chain of MMA_M / MMA_N relay
-    // registers, one per skew_lane location. Stage 0 is combinational; each
-    // subsequent stage is a registered hop to its neighbor (~55 µm). Each
-    // skew_lane[i] taps the chain at its own position and uses tap_index=0
-    // — `skew_lane.sv` with tap_index=0 is a pure live combinational
-    // pass-through, so the i-cycle delay that the macro's internal shift
-    // register used to provide (via tap_index=i) is now provided by the
-    // i registered chain hops instead.
+    // Broadcast topology (B6, #40): cmd_unit drives the chain HEAD of
+    // both skew_lane stacks. Each skew_lane_a/b instance registers the
+    // 260-bit chain (push_now + push_slot + push_accum + 256-bit byte
+    // vector) at posedge clk_w and exposes it on its opposite-edge
+    // abutment pin to the next instance. After 32 stages the byte for
+    // row/col i has been delayed i cycles — that's the systolic delay.
+    // Per-row data is sliced from chain_w_s[i*8 +: 8] at parent level
+    // and fed to the cell mesh via combinational pass-through (#44
+    // stripped the dead internal shift register; the chain register
+    // is the only delay element now).
     //
-    // Edge timing is preserved EXACTLY cycle-for-cycle:
-    //   today:  push_byte fanout combinational → skew_lane[i] tap=i  → edge at T+i
-    //   new:    chain stage i = i registered hops               → tap=0 LIVE → edge at T+i
+    // History: PR #31/#34 used parent pa_chain / pb_chain shift
+    // registers (~16K parent flops, all on chip clk). That made the
+    // chip clk net's fanout balloon to ~8K endpoints at parent,
+    // causing GRT mazeRouteMSMDOrder3D to spin >78 min on 32×32.
+    // B6 fixes this by hiding the delay flops inside the hardened
+    // skew_lane_a/b chain register, where they share the macro's
+    // local clk and don't burden the parent.
     //
-    // So cmd_unit's FSM, the output pipe, pymodel, and cocotb are all
-    // unchanged — the chain moves the systolic delay from inside the
-    // hardened skew_lane macro out to a parent-level distributed register
-    // chain that the placer can spread along the actual skew_lane
-    // positions, killing the long fanout wire (PR #27's −451 ps broadcast
-    // setup at 32-wide).
-    //
-    // Accepted-interim cost (~2× delay-flop count on the broadcast path):
-    // `skew_lane` is HARDENED, so its internal `DEPTH-1`-deep shift
-    // register is baked into the LEF. With tap_index=0 that shift register
-    // is dead (the live path bypasses it) but still present and clocked —
-    // it can't be removed without re-hardening the leaf, which is out of
-    // scope here. The new `pa_chain`/`pb_chain` registers therefore
-    // duplicate the same delay-flop storage at the parent level. This
-    // doubles delay-flop count on the broadcast path (and the dynamic
-    // power that goes with it); does not affect setup/hold/functional
-    // correctness. It resolves naturally when issue #32 (tile abutment)
-    // re-hardens a tile that drops the in-macro shift in favor of these
-    // chain stages.
-    //
-    // Each `pa_chain[s]` registers the full MMA_M*8-bit bus though only
-    // byte slice s is tapped — yosys' DCE should drop the unread high-byte
-    // slots of stages s>0 (they aren't read by any skew_lane), but if
-    // synth_stat shows them surviving, narrow the per-stage chain
-    // explicitly as a follow-up cleanup.
+    // Setup safety: BCAST_PIPE>=1 must be set in the synth define
+    // (compute_array_abut.config.mk uses chip_top_bcast1.v).
+    // BCAST_PIPE=1 registers push_a_bytes at cmd_unit's output edge
+    // before the chain head fanout.
     // ------------------------------------------------------------------
-    logic [MMA_M*8-1:0]   pa_chain   [0:MMA_M-1];
-    logic                 pn_a_chain [0:MMA_M-1];
-    logic [SLOT_W-1:0]    ps_a_chain [0:MMA_M-1];
-    logic                 pac_a_chain[0:MMA_M-1];
-
-    logic [MMA_N*8-1:0]   pb_chain   [0:MMA_N-1];
-    logic                 pn_b_chain [0:MMA_N-1];
-    logic [SLOT_W-1:0]    ps_b_chain [0:MMA_N-1];
-    logic                 pac_b_chain[0:MMA_N-1];
-
-    // Stage 0: combinational from the (already BCAST_PIPE-registered) source.
-    assign pa_chain[0]    = push_a_bytes_piped;
-    assign pn_a_chain[0]  = push_now_piped;
-    assign ps_a_chain[0]  = push_slot_piped;
-    assign pac_a_chain[0] = push_accum_piped;
-    assign pb_chain[0]    = push_b_bytes_piped;
-    assign pn_b_chain[0]  = push_now_piped;
-    assign ps_b_chain[0]  = push_slot_piped;
-    assign pac_b_chain[0] = push_accum_piped;
-
-    // Stages 1..N-1: registered relay. Placer will spread these to sit
-    // adjacent to their consuming skew_lane[i] (timing-driven placement);
-    // each hop becomes ~one mac-pitch (~55 µm) instead of full-die.
-    always_ff @(posedge clk) begin
-        if (reset) begin
-            for (int s = 1; s < MMA_M; s++) begin
-                pa_chain[s]    <= '0;
-                pn_a_chain[s]  <= 1'b0;
-                ps_a_chain[s]  <= '0;
-                pac_a_chain[s] <= 1'b0;
-            end
-            for (int s = 1; s < MMA_N; s++) begin
-                pb_chain[s]    <= '0;
-                pn_b_chain[s]  <= 1'b0;
-                ps_b_chain[s]  <= '0;
-                pac_b_chain[s] <= 1'b0;
-            end
-        end else begin
-            for (int s = 1; s < MMA_M; s++) begin
-                pa_chain[s]    <= pa_chain[s-1];
-                pn_a_chain[s]  <= pn_a_chain[s-1];
-                ps_a_chain[s]  <= ps_a_chain[s-1];
-                pac_a_chain[s] <= pac_a_chain[s-1];
-            end
-            for (int s = 1; s < MMA_N; s++) begin
-                pb_chain[s]    <= pb_chain[s-1];
-                pn_b_chain[s]  <= pn_b_chain[s-1];
-                ps_b_chain[s]  <= ps_b_chain[s-1];
-                pac_b_chain[s] <= pac_b_chain[s-1];
-            end
-        end
-    end
 
     // ------------------------------------------------------------------
-    // a-side skew_lanes: one per row. Each row i consumes chain stage i;
-    // tap_index=0 (skew_lane runs as a live pass-through — the i-cycle
-    // systolic delay is now in the chain instead).
+    // a-side skew_lanes: one per row. The chain register inside each
+    // skew_lane_a provides the i-cycle systolic delay; the internal
+    // skew_lane is purely combinational (live pass-through).
     // Outputs feed the west edge of cell (i, 0).
+    //
+    // Clock distribution: chain clk through the skew_a column via the
+    // clk_w/clk_e feedthrough on each hardened skew_lane_a macro (same
+    // pattern as the mac mesh below). Parent CTS only drives skew_a[0];
+    // skew_a[i] for i>0 takes clk from skew_a[i-1].clk_e at the parent
+    // level (a short north-jog wire — set_dont_touch in the SDC keeps
+    // the resizer from inserting buffers and breaking the matched-delay
+    // chain). Without this, parent CTS sees 32 separate skew_a endpoints
+    // and ends up with widely-different insertion delays → hold storm.
     // ------------------------------------------------------------------
+    // B6 (#40): pure-abutment broadcast chain. cmd_unit's outputs form the
+    // 260-bit chain head ({push_now, push_slot, push_accum, push_a_bytes});
+    // each skew_lane_a[i] registers chain_w_s and exposes chain_e_n on its
+    // N edge, which abuts skew_a[i+1]'s S edge. Per-row data is tapped at
+    // the parent level from each instance's chain_w_s[i*8 +: 8] (the byte
+    // for THIS instance's row), with push_now/slot/accum tapped from the
+    // common upper bits. No fan-out from cmd_unit to distant skew_a's; the
+    // only "long" route is cmd_unit→skew_a[0] (~40 µm at parent).
+    //
+    // CHAIN_WIDTH layout (LSB→MSB, must match skew_lane_a.sv comment):
+    //   [255:0]   push_a_bytes (each row taps its byte at [row*8 +: 8])
+    //   [257:256] push_slot (SLOT_W=2 bits)
+    //   [258]     push_accum
+    //   [259]     push_now
+    localparam int CHAIN_W = MMA_M*8 + SLOT_W + 1 + 1;   // = 260 for 32×32
+
     logic [MMA_M-1:0]            edge_compute;
     logic [MMA_M*8-1:0]          edge_a_bytes_flat;
     logic [MMA_M*SLOT_W-1:0]     edge_slot_flat;
     logic [MMA_M-1:0]            edge_accum;
+
+    logic [CHAIN_W-1:0] sa_chain_w_s [MMA_M-1:0];  // S-edge input to skew_a[i]
+    logic [CHAIN_W-1:0] sa_chain_e_n [MMA_M-1:0];  // N-edge output from skew_a[i]
+    logic               clk_chain_a_w [MMA_M-1:0];
+    logic               clk_chain_a_e [MMA_M-1:0];
+
+    // Chain head: cmd_unit outputs into skew_a[0].chain_w_s
+    assign sa_chain_w_s[0] = {push_now, push_accum, push_slot, push_a_bytes};
 
     genvar gi_a;
     generate
@@ -422,14 +391,28 @@ module compute_array #(
             logic [7:0]            eb;
             logic [SLOT_W-1:0]     es;
             logic                  ea;
+            // Chain feedthrough: skew_a[i].chain_w_s = skew_a[i-1].chain_e_n
+            // (for i>0); abutment-aligned pins make this a zero-length wire.
+            if (gi_a > 0) begin : gen_chain_link
+                assign sa_chain_w_s[gi_a] = sa_chain_e_n[gi_a-1];
+            end
+            assign clk_chain_a_w[gi_a] = (gi_a == 0) ? clk : clk_chain_a_e[gi_a-1];
+            // CHAIN_WIDTH is fixed at 260 in the hardened skew_lane_a macro
+            // (compile-time default); yosys can't pass parameters into a
+            // hardened black box at synth.
             skew_lane_a u_a (
-                .clk        (clk),
+                .clk_w      (clk_chain_a_w[gi_a]),
+                .clk_e      (clk_chain_a_e[gi_a]),
                 .reset      (reset),
-                .push_now   (pn_a_chain[gi_a]),
-                .push_byte  (pa_chain[gi_a][gi_a*8 +: 8]),
-                .push_slot  (ps_a_chain[gi_a]),
-                .push_accum (pac_a_chain[gi_a]),
-                .tap_index  ({$clog2(SKEW_DEPTH){1'b0}}),
+                .chain_w_s  (sa_chain_w_s[gi_a]),
+                .chain_e_n  (sa_chain_e_n[gi_a]),
+                // Parent slice from THIS instance's chain_w_s — tap the
+                // byte for row gi_a from the LSB half of the chain bus,
+                // and the common control bits from the upper bits.
+                .push_byte  (sa_chain_w_s[gi_a][gi_a*8 +: 8]),
+                .push_slot  (sa_chain_w_s[gi_a][MMA_M*8 +: SLOT_W]),
+                .push_accum (sa_chain_w_s[gi_a][MMA_M*8 + SLOT_W]),
+                .push_now   (sa_chain_w_s[gi_a][MMA_M*8 + SLOT_W + 1]),
                 .edge_valid (ev),
                 .edge_byte  (eb),
                 .edge_slot  (es),
@@ -443,10 +426,19 @@ module compute_array #(
     endgenerate
 
     // ------------------------------------------------------------------
-    // b-side skew_lanes: one per col. Each col j consumes chain stage j;
-    // tap_index=0 (live pass-through, j-cycle delay now in the chain).
+    // b-side skew_lanes: mirror of a-side but the chain hops W→E along
+    // the south row instead of S→N along the west column. Chain head is
+    // cmd_unit's push_b_bytes (same shared push_now/slot/accum bits).
     // ------------------------------------------------------------------
     logic [MMA_N*8-1:0]          edge_b_bytes_flat;
+
+    logic [CHAIN_W-1:0] sb_chain_w_w [MMA_N-1:0];  // W-edge input to skew_b[j]
+    logic [CHAIN_W-1:0] sb_chain_e_e [MMA_N-1:0];  // E-edge output from skew_b[j]
+    logic               clk_chain_b_w [MMA_N-1:0];
+    logic               clk_chain_b_e [MMA_N-1:0];
+
+    // Chain head: cmd_unit outputs into skew_b[0].chain_w_w
+    assign sb_chain_w_w[0] = {push_now, push_accum, push_slot, push_b_bytes};
 
     genvar gj_b;
     generate
@@ -455,19 +447,20 @@ module compute_array #(
             logic [7:0]            eb;
             logic [SLOT_W-1:0]     es_unused;
             logic                  ea_unused;
+            if (gj_b > 0) begin : gen_chain_link
+                assign sb_chain_w_w[gj_b] = sb_chain_e_e[gj_b-1];
+            end
+            assign clk_chain_b_w[gj_b] = (gj_b == 0) ? clk : clk_chain_b_e[gj_b-1];
             skew_lane_b u_b (
-                .clk        (clk),
+                .clk_w      (clk_chain_b_w[gj_b]),
+                .clk_e      (clk_chain_b_e[gj_b]),
                 .reset      (reset),
-                .push_now   (pn_b_chain[gj_b]),
-                .push_byte  (pb_chain[gj_b][gj_b*8 +: 8]),
-                // push_slot / push_accum: functionally unused on b-side
-                // (b-skew's edge_slot / edge_accum outputs are dangling —
-                // cells take slot/accum from a-skew). Reusing the chain
-                // signals (vs tying to '0) avoids 96 per-instance conb_1
-                // tie cells (32 b-skews × 3 bits) and their wires.
-                .push_slot  (ps_b_chain[gj_b]),
-                .push_accum (pac_b_chain[gj_b]),
-                .tap_index  ({$clog2(SKEW_DEPTH){1'b0}}),
+                .chain_w_w  (sb_chain_w_w[gj_b]),
+                .chain_e_e  (sb_chain_e_e[gj_b]),
+                .push_byte  (sb_chain_w_w[gj_b][gj_b*8 +: 8]),
+                .push_slot  (sb_chain_w_w[gj_b][MMA_N*8 +: SLOT_W]),
+                .push_accum (sb_chain_w_w[gj_b][MMA_N*8 + SLOT_W]),
+                .push_now   (sb_chain_w_w[gj_b][MMA_N*8 + SLOT_W + 1]),
                 .edge_valid (ev_unused),
                 .edge_byte  (eb),
                 .edge_slot  (es_unused),
@@ -490,8 +483,13 @@ module compute_array #(
     // Broadcast feedthrough chain (W→E per row). Parent drives col 0's
     // *_w; the cell asserts *_e = *_w (M4 wire), so abutment carries the
     // signal east through the array — no parent routing over a macro.
+    // clk is on the same pattern (#40): the chip's clk pad feeds each
+    // row's col-0 clk_w, and clk propagates east through the row via
+    // tile-internal `assign clk_e = clk_w` feedthroughs. No parent CTS.
     // Works in both abutted and non-abutted layouts (in the non-abutted
     // case synth optimizes the chain into the same fan-out as before).
+    logic              clk_chain_w        [MMA_M-1:0][MMA_N-1:0];
+    logic              clk_chain_e        [MMA_M-1:0][MMA_N-1:0];
     logic              reset_chain_w      [MMA_M-1:0][MMA_N-1:0];
     logic              reset_chain_e      [MMA_M-1:0][MMA_N-1:0];
     logic              drain_en_chain_w   [MMA_M-1:0][MMA_N-1:0];
@@ -521,13 +519,17 @@ module compute_array #(
 
                 // Broadcast chain: col 0 from cmd_unit's piped output;
                 // col j>0 from the W neighbor's _e (abutment-fed).
+                // clk follows the same chain — col 0 from the chip clk
+                // pad (via `clk` port), col j>0 from W neighbor's clk_e.
+                assign clk_chain_w       [gi][gj] = (gj == 0) ? clk                    : clk_chain_e       [gi][gj-1];
                 assign reset_chain_w     [gi][gj] = (gj == 0) ? reset                  : reset_chain_e     [gi][gj-1];
                 assign drain_en_chain_w  [gi][gj] = (gj == 0) ? cells_drain_en_piped   : drain_en_chain_e  [gi][gj-1];
                 assign drain_slot_chain_w[gi][gj] = (gj == 0) ? cells_drain_slot_piped : drain_slot_chain_e[gi][gj-1];
                 assign scrub_en_chain_w  [gi][gj] = (gj == 0) ? scrub_en_piped         : scrub_en_chain_e  [gi][gj-1];
 
                 mac_tmem_cell u_cell (
-                    .clk          (clk),
+                    .clk_w        (clk_chain_w       [gi][gj]),
+                    .clk_e        (clk_chain_e       [gi][gj]),
                     .reset_w      (reset_chain_w     [gi][gj]),
                     .reset_e      (reset_chain_e     [gi][gj]),
                     .compute_in   (c_in_w),
@@ -546,9 +548,14 @@ module compute_array #(
                     .drain_en_e   (drain_en_chain_e  [gi][gj]),
                     .drain_slot_w (drain_slot_chain_w[gi][gj]),
                     .drain_slot_e (drain_slot_chain_e[gi][gj]),
-                    .init_en      (1'b0),
-                    .init_slot    ('0),
-                    .init_data    (32'd0),
+                    // init_* ports only exist in sim (mac_tmem_cell.sv
+                    // strips them at hardening — INVARIANTS.md R4a/R4b).
+                    // Without this `ifndef guard, Verilator warns UNDRIVEN.
+`ifndef SYNTHESIS
+                    .init_en   (1'b0),
+                    .init_slot ('0),
+                    .init_data (32'd0),
+`endif
                     .scrub_en_w   (scrub_en_chain_w  [gi][gj]),
                     .scrub_en_e   (scrub_en_chain_e  [gi][gj])
                 );
@@ -557,13 +564,18 @@ module compute_array #(
     endgenerate
 
     // ------------------------------------------------------------------
-    // Chip drain output = top row's drain_out (gated by drain_row_valid).
+    // Chip drain output = top row's drain_out (UNGATED — per R5 in
+    // tech/INVARIANTS.md). Earlier this was gated by drain_row_valid
+    // for "clean waveforms" during invalid cycles, costing 1024 AND2x2
+    // cells at parent. The receiver (store.sv:193) gates its write
+    // enable on drain_row_valid, so the data lines are don't-care
+    // when valid is low. Outputting raw mac data + valid flag is
+    // standard handshake convention.
     // ------------------------------------------------------------------
     genvar gj_drain;
     generate
         for (gj_drain = 0; gj_drain < MMA_N; gj_drain++) begin : g_drain_top
-            assign drain_row_data[gj_drain*32 +: 32] =
-                drain_row_valid ? drain_pipe[0][gj_drain] : 32'd0;
+            assign drain_row_data[gj_drain*32 +: 32] = drain_pipe[0][gj_drain];
         end
     endgenerate
 
