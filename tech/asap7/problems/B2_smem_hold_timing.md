@@ -29,12 +29,14 @@ Why this is structural (same mechanism as A2, scaled up):
   paths are very short — ~30 ps. Hold slack = comb_delay − skew goes
   deeply negative.
 
-The compute_array A2 fix (BCAST_PIPE=1 + 2.5 ns SDC) doesn't directly
-apply: smem's hot paths are not a broadcast bus but rather the
-per-bank rd_a/rd_b address path (parent → bank) and the per-bank
-output path (bank → consumer). Pipelining either adds a cycle of read
-latency, which would propagate to chip_top's compute_array→smem read
-loop and require pymodel + cocotb updates.
+The compute_array A2 fix (2.5 ns SDC; the BCAST_PIPE half of the
+original A2 fix was later deleted in #45 once B6's per-skew abutment
+chain absorbed the broadcast pipeline) doesn't directly apply: smem's
+hot paths are not a broadcast bus but rather the per-bank rd_a/rd_b
+address path (parent → bank) and the per-bank output path (bank →
+consumer). Pipelining either adds a cycle of read latency, which would
+propagate to chip_top's compute_array→smem read loop and require
+pymodel + cocotb updates.
 
 ## Resolution (2026-05-28)
 
@@ -71,8 +73,10 @@ CTS-stage convergence aid (lets CTS exit promptly instead of churning on
 the still-skewed CTS-stage hold paths). It does **not** appear in final
 slack. Removing it entirely is untested — may reintroduce CTS churn — so
 it stays as a fast-exit aid, not a slack compromise. The
-candidate BCAST_PIPE RTL fix below is therefore **no longer needed** for
-hold closure; kept for reference only.
+candidate "BCAST_PIPE-style" RTL fix below is therefore **no longer
+needed** for hold closure; kept for reference only. (Note: the
+compute_array-side BCAST_PIPE itself was deleted in #45 — see
+`compute_array.sv` header for the rationale.)
 
 ### Residual: max-slew (139 violations) — minor, smem-internal
 
@@ -93,13 +97,16 @@ rerun). Do NOT relax the 320 ps limit — it's the real library
 1. **Pipeline the bank address path inside `smem.sv`.** Add a 1-cycle
    register on `rd_a_addr` / `rd_b_addr` between the smem parent and
    the smem_bank instances (and matching 1-cycle delay on the response
-   side so consumers see the same total latency). This is the direct
-   analog of compute_array's BCAST_PIPE=1. Needs pymodel update
-   (`pymodel/smem.py`) so cocotb cycle-lockstep tests still pass.
+   side so consumers see the same total latency). This was the direct
+   analog of compute_array's historical BCAST_PIPE=1 (deleted in #45
+   when B6's per-skew abutment chain made parent flops redundant).
+   Needs pymodel update (`pymodel/smem.py`) so cocotb cycle-lockstep
+   tests still pass.
 2. **Relax SDC.** smem currently targets the same period as
    compute_array. If A2's resolution (400 MHz) is the chip-wide target,
    smem's SDC should match. May or may not be enough on its own —
-   compute_array needed both BCAST_PIPE *and* relaxed SDC.
+   historically compute_array was thought to need both BCAST_PIPE and a
+   relaxed SDC; #45 showed the relaxed SDC alone carries closure.
 3. **Skew-aware CTS at smem parent.** `CTS_CLUSTER_DIAMETER`/`SIZE`
    retunes, or hierarchical CTS methodology. A2 found these
    ineffective on compute_array; smem has a smaller macro count so

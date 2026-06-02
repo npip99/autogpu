@@ -188,26 +188,24 @@ fix is the **RTL pipeline** option; the rest are listed for completeness):
   let parent route their now-relaxed-timing outputs. Substantial RTL work
   on every leaf.
 
-### Mitigation in production: `BCAST_PIPE=1` + 2500 ps clock
+### Mitigation in production: 2500 ps clock
 
-`compute_array.sv` accepts `BCAST_PIPE=N` (set via sv2v `-D BCAST_PIPE=N`).
-With N>0, the parent inserts N D-FF stages on every cmd_unit → cells/
-skew_lanes broadcast (push_*, drain_en/slot, scrub_en) AND N symmetric
-stages on every cmd_unit → chip-external completion signal (mma_busy/done,
-arrive_*, drain_busy/done/row_valid/row_idx/row_last). `rd_*_en/addr`
-are intentionally NOT piped (SMEM is at the chip boundary). The symmetric
-output pipe is what makes the cocotb cycle-by-cycle lockstep pass —
-`pymodel/compute_array.py` takes `bcast_pipe=` and models the matching
-shift registers.
-
-`compute_array_tiny_bcast0.config.mk` now uses BCAST_PIPE=1 and the
-SDC sits at 2500 ps (400 MHz, same as full `compute_array.sdc`). Post-
-route timing: **0 hold violations, 0 setup violations, fmax 440 MHz**.
+`compute_array_tiny_bcast0.config.mk` sets the SDC clock at 2500 ps
+(400 MHz, same as full `compute_array.sdc`). Post-route timing on the
+tiny 4×4 harden: **0 hold violations, 0 setup violations, fmax 440 MHz**.
 `HOLD_SLACK_MARGIN` is no longer needed — repair_timing converges to
 zero cleanly. See `tech/asap7/problems/A2_hold_timing_rtl.md` for the
-journey and `compute_array_tiny_slow*.config.mk` for the alternatives
-that were tried (CTS clustering tweaks, reversed useful-skew SDC,
-BCAST_PIPE=2 — none beat the simplest config).
+journey.
+
+History: A2's initial fix paired the 2500 ps SDC with a parent-level
+`BCAST_PIPE=N` knob in `compute_array.sv` that inserted N D-FF stages
+on every cmd_unit → cells/skew_lanes broadcast (push_*, drain_en/slot,
+scrub_en) AND N symmetric stages on every cmd_unit → chip-external
+completion signal. B6 (#40)'s per-skew abutment chain (the `chain_w_s`/
+`chain_e_n` register inside each hardened `skew_lane_a/b` macro)
+absorbed the broadcast pipeline natively, so the parent BCAST_PIPE
+flops became dead weight and were deleted in #45. The 2500 ps SDC
+alone now carries hold closure.
 
 The three alternative-fix options listed above (commercial CTS,
 flatten hierarchy, re-harden leaves with output flops) remain on the
@@ -215,7 +213,7 @@ table for designs where 2500 ps isn't an acceptable clock target.
 
 ### Full 32×32: the runaway is I/O hold, not macro-to-macro (issue #25)
 
-`BCAST_PIPE=1` closes the tiny 4×4 but the full 32×32 still died at CTS
+The 2500 ps SDC closes the tiny 4×4 but the full 32×32 still died at CTS
 with `RSZ-0060 Max buffer count reached` (95205 hold buffers). Issue #25
 assumed this was macro-to-macro CTS skew at scale. Instrumenting the
 placed 32×32 ODB refuted that:
@@ -266,15 +264,17 @@ never hit this, so the constraint is a no-op there.
 
 With the I/O paths false-pathed, post-route STA (real parasitics) surfaces
 a *second*, internal violation: worst setup **−451 ps** on
-`gen_row[0].gen_col[31].u_cell/b_in` — the east-most column. This is the
-`push_a`/`push_b` broadcast traveling ~1600 µm from its single BCAST_PIPE
-register to the far-column skew_lanes. Both endpoints are real internal
-registers, so it is a genuine setup violation, not an artifact. It is
-**wire-delay-dominated** (~2951 ps path), so the resizer cannot fix it —
-buffering a long wire adds delay. This is the literal "BCAST_PIPE=1 doesn't
-scale from tiny" in issue #25, on the *setup* side: at 4×4 the broadcast is
-short and closes; at 32-wide it does not. More BCAST_PIPE stages do **not**
-help — it is one high-fanout net, not a chain.
+`gen_row[0].gen_col[31].u_cell/b_in` — the east-most column. This was
+the `push_a`/`push_b` broadcast traveling ~1600 µm from cmd_unit (or
+its single parent-level BCAST_PIPE register) to the far-column
+skew_lanes. Both endpoints are real internal registers, so it is a
+genuine setup violation. It is **wire-delay-dominated** (~2951 ps path),
+so the resizer cannot fix it — buffering a long wire adds delay. This
+was the literal "doesn't scale from tiny" on the *setup* side: at 4×4
+the broadcast is short and closes; at 32-wide it does not. (B6 #40
+later restructured the broadcast into a per-skew abutment chain, so
+each hop is ~35 µm instead of ~1600 µm — the long-wire root cause is
+addressed by the chain, not by adding more parent flops.)
 
 **Fix taken: relax `compute_array.sdc` to 300 MHz (3333 ps).** The +833 ps
 of period closes all 461 such endpoints (worst −451 → +382 ps, the margin
@@ -406,14 +406,13 @@ ship broken silicon if left unaddressed.
 
 - [x] **RESOLVED (A2, 2026-05-25): ~200 ps negative hold slack.**
       `compute_array_tiny_bcast0.config.mk` no longer sets
-      `HOLD_SLACK_MARGIN`. Fix taken: option (a) above — `compute_array.sv`
-      now has a `BCAST_PIPE=1` parent-level pipeline stage on every
-      cmd_unit → skew_lane / mac_tmem_cell broadcast (with a matching
-      output pipe on the chip-external completion signals so cocotb
-      cycle-by-cycle lockstep still passes; pymodel models the same
-      latency). Combined with relaxing the SDC from 1 GHz → 400 MHz,
-      post-route timing is 0 hold violations, 0 setup violations, fmax
-      440 MHz. See `tech/asap7/problems/A2_hold_timing_rtl.md`.
+      `HOLD_SLACK_MARGIN`. Original fix: SDC relaxed from 1 GHz → 400 MHz
+      plus a parent-level `BCAST_PIPE=1` pipeline stage in
+      `compute_array.sv`. The BCAST_PIPE half was later deleted in #45
+      once B6 (#40)'s per-skew abutment chain absorbed the broadcast
+      pipeline natively. Post-route timing on the tiny harden remains
+      0 hold violations, 0 setup violations, fmax 440 MHz at 400 MHz
+      target. See `tech/asap7/problems/A2_hold_timing_rtl.md`.
 
 - [x] **RESOLVED (B2, 2026-05-28): smem hold + setup slack.** Root cause
       was an SDC outlier: `smem.sdc` targeted 1 GHz while the chip-wide
@@ -627,7 +626,9 @@ vs full's [255:0]), so chip_top must match. `chip_top.sv` got
 submodule instantiation, so `sv2v -D MMA_M=4` is sufficient to
 specialize the whole netlist.
 
-A1 (PDN macro_grid) + A2 (BCAST_PIPE=1 + 2500ps SDC) have since merged.
+A1 (PDN macro_grid) + A2 (2500ps SDC; the original A2 also paired this
+with a parent `BCAST_PIPE=1` knob, since deleted in #45) have since
+merged.
 The full 32×32 compute_array should now harden cleanly. Once it does,
 chip_top can run at full MMA=32.
 
@@ -664,11 +665,11 @@ chip_top can run at full MMA=32.
    tightened to just `fakeram.*` (those macros are LEF-only from the
    asap7 platform).
 3. **HOLD_SLACK_MARGIN intentionally NOT set.** A2's structural fix
-   (BCAST_PIPE=1 + 2500 ps SDC at compute_array) is baked into the
-   compute_array LEF chip_top consumes, so chip_top doesn't inherit
-   that hold-buffer runaway. If chip_top RE-introduces the same shape
-   on its own broadcast nets (cmdproc → engines), pipeline at the RTL
-   level — don't reach for `HOLD_SLACK_MARGIN`.
+   (2500 ps SDC at compute_array) is baked into the compute_array LEF
+   chip_top consumes, so chip_top doesn't inherit that hold-buffer
+   runaway. If chip_top RE-introduces the same shape on its own
+   broadcast nets (cmdproc → engines), pipeline at the RTL level —
+   don't reach for `HOLD_SLACK_MARGIN`.
 4. **No IO pads.** Top-level ports are die-edge pins. Pad ring is a
    separate follow-up.
 5. **smem standalone is broken (GRT-0116 congestion).** chip_top inlines

@@ -19,9 +19,9 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 fi
 
 # ---- sv2v staleness check (#40 lesson: takes 7-9 silently ran B4 RTL) ----
-# Find which sv2v output this module's config uses (typically chip_top.v
-# for standalone macro hardens, or chip_top_bcast{N}.v for parent designs)
-# and confirm it's newer than every RTL source file. If stale, regenerate.
+# Find which sv2v output this module's config uses (chip_top.v for the
+# standard parent design, compute_array_tiny.v for the tiny harden) and
+# confirm it's newer than every RTL source file. If stale, regenerate.
 SV2V_FILE=$(grep -oE "VERILOG_FILES = /work/build/sv2v/[a-zA-Z0-9_]+\.v" "$CONFIG_FILE" | head -1 | awk '{print $NF}' | sed "s|/work|$REPO_ROOT|")
 if [[ -z "$SV2V_FILE" ]]; then
     SV2V_FILE="$REPO_ROOT/build/sv2v/chip_top.v"
@@ -47,8 +47,7 @@ if [[ -n "$STALE_FILES" ]]; then
     echo "ERROR: $SV2V_FILE is STALE (RTL files newer than sv2v output):"
     echo "$STALE_FILES" | sed 's|^|    |'
     case "$SV2V_FILE" in
-        *chip_top_bcast*) TARGET="sv2v-bcast-sweep" ;;
-        *compute_array_tiny_bcast*) TARGET="sv2v-tiny-bcast-sweep" ;;
+        */compute_array_tiny.v) TARGET="build/sv2v/compute_array_tiny.v" ;;
         *) TARGET="sv2v" ;;
     esac
     echo "Fix:  make -C $REPO_ROOT/tech/sky130 $TARGET"

@@ -15,31 +15,20 @@ export DESIGN_NICKNAME = compute_array_tiny_bcast0
 
 # PRODUCTION tiny config. Closes hold + setup at 0 violations.
 #
-# Two changes from the original 1 GHz / BCAST_PIPE=0 / HOLD_SLACK_MARGIN=-200
-# state:
-#   1. BCAST_PIPE=1 — parent-level pipeline stage on every cmd_unit ->
-#      skew_lane / mac_tmem_cell broadcast (and a matching output pipe
-#      on the chip-external completion signals, so cocotb cycle-by-
-#      cycle lockstep still passes; pymodel models the same latency
-#      via its bcast_pipe= ctor arg). The pipe flops live in the
-#      parent's CTS domain, which lets the resizer add hold-fix delay
-#      on a much shorter inter-macro segment.
-#   2. clock period 1000 ps -> 2500 ps in compute_array_tiny_bcast0.sdc.
-#      At 1 GHz baseline itself had -1728 ps setup WNS; the 1 GHz target
-#      was always aspirational on this design. (tiny stays at 2500 ps /
-#      400 MHz; the full compute_array.sdc was later relaxed to 3333 ps /
-#      300 MHz for the long far-column broadcast — issue #25 — which tiny's
-#      short 4-wide broadcast does not need.)
+# Historical name: the "_bcast0" suffix dates from when BCAST_PIPE was a
+# tunable parent-level pipeline knob. #45 deleted that knob (B6 #40's
+# per-skew abutment chain absorbed the broadcast pipeline into the
+# hardened skew_lane macros). The nickname is preserved for stability
+# of the build/results/<nickname>/ path that downstream chip_top runs
+# pin against.
 #
-# Other approaches explored that did NOT beat this config (kept in the
-# tree as documentation, see headers of):
-#   compute_array_tiny_slow.config.mk      — same settings, baseline
-#   compute_array_tiny_slowbal.config.mk   — + CTS_CLUSTER tweaks (no gain)
-#   compute_array_tiny_slowuskew.config.mk — + reversed useful-skew SDC (no gain)
-#   compute_array_tiny_slowpipe2.config.mk — BCAST_PIPE=2 (+3 MHz fmax, +1 cycle latency)
+# Closure recipe: 2500 ps clock period in compute_array_tiny_bcast0.sdc.
+# tiny stays at 2500 ps / 400 MHz; the full compute_array.sdc was later
+# relaxed to 3333 ps / 300 MHz for the long far-column broadcast (#25)
+# — tiny's short 4-wide broadcast does not need that.
 #
 # See tech/asap7/problems/A2_hold_timing_rtl.md for the journey.
-export VERILOG_FILES = /work/build/sv2v/compute_array_tiny_bcast1.v
+export VERILOG_FILES = /work/build/sv2v/compute_array_tiny.v
 export SDC_FILE      = /work/tech/asap7/orfs/compute_array_tiny_bcast0.sdc
 
 # Absolute floorplan (must match macro_placement.tcl numbers).
@@ -97,9 +86,9 @@ export PDN_TCL = /work/tech/asap7/orfs/compute_array.pdn.tcl
 
 export SKIP_LAST_GASP ?= 1
 
-# HOLD_SLACK_MARGIN intentionally not set (default 0). With BCAST_PIPE=1
-# in the parent and a 2500 ps clock period in compute_array_tiny_bcast0.sdc,
-# repair_timing converges to 0 hold violations cleanly. If a future
-# change pushes hold WNS back negative, do not re-add this knob — fix
-# the root cause. See tech/asap7/problems/A2_hold_timing_rtl.md.
+# HOLD_SLACK_MARGIN intentionally not set (default 0). With a 2500 ps
+# clock period in compute_array_tiny_bcast0.sdc, repair_timing converges
+# to 0 hold violations cleanly. If a future change pushes hold WNS back
+# negative, do not re-add this knob — fix the root cause. See
+# tech/asap7/problems/A2_hold_timing_rtl.md.
 
