@@ -286,3 +286,55 @@ sudo gdb -p $PID --batch \
 Then map the local variable that holds the current net (`net`, `n`,
 `current_net` — depends on OpenROAD version) back to a name via
 `db->getNetByIndex(idx)->getName()` or similar.
+
+### Session 2026-06-02 — #40 take-6 B5 made the problem worse
+
+- Symptom: B4 take-5 had 20 stuck nets at iter 10. Hypothesis: absorbing
+  parent BCAST_PIPE registers into cmd_unit (B5) would remove the long
+  parent-flop→skew_lane wires that the resizer was buffering through
+  the W mac boundary.
+- Evidence before B5: diagnose_grt.sh identified resizer-inserted
+  buffer chains from `ps_pipe[0]` and `pn_pipe[0]` (parent BCAST_PIPE
+  flops) to skew_b[0] and gen_row[31][0]. ✓ The buffers were real.
+- What I MISSED: the parent `pa_pipe`/`pb_pipe` flops are
+  TIMING-DRIVEN placed — ORFS places them NEAR their loads (along the
+  skew_lane column / row). Moving the flops INSIDE cmd_unit pinned the
+  source at SW corner, replacing "32 placer-spread sources to nearby
+  loads" with "1 fixed source to 32 distant loads."
+- Result: B5 made it WORSE (102 stuck nets vs B4's 20). Same congestion
+  pattern, more buffer chains required because the source no longer
+  spreads with its loads.
+- Lesson: **when reducing a SOURCE's flop COUNT, also check that the
+  source's POSITION FREEDOM isn't being reduced**. A flexibly-placeable
+  source can beat a smaller-but-pinned source, especially for
+  high-fanout broadcasts. The placer's freedom is a hidden architectural
+  feature — moving flops into a macro takes that freedom away.
+
+The correct architectural answer (only learned after B5 failed):
+**chain the broadcast through skew_lane abutment ports**, the same
+pattern as the existing clk feedthrough. Per hop the signal is registered
+inside one macro and routed only ~35 µm to the next macro's chain
+input. No long fanouts ANYWHERE — not from cmd_unit, not from any
+parent flop. This is the only structure where the placer's freedom and
+the macro flop count are both optimal.
+
+### Mistake patterns to internalize
+
+- **Don't optimize one dimension blind to another.** B5 optimized "flop
+  count at parent" but blew up "physical fanout distance." Both
+  matter — measure both before deciding.
+- **A working partial fix is data — try TWO fixes before committing
+  to one.** B4 took-5 had only 20 stuck nets at iter 10 — that's the
+  evidence that B4's direction was correct. Should have validated B4
+  with the GRT cap working (which it wasn't due to the env-var name
+  bug) before adding B5 on top.
+- **Verify EVERY config knob actually takes effect.** Set
+  `OR_GLOBAL_ROUTING_ARGS` for two iterations of debugging before
+  noticing the correct name was `GLOBAL_ROUTE_ARGS`. Recipe: grep the
+  flow scripts for the var name AT THE TIME OF SETTING IT, not after
+  the fact. ORFS docs are `variables.yaml` — single source of truth.
+- **One re-harden costs ≥ 10 min — make it count.** Re-hardening
+  cmd_unit for B5 was a forward-only decision; the wasted re-harden
+  was the cost of skipping step 2 above. Before re-hardening: list
+  what the experiment will prove vs refute, and what it WON'T tell
+  you.
