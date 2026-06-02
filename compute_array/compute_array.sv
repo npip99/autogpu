@@ -3,9 +3,14 @@
 // Phase 7i-7: three-macro hierarchy.
 //
 //   - 1 cmd_unit        : K-loop FSM + drain pulse generator. Tiny.
-//   - MMA_M skew_lane   : a-skew, one per row. Each tap_index = row_index.
-//   - MMA_N skew_lane   : b-skew, one per col. Each tap_index = col_index.
+//   - MMA_M skew_lane_a : a-skew, one per row. Stacked S→N along W column;
+//                         each instance holds one stage of the 260-bit
+//                         broadcast chain register (B6 #40).
+//   - MMA_N skew_lane_b : b-skew, one per col. Stacked W→E along S row;
+//                         same chain-register layout, mirror axis.
 //                         b-side instances tie push_slot/push_accum to 0.
+//                         The internal skew_lane is purely combinational
+//                         (#44 stripped the dead 31-stage shift register).
 //   - MMA_M*MMA_N cells : mac_tmem_cell systolic mesh with south->north drain.
 //
 // Drain output = top row of cells' drain_out (no mux).
@@ -81,9 +86,6 @@ module compute_array #(
 );
 
     localparam int SLOT_W = $clog2(N_SLOTS);
-    // skew_lane DEPTH must be >= max(MMA_M, MMA_N) so tap_index <= depth-1.
-    // We make it large enough to cover both axes from the same hardened macro.
-    localparam int SKEW_DEPTH = (MMA_M > MMA_N) ? MMA_M : MMA_N;
 
     // ------------------------------------------------------------------
     // cmd_unit
@@ -313,37 +315,35 @@ module compute_array #(
     endgenerate
 
     // ------------------------------------------------------------------
-    // Broadcast topology (B4, #40): cmd_unit's BCAST_PIPE-registered
-    // outputs (push_a_bytes_piped, push_now_piped, etc.) fan out
-    // combinationally to every skew_lane. Each skew_lane[i] then uses
-    // its own internal DEPTH-1 shift register (tap_index = i) to delay
-    // its byte by i cycles — the i-cycle systolic delay lives INSIDE
-    // the hardened skew_lane macro, where its flops are hidden from
-    // parent CTS / GRT behind a single macro clk pin.
+    // Broadcast topology (B6, #40): cmd_unit drives the chain HEAD of
+    // both skew_lane stacks. Each skew_lane_a/b instance registers the
+    // 260-bit chain (push_now + push_slot + push_accum + 256-bit byte
+    // vector) at posedge clk_w and exposes it on its opposite-edge
+    // abutment pin to the next instance. After 32 stages the byte for
+    // row/col i has been delayed i cycles — that's the systolic delay.
+    // Per-row data is sliced from chain_w_s[i*8 +: 8] at parent level
+    // and fed to the cell mesh via combinational pass-through (#44
+    // stripped the dead internal shift register; the chain register
+    // is the only delay element now).
     //
-    // This reverts PR #31/#34's parent pa_chain / pb_chain shift
-    // registers, which moved the i-cycle delay out to parent level (~16K
-    // parent flops, all clocked from chip clk). That parent chain made
-    // the chip clk net's fanout balloon to ~8K endpoints at parent,
-    // causing GRT mazeRouteMSMDOrder3D to spin for hours on the 32×32
-    // build (perf-attached take-2 showed 97% CPU in the maze router on
-    // a single iter for >78 min before kill).
+    // History: PR #31/#34 used parent pa_chain / pb_chain shift
+    // registers (~16K parent flops, all on chip clk). That made the
+    // chip clk net's fanout balloon to ~8K endpoints at parent,
+    // causing GRT mazeRouteMSMDOrder3D to spin >78 min on 32×32.
+    // B6 fixes this by hiding the delay flops inside the hardened
+    // skew_lane_a/b chain register, where they share the macro's
+    // local clk and don't burden the parent.
     //
     // Setup safety: BCAST_PIPE>=1 must be set in the synth define
     // (compute_array_abut.config.mk uses chip_top_bcast1.v).
     // BCAST_PIPE=1 registers push_a_bytes at cmd_unit's output edge
-    // before the 32-way fan-out — same fix PR #27 used to close the
-    // -451 ps broadcast setup violation before the chain was introduced.
-    //
-    // Total flop count is unchanged (~16K delay flops); they just live
-    // INSIDE the hardened skew_lane macros (which already contained
-    // them — the chain made them dead). No macro re-harden needed.
+    // before the chain head fanout.
     // ------------------------------------------------------------------
 
     // ------------------------------------------------------------------
-    // a-side skew_lanes: one per row. Each row i consumes chain stage i;
-    // tap_index=0 (skew_lane runs as a live pass-through — the i-cycle
-    // systolic delay is now in the chain instead).
+    // a-side skew_lanes: one per row. The chain register inside each
+    // skew_lane_a provides the i-cycle systolic delay; the internal
+    // skew_lane is purely combinational (live pass-through).
     // Outputs feed the west edge of cell (i, 0).
     //
     // Clock distribution: chain clk through the skew_a column via the
@@ -413,7 +413,6 @@ module compute_array #(
                 .push_slot  (sa_chain_w_s[gi_a][MMA_M*8 +: SLOT_W]),
                 .push_accum (sa_chain_w_s[gi_a][MMA_M*8 + SLOT_W]),
                 .push_now   (sa_chain_w_s[gi_a][MMA_M*8 + SLOT_W + 1]),
-                .tap_index  ({$clog2(SKEW_DEPTH){1'b0}}),
                 .edge_valid (ev),
                 .edge_byte  (eb),
                 .edge_slot  (es),
@@ -462,7 +461,6 @@ module compute_array #(
                 .push_slot  (sb_chain_w_w[gj_b][MMA_N*8 +: SLOT_W]),
                 .push_accum (sb_chain_w_w[gj_b][MMA_N*8 + SLOT_W]),
                 .push_now   (sb_chain_w_w[gj_b][MMA_N*8 + SLOT_W + 1]),
-                .tap_index  ({$clog2(SKEW_DEPTH){1'b0}}),
                 .edge_valid (ev_unused),
                 .edge_byte  (eb),
                 .edge_slot  (es_unused),

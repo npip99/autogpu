@@ -14,17 +14,15 @@
 //     - this row consumes its byte from chain_w_s[row*8 +: 8] (parent slices
 //       the chain_w_s net externally — short stub on the south edge)
 //
-//   The internal `skew_lane u` is now configured with tap_index=0 (live
-//   pass-through) since the abutment chain provides the i-cycle delay. The
-//   internal 31-stage shift register is unused but stays present (no
-//   re-harden of skew_lane.sv needed for B6).
+//   The internal `skew_lane u` is purely combinational (issue #44 stripped
+//   the dead 31-stage shift register); the abutment chain register above
+//   provides the systolic per-row delay.
 //
 // Pairs symmetrically with skew_lane_b (chain on W/E sides).
 
 `default_nettype none
 
 module skew_lane_a #(
-    parameter int DEPTH       = 32,
     parameter int N_SLOTS     = 4,
     parameter int CHAIN_WIDTH = 260   // push_now(1) + push_slot(2) + push_accum(1) + push_a_bytes(256)
 ) (
@@ -45,13 +43,12 @@ module skew_lane_a #(
     output wire [CHAIN_WIDTH-1:0]        chain_e_n,
 
     // ---- Per-row data (parent taps chain_w_s externally) --------------
-    // These match the existing skew_lane interface. Parent compute_array
-    // wires them from chain_w_s slices at the south edge — short stubs.
+    // Parent compute_array wires these from chain_w_s slices at the south
+    // edge — short stubs.
     input  wire                          push_now,
     input  wire [7:0]                    push_byte,
     input  wire [$clog2(N_SLOTS)-1:0]    push_slot,
     input  wire                          push_accum,
-    input  wire [$clog2(DEPTH)-1:0]      tap_index,
 
     // ---- Row output to mac mesh col-0 (E edge) ------------------------
     output wire                          edge_valid,
@@ -75,16 +72,13 @@ module skew_lane_a #(
     end
     assign chain_e_n = chain_reg;
 
-    // Pass per-row inputs to the internal skew_lane (tap_index=0 makes it
-    // a live pass-through; the abutment chain provides the systolic delay).
-    skew_lane #(.DEPTH(DEPTH), .N_SLOTS(N_SLOTS)) u (
-        .clk        (clk_w),
-        .reset      (reset),
+    // Per-row pass-through (combinational; the abutment chain register
+    // above is what provides the systolic delay).
+    skew_lane #(.N_SLOTS(N_SLOTS)) u (
         .push_now   (push_now),
         .push_byte  (push_byte),
         .push_slot  (push_slot),
         .push_accum (push_accum),
-        .tap_index  (tap_index),
         .edge_valid (edge_valid),
         .edge_byte  (edge_byte),
         .edge_slot  (edge_slot),

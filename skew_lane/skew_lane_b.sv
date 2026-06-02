@@ -12,15 +12,18 @@
 //
 //   Pin layout (geometry — see tech/asap7/orfs/scripts/skew_lane_b.pins.tcl):
 //     - W edge: clk_w + chain_w_w + per-col taps (push_byte/now/slot/accum
-//       /tap_index/reset) — parent slices the chain externally
+//       /reset) — parent slices the chain externally
 //     - E edge: clk_e + chain_e_e (registered)
 //     - N edge: edge_byte/valid/slot/accum — feeds mac mesh row 0 above
 //     - S edge: empty (skew_b sits at compute_array's south boundary)
+//
+//   The internal `skew_lane u` is purely combinational (issue #44 stripped
+//   the dead 31-stage shift register); the abutment chain register above
+//   provides the systolic per-column delay.
 
 `default_nettype none
 
 module skew_lane_b #(
-    parameter int DEPTH       = 32,
     parameter int N_SLOTS     = 4,
     parameter int CHAIN_WIDTH = 260   // push_now(1) + push_slot(2) + push_accum(1) + push_b_bytes(256)
 ) (
@@ -35,7 +38,6 @@ module skew_lane_b #(
     input  wire [7:0]                    push_byte,
     input  wire [$clog2(N_SLOTS)-1:0]    push_slot,
     input  wire                          push_accum,
-    input  wire [$clog2(DEPTH)-1:0]      tap_index,
 
     output wire                          edge_valid,
     output wire [7:0]                    edge_byte,
@@ -51,14 +53,11 @@ module skew_lane_b #(
     end
     assign chain_e_e = chain_reg;
 
-    skew_lane #(.DEPTH(DEPTH), .N_SLOTS(N_SLOTS)) u (
-        .clk        (clk_w),
-        .reset      (reset),
+    skew_lane #(.N_SLOTS(N_SLOTS)) u (
         .push_now   (push_now),
         .push_byte  (push_byte),
         .push_slot  (push_slot),
         .push_accum (push_accum),
-        .tap_index  (tap_index),
         .edge_valid (edge_valid),
         .edge_byte  (edge_byte),
         .edge_slot  (edge_slot),

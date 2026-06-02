@@ -3,7 +3,7 @@
 # Mirror of skew_lane_a but the chain hops horizontally:
 #
 #   W edge (x=0)      : chain_w_w[0..259] + clk_w + reset
-#                       + per-col push_byte/now/slot/accum taps + tap_index
+#                       + per-col push_byte/now/slot/accum taps
 #                       M4 horizontal pins; abuts with E edge of skew_b[j-1]
 #                       (or driven by cmd_unit's E-edge chain output for j=0)
 #   E edge (x=TILE)   : chain_e_e[0..259] + clk_e
@@ -52,11 +52,6 @@ place_pin -pin_name push_now           -layer M4 -location [list 0.0 22.86] -for
 place_pin -pin_name "push_slot\[0\]" -layer M4 -location [list 0.0 23.28] -force_to_die_boundary
 place_pin -pin_name "push_slot\[1\]" -layer M4 -location [list 0.0 23.70] -force_to_die_boundary
 place_pin -pin_name push_accum         -layer M4 -location [list 0.0 24.12] -force_to_die_boundary
-place_pin -pin_name "tap_index\[0\]"   -layer M4 -location [list 0.0 24.54] -force_to_die_boundary
-place_pin -pin_name "tap_index\[1\]"   -layer M4 -location [list 0.0 24.96] -force_to_die_boundary
-place_pin -pin_name "tap_index\[2\]"   -layer M4 -location [list 0.0 25.38] -force_to_die_boundary
-place_pin -pin_name "tap_index\[3\]"   -layer M4 -location [list 0.0 25.80] -force_to_die_boundary
-place_pin -pin_name "tap_index\[4\]"   -layer M4 -location [list 0.0 26.22] -force_to_die_boundary
 
 # ---- N edge: edge_* outputs (M5 vertical, feed mac mesh row 0) --------
 # X coordinates spaced across the macro top edge

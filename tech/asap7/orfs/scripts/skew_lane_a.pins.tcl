@@ -10,7 +10,7 @@
 #   N edge (y=TILE)     : chain_e_n[0..259] + clk_e
 #                         M5 vertical pins; abuts with S edge of skew_a[i+1]
 #   W edge (x=0)        : push_byte[0..7] + push_now + push_slot[0..1]
-#                         + push_accum + tap_index[0..4]
+#                         + push_accum
 #                         M4 horizontal pins; these are PARENT-LEVEL slice
 #                         taps from chain_w_s, NOT chain-abutted
 #   E edge (x=TILE)     : edge_byte[0..7] + edge_valid + edge_slot[0..1]
@@ -62,11 +62,6 @@ place_pin -pin_name push_now           -layer M4 -location [list 0.0 15.0] -forc
 place_pin -pin_name "push_slot\[0\]" -layer M4 -location [list 0.0 16.5] -force_to_die_boundary
 place_pin -pin_name "push_slot\[1\]" -layer M4 -location [list 0.0 18.0] -force_to_die_boundary
 place_pin -pin_name push_accum         -layer M4 -location [list 0.0 19.5] -force_to_die_boundary
-place_pin -pin_name "tap_index\[0\]"   -layer M4 -location [list 0.0 21.0] -force_to_die_boundary
-place_pin -pin_name "tap_index\[1\]"   -layer M4 -location [list 0.0 22.5] -force_to_die_boundary
-place_pin -pin_name "tap_index\[2\]"   -layer M4 -location [list 0.0 24.0] -force_to_die_boundary
-place_pin -pin_name "tap_index\[3\]"   -layer M4 -location [list 0.0 25.5] -force_to_die_boundary
-place_pin -pin_name "tap_index\[4\]"   -layer M4 -location [list 0.0 27.0] -force_to_die_boundary
 
 # ---- E edge: edge_* outputs (M4 horizontal, feed mac mesh col 0) ------
 # Y coordinates match chain_w_s tap byte range (rows 0..7 of macro,
