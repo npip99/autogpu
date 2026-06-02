@@ -16,25 +16,23 @@
 //   - drain_busy, drain_done, drain_row_valid, drain_row_idx, drain_last
 //   - drain_en_o, drain_slot_to_cells (broadcast to cells)
 
-// BCAST_PIPE: number of register stages absorbed into cmd_unit on the
-// broadcast outputs (push_* + drain_*). With BCAST_PIPE=0 the outputs
-// are combinational; with BCAST_PIPE>=1 the outputs are registered N
-// times INSIDE the hardened cmd_unit macro. Set via -DBCAST_PIPE=N at
-// sv2v preprocess (same knob as compute_array's parent BCAST_PIPE).
-// Moving these registers INTO cmd_unit's hardened macro (B5) eliminates
-// the parent flops + the long parent-flop→distant-macro wires that
-// otherwise force the resizer to insert buffer chains at the
-// skew_lane↔mac mesh abutment boundary, congesting GRT routing.
-`ifndef BCAST_PIPE
-`define BCAST_PIPE 0
-`endif
+// B6 (#40): cmd_unit outputs are combinational — the broadcast pipeline
+// lives in the skew_lane chain registers (skew_lane_a.chain_w_s/chain_e_n
+// abutment chain). cmd_unit drives only the CHAIN HEAD: skew_a[0] and
+// skew_b[0]. Pin placement (cmd_unit.pins.tcl) puts push_a_bytes on N
+// edge (toward skew_a column) and push_b_bytes on E edge (toward skew_b
+// row); push_now/push_slot/push_accum sit in the NE corner accessible
+// from both chains via a 2-fanout parent net.
+//
+// B5's internal BCAST_PIPE registers were a wrong turn (RCA_DISCIPLINE.md
+// case study) — pinning the source at SW corner made fan-out distances
+// worse instead of better. Reverted here.
 
 module cmd_unit #(
     parameter int MMA_M   = 32,
     parameter int MMA_N   = 32,
     parameter int MMA_K   = 32,
-    parameter int N_SLOTS = 4,
-    parameter int BCAST_PIPE = `BCAST_PIPE
+    parameter int N_SLOTS = 4
 ) (
     // clk_w / clk_e: matches mac_tmem_cell_tile's contract (#40).
     // cmd_unit sits at the W root of the clock feedthrough chain; it
@@ -245,47 +243,14 @@ module cmd_unit #(
         endcase
     end
 
-    // Expose push payload to skew_lanes.
-    // BCAST_PIPE=0 → combinational pass-through (legacy compute_array.sv flow).
-    // BCAST_PIPE>=1 → register BCAST_PIPE times before exposing on the macro
-    //   port. The internal flops sit inside the hardened cmd_unit LEF, so
-    //   compute_array's clk net never sees them (vs the old parent pa_pipe
-    //   block that added ~700 parent-flop endpoints to chip clk).
-    localparam int PUSH_PIPE_SZ = (BCAST_PIPE > 0) ? BCAST_PIPE : 1;
-    logic                       push_now_pipe   [0:PUSH_PIPE_SZ-1];
-    logic [MMA_M*8-1:0]         push_a_pipe     [0:PUSH_PIPE_SZ-1];
-    logic [MMA_N*8-1:0]         push_b_pipe     [0:PUSH_PIPE_SZ-1];
-    logic [SLOT_W-1:0]          push_slot_pipe  [0:PUSH_PIPE_SZ-1];
-    logic                       push_accum_pipe [0:PUSH_PIPE_SZ-1];
-    generate
-        if (BCAST_PIPE > 0) begin : gen_push_pipe
-            always_ff @(posedge clk_w) begin
-                push_now_pipe  [0] <= push_now;
-                push_a_pipe    [0] <= push_a_data;
-                push_b_pipe    [0] <= push_b_data;
-                push_slot_pipe [0] <= push_slot;
-                push_accum_pipe[0] <= push_accum;
-                for (int s = 1; s < BCAST_PIPE; s++) begin
-                    push_now_pipe  [s] <= push_now_pipe  [s-1];
-                    push_a_pipe    [s] <= push_a_pipe    [s-1];
-                    push_b_pipe    [s] <= push_b_pipe    [s-1];
-                    push_slot_pipe [s] <= push_slot_pipe [s-1];
-                    push_accum_pipe[s] <= push_accum_pipe[s-1];
-                end
-            end
-            assign push_now_o   = push_now_pipe  [BCAST_PIPE-1];
-            assign push_a_bytes = push_a_pipe    [BCAST_PIPE-1];
-            assign push_b_bytes = push_b_pipe    [BCAST_PIPE-1];
-            assign push_slot_o  = push_slot_pipe [BCAST_PIPE-1];
-            assign push_accum_o = push_accum_pipe[BCAST_PIPE-1];
-        end else begin : gen_push_direct
-            assign push_now_o   = push_now;
-            assign push_a_bytes = push_a_data;
-            assign push_b_bytes = push_b_data;
-            assign push_slot_o  = push_slot;
-            assign push_accum_o = push_accum;
-        end
-    endgenerate
+    // Expose push payload to skew_lanes — combinational outputs (B6).
+    // skew_lane chain registers absorb the broadcast pipeline; cmd_unit's
+    // outputs are the chain HEAD (drive skew_a[0]/skew_b[0] only).
+    assign push_now_o   = push_now;
+    assign push_a_bytes = push_a_data;
+    assign push_b_bytes = push_b_data;
+    assign push_slot_o  = push_slot;
+    assign push_accum_o = push_accum;
 
     // ------------------------------------------------------------------
     // Drain FSM (single-pulse broadcast + M-cycle output stream)

@@ -96,15 +96,9 @@ $(BUILD_DIR)/tile_buf_8row.v: $(REPO_ROOT)/tile_buf_8row/tile_buf_8row.sv
 
 # Standalone sv2v output for the cmd_unit submodule: one control block,
 # the only non-array macro inside compute_array.
-#
-# BCAST_PIPE=1: bake 1 stage of push-output registers into the hardened
-# cmd_unit macro (B5 / #40). compute_array_abut instantiates cmd_unit
-# with the matching BCAST_PIPE=1 param, so the macro contents and
-# parent instantiation agree. The non-abutted compute_array.config.mk
-# also uses BCAST_PIPE=1 (PR #27), so no consumer is hurt.
 $(BUILD_DIR)/cmd_unit.v: $(REPO_ROOT)/cmd_unit/cmd_unit.sv
 	@mkdir -p $(BUILD_DIR)
-	sv2v -D BCAST_PIPE=1 --exclude=Always $^ --top=cmd_unit -w $@
+	sv2v --exclude=Always $^ --top=cmd_unit -w $@
 
 $(BUILD_DIR)/skew_lane_a.v: $(REPO_ROOT)/skew_lane/skew_lane.sv $(REPO_ROOT)/skew_lane/skew_lane_a.sv
 	@mkdir -p $(BUILD_DIR)

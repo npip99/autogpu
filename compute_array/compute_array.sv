@@ -355,13 +355,34 @@ module compute_array #(
     // chain). Without this, parent CTS sees 32 separate skew_a endpoints
     // and ends up with widely-different insertion delays → hold storm.
     // ------------------------------------------------------------------
+    // B6 (#40): pure-abutment broadcast chain. cmd_unit's outputs form the
+    // 260-bit chain head ({push_now, push_slot, push_accum, push_a_bytes});
+    // each skew_lane_a[i] registers chain_w_s and exposes chain_e_n on its
+    // N edge, which abuts skew_a[i+1]'s S edge. Per-row data is tapped at
+    // the parent level from each instance's chain_w_s[i*8 +: 8] (the byte
+    // for THIS instance's row), with push_now/slot/accum tapped from the
+    // common upper bits. No fan-out from cmd_unit to distant skew_a's; the
+    // only "long" route is cmd_unit→skew_a[0] (~40 µm at parent).
+    //
+    // CHAIN_WIDTH layout (LSB→MSB, must match skew_lane_a.sv comment):
+    //   [255:0]   push_a_bytes (each row taps its byte at [row*8 +: 8])
+    //   [257:256] push_slot (SLOT_W=2 bits)
+    //   [258]     push_accum
+    //   [259]     push_now
+    localparam int CHAIN_W = MMA_M*8 + SLOT_W + 1 + 1;   // = 260 for 32×32
+
     logic [MMA_M-1:0]            edge_compute;
     logic [MMA_M*8-1:0]          edge_a_bytes_flat;
     logic [MMA_M*SLOT_W-1:0]     edge_slot_flat;
     logic [MMA_M-1:0]            edge_accum;
 
-    logic                        clk_chain_a_w [MMA_M-1:0];
-    logic                        clk_chain_a_e [MMA_M-1:0];
+    logic [CHAIN_W-1:0] sa_chain_w_s [MMA_M-1:0];  // S-edge input to skew_a[i]
+    logic [CHAIN_W-1:0] sa_chain_e_n [MMA_M-1:0];  // N-edge output from skew_a[i]
+    logic               clk_chain_a_w [MMA_M-1:0];
+    logic               clk_chain_a_e [MMA_M-1:0];
+
+    // Chain head: cmd_unit outputs into skew_a[0].chain_w_s
+    assign sa_chain_w_s[0] = {push_now, push_accum, push_slot, push_a_bytes};
 
     genvar gi_a;
     generate
@@ -370,16 +391,26 @@ module compute_array #(
             logic [7:0]            eb;
             logic [SLOT_W-1:0]     es;
             logic                  ea;
+            // Chain feedthrough: skew_a[i].chain_w_s = skew_a[i-1].chain_e_n
+            // (for i>0); abutment-aligned pins make this a zero-length wire.
+            if (gi_a > 0) begin : gen_chain_link
+                assign sa_chain_w_s[gi_a] = sa_chain_e_n[gi_a-1];
+            end
             assign clk_chain_a_w[gi_a] = (gi_a == 0) ? clk : clk_chain_a_e[gi_a-1];
-            skew_lane_a u_a (
+            skew_lane_a #(.CHAIN_WIDTH(CHAIN_W)) u_a (
                 .clk_w      (clk_chain_a_w[gi_a]),
                 .clk_e      (clk_chain_a_e[gi_a]),
                 .reset      (reset),
-                .push_now   (push_now_piped),
-                .push_byte  (push_a_bytes_piped[gi_a*8 +: 8]),
-                .push_slot  (push_slot_piped),
-                .push_accum (push_accum_piped),
-                .tap_index  ($clog2(SKEW_DEPTH)'(gi_a)),
+                .chain_w_s  (sa_chain_w_s[gi_a]),
+                .chain_e_n  (sa_chain_e_n[gi_a]),
+                // Parent slice from THIS instance's chain_w_s — tap the
+                // byte for row gi_a from the LSB half of the chain bus,
+                // and the common control bits from the upper bits.
+                .push_byte  (sa_chain_w_s[gi_a][gi_a*8 +: 8]),
+                .push_slot  (sa_chain_w_s[gi_a][MMA_M*8 +: SLOT_W]),
+                .push_accum (sa_chain_w_s[gi_a][MMA_M*8 + SLOT_W]),
+                .push_now   (sa_chain_w_s[gi_a][MMA_M*8 + SLOT_W + 1]),
+                .tap_index  ({$clog2(SKEW_DEPTH){1'b0}}),
                 .edge_valid (ev),
                 .edge_byte  (eb),
                 .edge_slot  (es),
@@ -393,20 +424,19 @@ module compute_array #(
     endgenerate
 
     // ------------------------------------------------------------------
-    // b-side skew_lanes: one per col. Each col j consumes chain stage j;
-    // tap_index=0 (live pass-through, j-cycle delay now in the chain).
-    //
-    // Clock distribution: chain clk W→E through the skew_b row via the
-    // clk_w/clk_e feedthrough (mirror of the skew_a column chain above).
-    // The first 32×32 abut run failed CTS with -4216 ps hold WNS on
-    // gen_b_skew[17].u_b/push_byte[5] — parent CTS picked imbalanced trees
-    // to the 32 independent skew_b clk endpoints. This chain reduces
-    // adjacent-skew_b clock-tree skew to one macro's internal CTS delta.
+    // b-side skew_lanes: mirror of a-side but the chain hops W→E along
+    // the south row instead of S→N along the west column. Chain head is
+    // cmd_unit's push_b_bytes (same shared push_now/slot/accum bits).
     // ------------------------------------------------------------------
     logic [MMA_N*8-1:0]          edge_b_bytes_flat;
 
-    logic                        clk_chain_b_w [MMA_N-1:0];
-    logic                        clk_chain_b_e [MMA_N-1:0];
+    logic [CHAIN_W-1:0] sb_chain_w_w [MMA_N-1:0];  // W-edge input to skew_b[j]
+    logic [CHAIN_W-1:0] sb_chain_e_e [MMA_N-1:0];  // E-edge output from skew_b[j]
+    logic               clk_chain_b_w [MMA_N-1:0];
+    logic               clk_chain_b_e [MMA_N-1:0];
+
+    // Chain head: cmd_unit outputs into skew_b[0].chain_w_w
+    assign sb_chain_w_w[0] = {push_now, push_accum, push_slot, push_b_bytes};
 
     genvar gj_b;
     generate
@@ -415,21 +445,21 @@ module compute_array #(
             logic [7:0]            eb;
             logic [SLOT_W-1:0]     es_unused;
             logic                  ea_unused;
+            if (gj_b > 0) begin : gen_chain_link
+                assign sb_chain_w_w[gj_b] = sb_chain_e_e[gj_b-1];
+            end
             assign clk_chain_b_w[gj_b] = (gj_b == 0) ? clk : clk_chain_b_e[gj_b-1];
-            skew_lane_b u_b (
+            skew_lane_b #(.CHAIN_WIDTH(CHAIN_W)) u_b (
                 .clk_w      (clk_chain_b_w[gj_b]),
                 .clk_e      (clk_chain_b_e[gj_b]),
                 .reset      (reset),
-                .push_now   (push_now_piped),
-                .push_byte  (push_b_bytes_piped[gj_b*8 +: 8]),
-                // push_slot / push_accum: functionally unused on b-side
-                // (b-skew's edge_slot / edge_accum outputs are dangling —
-                // cells take slot/accum from a-skew). Reusing the parent
-                // piped signals (vs tying to '0) avoids 96 per-instance
-                // conb_1 tie cells (32 b-skews × 3 bits) and their wires.
-                .push_slot  (push_slot_piped),
-                .push_accum (push_accum_piped),
-                .tap_index  ($clog2(SKEW_DEPTH)'(gj_b)),
+                .chain_w_w  (sb_chain_w_w[gj_b]),
+                .chain_e_e  (sb_chain_e_e[gj_b]),
+                .push_byte  (sb_chain_w_w[gj_b][gj_b*8 +: 8]),
+                .push_slot  (sb_chain_w_w[gj_b][MMA_N*8 +: SLOT_W]),
+                .push_accum (sb_chain_w_w[gj_b][MMA_N*8 + SLOT_W]),
+                .push_now   (sb_chain_w_w[gj_b][MMA_N*8 + SLOT_W + 1]),
+                .tap_index  ({$clog2(SKEW_DEPTH){1'b0}}),
                 .edge_valid (ev_unused),
                 .edge_byte  (eb),
                 .edge_slot  (es_unused),
