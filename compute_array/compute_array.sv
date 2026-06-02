@@ -550,8 +550,14 @@ module compute_array #(
                     .drain_en_e   (drain_en_chain_e  [gi][gj]),
                     .drain_slot_w (drain_slot_chain_w[gi][gj]),
                     .drain_slot_e (drain_slot_chain_e[gi][gj]),
-                    // init_* ports removed from mac_tmem_cell (#40
-                    // take-13 fix, INVARIANTS.md R4a).
+                    // init_* ports only exist in sim (mac_tmem_cell.sv
+                    // strips them at hardening — INVARIANTS.md R4a/R4b).
+                    // Without this `ifndef guard, Verilator warns UNDRIVEN.
+`ifndef SYNTHESIS
+                    .init_en   (1'b0),
+                    .init_slot ('0),
+                    .init_data (32'd0),
+`endif
                     .scrub_en_w   (scrub_en_chain_w  [gi][gj]),
                     .scrub_en_e   (scrub_en_chain_e  [gi][gj])
                 );
