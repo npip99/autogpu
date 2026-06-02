@@ -14,25 +14,13 @@
 //   - MMA_M*MMA_N cells : mac_tmem_cell systolic mesh with south->north drain.
 //
 // Drain output = top row of cells' drain_out (no mux).
-
-// BCAST_PIPE adds N register stages on the broadcast nets from cmd_unit
-// to the 32 skew_lanes and 1024 mac cells. Each stage shortens the worst
-// wire from ~1.5 mm (corner-to-corner at chip scale) to ~1.5/(N+1) mm.
-// Set via -DBCAST_PIPE=N to sv2v.
 //
-// Functional model with BCAST_PIPE=N: parent inserts N forward flops on
-// every cmd_unit->cell/skew_lane net (push_*, drain_*, scrub_en), and
-// symmetric N output flops on every cmd_unit->chip-external completion
-// signal (mma_busy/done, arrive_*, drain_busy/done/row_valid/row_idx/
-// row_last). cmd_unit's internal FSM is unmodified; the symmetric output
-// pipe slips every externally-visible completion event by N cycles so it
-// arrives in lockstep with the cells that actually finished the work.
-// rd_*_en/addr are NOT delayed (SMEM lives at chip-natural time).
-// pymodel ComputeArray takes a bcast_pipe= ctor arg that models the same
-// shift registers so the cocotb cycle-by-cycle compare still matches.
-`ifndef BCAST_PIPE
-`define BCAST_PIPE 0
-`endif
+// R1 (tech/INVARIANTS.md): this parent design holds macros + wires only.
+// The broadcast-pipeline knob `BCAST_PIPE` was deleted in #45 — its
+// motivating routing problem was eliminated by B6's per-skew abutment
+// chain (skew_lane_a/b internal `chain_w_s/chain_e_n` registers), and
+// the parent flops it inserted on the cmd_unit-out / cmd_unit-in nets
+// violated R1.
 `ifndef MMA_M
 `define MMA_M 32
 `endif
@@ -47,8 +35,7 @@ module compute_array #(
     parameter int MMA_M      = `MMA_M,
     parameter int MMA_N      = `MMA_N,
     parameter int MMA_K      = `MMA_K,
-    parameter int N_SLOTS    = 4,
-    parameter int BCAST_PIPE = `BCAST_PIPE
+    parameter int N_SLOTS    = 4
 ) (
     input  logic                          clk,
     input  logic                          reset,
@@ -90,6 +77,11 @@ module compute_array #(
     // ------------------------------------------------------------------
     // cmd_unit
     // ------------------------------------------------------------------
+    // push_*  : combinational outputs from cmd_unit's K-loop FSM. Drive
+    //           the chain head of each skew_lane stack (skew_a[0],
+    //           skew_b[0]) directly — the skew_lane chain registers
+    //           provide the broadcast pipeline (B6 #40).
+    // cells_drain_* / status outputs : registered inside cmd_unit.
     logic                       push_now;
     logic [MMA_M*8-1:0]         push_a_bytes;
     logic [MMA_N*8-1:0]         push_b_bytes;
@@ -98,38 +90,6 @@ module compute_array #(
     logic                       cells_drain_en;
     logic [SLOT_W-1:0]          cells_drain_slot;
 
-    // Pipelined copies of cmd_unit's broadcast outputs. Width matches
-    // the source signals exactly. Consumed by skew_lanes (push_*) and
-    // by every mac cell (cells_drain_* / scrub_en).
-    logic                       push_now_piped;
-    logic [MMA_M*8-1:0]         push_a_bytes_piped;
-    logic [MMA_N*8-1:0]         push_b_bytes_piped;
-    logic [SLOT_W-1:0]          push_slot_piped;
-    logic                       push_accum_piped;
-    logic                       cells_drain_en_piped;
-    logic [SLOT_W-1:0]          cells_drain_slot_piped;
-    logic                       scrub_en_piped;
-
-    // cmd_unit completion outputs (before the output pipe). These are
-    // re-driven onto the chip output ports through a matching N-stage
-    // shift register so external observers see them aligned with the
-    // forward-piped cell activity.
-    logic                       u_mma_busy;
-    logic                       u_mma_done;
-    logic                       u_arrive_en;
-    logic [31:0]                u_arrive_bar_id;
-    logic                       u_drain_busy;
-    logic                       u_drain_done;
-    logic                       u_drain_row_valid;
-    logic [$clog2(MMA_M)-1:0]   u_drain_row_idx;
-    logic                       u_drain_last;
-
-    // B5 (#40): cmd_unit is a hardened black box at synth time. The
-    // BCAST_PIPE register stages are baked INTO the cmd_unit LEF (built
-    // with -DBCAST_PIPE=1 in the standalone sv2v rule — see
-    // tech/sky130/Makefile). Yosys cannot pass parameters into a
-    // hardened module, so we instantiate it positionally — the macro's
-    // output ports already carry the registered values.
     cmd_unit u_cmd (
         .clk_w                (clk),
         .clk_e                (),
@@ -142,10 +102,10 @@ module compute_array #(
         .issue_b_off          (issue_b_off),
         .issue_a_stride       (issue_a_stride),
         .issue_b_stride       (issue_b_stride),
-        .mma_busy             (u_mma_busy),
-        .mma_done             (u_mma_done),
-        .arrive_en            (u_arrive_en),
-        .arrive_bar_id        (u_arrive_bar_id),
+        .mma_busy             (mma_busy),
+        .mma_done             (mma_done),
+        .arrive_en            (arrive_en),
+        .arrive_bar_id        (arrive_bar_id),
         .rd_a_en              (rd_a_en),
         .rd_a_addr            (rd_a_addr),
         .rd_a_data            (rd_a_data),
@@ -158,11 +118,11 @@ module compute_array #(
         .rd_b_stall_in        (rd_b_stall_in),
         .drain_issue          (drain_issue),
         .drain_slot           (drain_slot),
-        .drain_busy           (u_drain_busy),
-        .drain_done           (u_drain_done),
-        .drain_row_valid      (u_drain_row_valid),
-        .drain_row_idx        (u_drain_row_idx),
-        .drain_last           (u_drain_last),
+        .drain_busy           (drain_busy),
+        .drain_done           (drain_done),
+        .drain_row_valid      (drain_row_valid),
+        .drain_row_idx        (drain_row_idx),
+        .drain_last           (drain_last),
         .push_now_o           (push_now),
         .push_a_bytes         (push_a_bytes),
         .push_b_bytes         (push_b_bytes),
@@ -171,148 +131,6 @@ module compute_array #(
         .drain_en_o           (cells_drain_en),
         .drain_slot_to_cells  (cells_drain_slot)
     );
-
-    // ------------------------------------------------------------------
-    // Broadcast pipeline — B5 (#40) partial absorption.
-    //
-    // After B5, cmd_unit ITSELF holds the BCAST_PIPE flops for the push_*
-    // family (push_now, push_a_bytes, push_b_bytes, push_slot, push_accum).
-    // Those outputs are already registered when they leave the hardened
-    // cmd_unit macro, so the *_piped signals here are direct wires from
-    // cmd_unit's output ports — no parent shift register, no parent flops.
-    //
-    // Why: the parent pa_pipe/pb_pipe block previously held ~16K parent
-    // flops (256-bit BCAST_PIPE register × MMA dimensions × stages). At
-    // 32×32 the resizer had to insert buffer chains from those parent
-    // flops to each skew_lane macro, congesting the W mac boundary at
-    // GRT. Hiding the flops INSIDE cmd_unit's macro eliminates those
-    // long parent-flop→skew wires entirely (the placer puts cmd_unit
-    // adjacent to skew_a[0] / skew_b[0], so the macro→macro wires are
-    // short by construction).
-    //
-    // Drain pipe (cells_drain_en, cells_drain_slot) and scrub_en stay at
-    // parent for now — their fanout is small (drain_en/slot → 1024 mac
-    // cells but via existing feedthrough chains; scrub_en is one signal
-    // through the same chains). Absorbing those into cmd_unit too would
-    // be a follow-up.
-    // ------------------------------------------------------------------
-    localparam int PIPE_SZ = (BCAST_PIPE > 0) ? BCAST_PIPE : 1;
-
-    logic                       dre_pipe [0:PIPE_SZ-1];
-    logic [SLOT_W-1:0]          drs_pipe [0:PIPE_SZ-1];
-    logic                       sc_pipe  [0:PIPE_SZ-1];
-
-    generate
-        if (BCAST_PIPE > 0) begin : gen_drain_scrub_pipe
-            always_ff @(posedge clk) begin
-                dre_pipe[0] <= cells_drain_en;
-                drs_pipe[0] <= cells_drain_slot;
-                sc_pipe[0]  <= scrub_en;
-                for (int s = 1; s < BCAST_PIPE; s++) begin
-                    dre_pipe[s] <= dre_pipe[s-1];
-                    drs_pipe[s] <= drs_pipe[s-1];
-                    sc_pipe[s]  <= sc_pipe[s-1];
-                end
-            end
-            assign cells_drain_en_piped   = dre_pipe[PIPE_SZ-1];
-            assign cells_drain_slot_piped = drs_pipe[PIPE_SZ-1];
-            assign scrub_en_piped         = sc_pipe[PIPE_SZ-1];
-        end else begin : gen_drain_scrub_direct
-            assign cells_drain_en_piped   = cells_drain_en;
-            assign cells_drain_slot_piped = cells_drain_slot;
-            assign scrub_en_piped         = scrub_en;
-        end
-    endgenerate
-
-    // Push family: cmd_unit registers internally (B5), so the *_piped
-    // wires are direct from cmd_unit's already-registered outputs.
-    assign push_now_piped     = push_now;
-    assign push_a_bytes_piped = push_a_bytes;
-    assign push_b_bytes_piped = push_b_bytes;
-    assign push_slot_piped    = push_slot;
-    assign push_accum_piped   = push_accum;
-
-    // ------------------------------------------------------------------
-    // Output pipe: BCAST_PIPE D-FF stages on every cmd_unit -> chip
-    // completion signal. Symmetric with the forward pipe above: cells
-    // see push/drain N cycles after cmd_unit emits them, so external
-    // observers must see mma_done / drain_row_valid / etc. N cycles
-    // later too, or they'll latch results before cells have written
-    // them. rd_*_en/addr are NOT in this pipe — SMEM lives at the
-    // chip boundary and cmd_unit's FSM expects round-trip at the
-    // natural clock-cycle latency. Without this pipe (the original
-    // BCAST_PIPE scaffolding) the chip is structurally sane but the
-    // cocotb cycle-by-cycle compare drifts by N.
-    // ------------------------------------------------------------------
-    logic                       mb_pipe  [0:PIPE_SZ-1];
-    logic                       md_pipe  [0:PIPE_SZ-1];
-    logic                       ae_pipe  [0:PIPE_SZ-1];
-    logic [31:0]                ab_pipe  [0:PIPE_SZ-1];
-    logic                       db_pipe  [0:PIPE_SZ-1];
-    logic                       dd_pipe  [0:PIPE_SZ-1];
-    logic                       drv_pipe [0:PIPE_SZ-1];
-    logic [$clog2(MMA_M)-1:0]   dri_pipe [0:PIPE_SZ-1];
-    logic                       dl_pipe  [0:PIPE_SZ-1];
-
-    generate
-        if (BCAST_PIPE > 0) begin : gen_out_pipe
-            always_ff @(posedge clk) begin
-                if (reset) begin
-                    for (int s = 0; s < BCAST_PIPE; s++) begin
-                        mb_pipe[s]  <= 1'b0;
-                        md_pipe[s]  <= 1'b0;
-                        ae_pipe[s]  <= 1'b0;
-                        ab_pipe[s]  <= 32'd0;
-                        db_pipe[s]  <= 1'b0;
-                        dd_pipe[s]  <= 1'b0;
-                        drv_pipe[s] <= 1'b0;
-                        dri_pipe[s] <= '0;
-                        dl_pipe[s]  <= 1'b0;
-                    end
-                end else begin
-                    mb_pipe[0]  <= u_mma_busy;
-                    md_pipe[0]  <= u_mma_done;
-                    ae_pipe[0]  <= u_arrive_en;
-                    ab_pipe[0]  <= u_arrive_bar_id;
-                    db_pipe[0]  <= u_drain_busy;
-                    dd_pipe[0]  <= u_drain_done;
-                    drv_pipe[0] <= u_drain_row_valid;
-                    dri_pipe[0] <= u_drain_row_idx;
-                    dl_pipe[0]  <= u_drain_last;
-                    for (int s = 1; s < BCAST_PIPE; s++) begin
-                        mb_pipe[s]  <= mb_pipe[s-1];
-                        md_pipe[s]  <= md_pipe[s-1];
-                        ae_pipe[s]  <= ae_pipe[s-1];
-                        ab_pipe[s]  <= ab_pipe[s-1];
-                        db_pipe[s]  <= db_pipe[s-1];
-                        dd_pipe[s]  <= dd_pipe[s-1];
-                        drv_pipe[s] <= drv_pipe[s-1];
-                        dri_pipe[s] <= dri_pipe[s-1];
-                        dl_pipe[s]  <= dl_pipe[s-1];
-                    end
-                end
-            end
-            assign mma_busy        = mb_pipe[PIPE_SZ-1];
-            assign mma_done        = md_pipe[PIPE_SZ-1];
-            assign arrive_en       = ae_pipe[PIPE_SZ-1];
-            assign arrive_bar_id   = ab_pipe[PIPE_SZ-1];
-            assign drain_busy      = db_pipe[PIPE_SZ-1];
-            assign drain_done      = dd_pipe[PIPE_SZ-1];
-            assign drain_row_valid = drv_pipe[PIPE_SZ-1];
-            assign drain_row_idx   = dri_pipe[PIPE_SZ-1];
-            assign drain_last      = dl_pipe[PIPE_SZ-1];
-        end else begin : gen_out_direct
-            assign mma_busy        = u_mma_busy;
-            assign mma_done        = u_mma_done;
-            assign arrive_en       = u_arrive_en;
-            assign arrive_bar_id   = u_arrive_bar_id;
-            assign drain_busy      = u_drain_busy;
-            assign drain_done      = u_drain_done;
-            assign drain_row_valid = u_drain_row_valid;
-            assign drain_row_idx   = u_drain_row_idx;
-            assign drain_last      = u_drain_last;
-        end
-    endgenerate
 
     // ------------------------------------------------------------------
     // Broadcast topology (B6, #40): cmd_unit drives the chain HEAD of
@@ -333,11 +151,6 @@ module compute_array #(
     // B6 fixes this by hiding the delay flops inside the hardened
     // skew_lane_a/b chain register, where they share the macro's
     // local clk and don't burden the parent.
-    //
-    // Setup safety: BCAST_PIPE>=1 must be set in the synth define
-    // (compute_array_abut.config.mk uses chip_top_bcast1.v).
-    // BCAST_PIPE=1 registers push_a_bytes at cmd_unit's output edge
-    // before the chain head fanout.
     // ------------------------------------------------------------------
 
     // ------------------------------------------------------------------
@@ -517,15 +330,15 @@ module compute_array #(
                 assign b_in_w   = (gi == 0) ? edge_b_bytes_flat[gj*8 +: 8]      : b_pipe[gi-1][gj];
                 assign drain_in_w = (gi == MMA_M-1) ? 32'd0 : drain_pipe[gi+1][gj];
 
-                // Broadcast chain: col 0 from cmd_unit's piped output;
+                // Broadcast chain: col 0 from cmd_unit's output;
                 // col j>0 from the W neighbor's _e (abutment-fed).
                 // clk follows the same chain — col 0 from the chip clk
                 // pad (via `clk` port), col j>0 from W neighbor's clk_e.
-                assign clk_chain_w       [gi][gj] = (gj == 0) ? clk                    : clk_chain_e       [gi][gj-1];
-                assign reset_chain_w     [gi][gj] = (gj == 0) ? reset                  : reset_chain_e     [gi][gj-1];
-                assign drain_en_chain_w  [gi][gj] = (gj == 0) ? cells_drain_en_piped   : drain_en_chain_e  [gi][gj-1];
-                assign drain_slot_chain_w[gi][gj] = (gj == 0) ? cells_drain_slot_piped : drain_slot_chain_e[gi][gj-1];
-                assign scrub_en_chain_w  [gi][gj] = (gj == 0) ? scrub_en_piped         : scrub_en_chain_e  [gi][gj-1];
+                assign clk_chain_w       [gi][gj] = (gj == 0) ? clk              : clk_chain_e       [gi][gj-1];
+                assign reset_chain_w     [gi][gj] = (gj == 0) ? reset            : reset_chain_e     [gi][gj-1];
+                assign drain_en_chain_w  [gi][gj] = (gj == 0) ? cells_drain_en   : drain_en_chain_e  [gi][gj-1];
+                assign drain_slot_chain_w[gi][gj] = (gj == 0) ? cells_drain_slot : drain_slot_chain_e[gi][gj-1];
+                assign scrub_en_chain_w  [gi][gj] = (gj == 0) ? scrub_en         : scrub_en_chain_e  [gi][gj-1];
 
                 mac_tmem_cell u_cell (
                     .clk_w        (clk_chain_w       [gi][gj]),

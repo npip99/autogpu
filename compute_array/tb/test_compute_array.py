@@ -7,7 +7,6 @@ philosophy"). We simulate a faux SMEM in the testbench: deliver one A
 column + one B row per requested cycle, with 1-cycle read latency.
 """
 
-import os
 import random
 
 import cocotb
@@ -18,11 +17,6 @@ from common.tb_utils import start_clock, reset
 from config import MMA_K, MMA_M, MMA_N, TMEM_SLOTS
 from golden.fp8 import decode_e4m3, encode_e4m3
 from pymodel.compute_array import ComputeArray
-
-# Broadcast-pipeline depth. Read from env so the Makefile can sweep it
-# (Makefile passes -GBCAST_PIPE=$N to verilator + exports the same value
-# here so pymodel models matching cycle latency).
-BCAST_PIPE = int(os.environ.get("BCAST_PIPE", "0"))
 
 
 # ----------------------------------------------------------------------
@@ -338,7 +332,7 @@ async def test_directed(dut):
     await start_clock(dut)
     await _drive_defaults(dut)
     await reset(dut)
-    py = ComputeArray(bcast_pipe=BCAST_PIPE)
+    py = ComputeArray()
 
     rng = np.random.RandomState(0xC0FFEE)
     A_fp32 = (rng.randn(MMA_M, MMA_K) * 0.4).astype(np.float32)
@@ -368,7 +362,7 @@ async def test_random_vs_pymodel(dut):
     await start_clock(dut)
     await _drive_defaults(dut)
     await reset(dut)
-    py = ComputeArray(bcast_pipe=BCAST_PIPE)
+    py = ComputeArray()
 
     rng = np.random.RandomState(0xBADBEEF)
     seeds = [1, 2, 3, 4, 5]

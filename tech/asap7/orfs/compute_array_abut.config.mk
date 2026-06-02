@@ -17,14 +17,13 @@ export PLATFORM       = asap7
 export DESIGN_NAME    = compute_array
 export DESIGN_NICKNAME = compute_array_abut
 
-# BCAST_PIPE=1 (B4 / PR #41 follow-up): cmd_unit's push_a_bytes is
-# registered once at cmd_unit's output edge before fanning out to the 32
-# skew_lanes. Same fix PR #27 used to close the original 1500 µm
-# fan-out's -451 ps setup violation. Required after we removed the
-# parent pa_chain shift register (which had previously served as the
-# fan-out break) — see compute_array.sv comment block above the
-# skew_lane instantiation for the full rationale.
-export VERILOG_FILES = /work/build/sv2v/chip_top_bcast1.v
+# Plain chip_top.v: the cmd_unit→skew_a[0] / cmd_unit→skew_b[0] arcs
+# are short (cmd_unit and skew chain-heads abut at the SW corner per
+# compute_array_abut.macro_placement.tcl), and the broadcast delay
+# lives inside the hardened skew_lane_a/b chain register (B6 #40).
+# The parent BCAST_PIPE knob was deleted in #45 — see compute_array.sv
+# header comment for the rationale.
+export VERILOG_FILES = /work/build/sv2v/chip_top.v
 export SDC_FILE      = /work/tech/asap7/orfs/compute_array_abut.sdc
 
 # Floorplan numbers must match compute_array_abut.macro_placement.tcl.

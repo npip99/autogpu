@@ -1,11 +1,10 @@
 current_design compute_array
 
-# 2500 ps (400 MHz) — closes hold + setup at 0 violations with the
-# BCAST_PIPE=1 forward+output pipe in compute_array.sv. Was 1 GHz; at
-# that target setup WNS was -1267 ps and hold WNS -251 ps. fmax of
+# 2500 ps (400 MHz) — closes hold + setup at 0 violations. Was 1 GHz;
+# at that target setup WNS was -1267 ps and hold WNS -251 ps. fmax of
 # the routed design is ~440 MHz (period_min 2270 ps post-route), so
-# 2500 ps leaves ~230 ps slack. Larger compute_array.sdc also uses
-# 2500 ps. See tech/asap7/problems/A2_hold_timing_rtl.md.
+# 2500 ps leaves ~230 ps slack.
+# See tech/asap7/problems/A2_hold_timing_rtl.md for the journey.
 set clk_name    core_clock
 set clk_port    clk
 set clk_period  2500

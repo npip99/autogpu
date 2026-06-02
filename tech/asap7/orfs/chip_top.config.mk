@@ -88,12 +88,12 @@ export PDN_TCL = /work/tech/asap7/orfs/chip_top.pdn.tcl
 export SYNTH_MEMORY_MAX_BITS = 524288
 
 # HOLD_SLACK_MARGIN intentionally NOT set (default 0). The compute_array
-# A2 fix (BCAST_PIPE=1 + 2500 ps SDC) addressed the hierarchical-CTS-skew
-# hold violations at the compute_array scope; that fix is in the
-# compute_array_tiny_bcast0 LEF chip_top consumes here, so chip_top
-# doesn't inherit the runaway hold-buffer problem. If chip_top RE-introduces
-# the same shape on its own broadcast nets (cmdproc → engines), pipeline
-# them at the chip_top RTL level — don't reach for HOLD_SLACK_MARGIN.
+# A2 fix (2500 ps SDC) addressed the hierarchical-CTS-skew hold violations
+# at the compute_array scope; that fix is in the compute_array_tiny_bcast0
+# LEF chip_top consumes here, so chip_top doesn't inherit the runaway
+# hold-buffer problem. If chip_top RE-introduces the same shape on its
+# own broadcast nets (cmdproc → engines), pipeline them at the chip_top
+# RTL level — don't reach for HOLD_SLACK_MARGIN.
 
 export SKIP_LAST_GASP ?= 1
 

@@ -40,12 +40,24 @@ Prior failed attempts (do not repeat):
   pipe but cmd_unit's internal FSM and the chip-external completion
   outputs were not compensated. cocotb cycle-by-cycle lockstep drifted
   by N at every issue/drain. Fixed in this branch (see "Status" below).
+  *Subsequently deleted entirely (#45) — B6's per-skew abutment chain
+  made the parent-flop pipeline unnecessary.*
 
 ## Resolution (2026-05-25)
 
 **Closed.** `compute_array_tiny_bcast0` now reaches 6_final.def +
 6_final.gds with `HOLD_SLACK_MARGIN` unset and zero hold / zero setup
-violations post detailed route. Two changes were needed:
+violations post detailed route.
+
+(2026-06-02, #45) The `BCAST_PIPE=1` parent-flop machinery referenced
+below was later deleted: B6 (#40)'s per-skew abutment chain register
+absorbed the broadcast pipeline into the hardened `skew_lane_a/b` macros,
+so the parent flops were dead weight. The 2500 ps SDC alone now carries
+hold closure. The post-route fmax numbers in the table below are from
+the BCAST_PIPE-era harden; re-running the production tiny harden after
+the #45 deletion is the empirical gate (issue #45's Option 1).
+
+Two changes were originally needed:
 
 1. **Make BCAST_PIPE functionally correct.** `compute_array.sv` now
    includes a matching N-stage *output* pipe (mma_busy/done, arrive_*,

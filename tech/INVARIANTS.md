@@ -22,8 +22,9 @@ changes must produce bit-identical output the second time, OR detect
 the cache is current and skip. Running it after RTL changes must
 ALWAYS pick up those changes.
 
-**Check:** `run.sh` aborts if `build/sv2v/chip_top_bcast*.v` mtime is
-older than any `.sv` source. See `tech/asap7/orfs/run.sh:25-50`.
+**Check:** `run.sh` aborts if the per-config sv2v output (`chip_top.v` or
+`compute_array_tiny.v`) is older than any `.sv` source. See
+`tech/asap7/orfs/run.sh:25-50`.
 
 Violated 3× in #40 (takes 7-9 silently compiled B4 RTL because
 sv2v output wasn't regenerated). Fix landed in
@@ -36,7 +37,7 @@ Each `.v` file in `build/sv2v/` must have an explicit Makefile target
 in `tech/sky130/Makefile`. Touching any RTL source file must mark
 every dependent `.v` file out-of-date via standard `make` mtime rules.
 
-**Check:** `make -C tech/sky130 sv2v sv2v-bcast-sweep sv2v-tiny-bcast-sweep`
+**Check:** `make -C tech/sky130 sv2v build/sv2v/compute_array_tiny.v`
 recomputes incrementally. After `touch compute_array/compute_array.sv`,
 re-running each target must rebuild the corresponding `.v` files.
 
@@ -90,14 +91,14 @@ registers, NO arithmetic. Anything bigger than a wire goes inside a
 hardened macro.
 
 **Check:** post-synth, `IFP-0105 Number of instances` for the parent
-design should be << 1000. Today (post-B6) compute_array_abut has
-~2,300 parent stdcells (status return pipes + tie cells + drain bus
-aggregation). Goal: <500.
+design should be << 1000. Today (post-B6, post-#45) compute_array_abut
+parent stdcells come from tie cells + drain bus aggregation. Goal: <500.
 
 Currently violated by:
-- `mb_pipe`/`md_pipe`/etc. (status return pipes ~ 45 flops) — should be
-  absorbed into cmd_unit per #43-followup
 - Drain bus mux logic — should become abutment chain like push_a/b
+
+The parent BCAST_PIPE flops (~302 across forward + reverse pipes) that
+violated this previously were deleted in #45.
 
 ### R2. All inter-macro broadcasts via abutment chains
 
@@ -235,7 +236,8 @@ When a macro is hardened and loaded as a black box (`ADDITIONAL_LEFS`),
 yosys can't propagate a parent's instantiation-time parameter into
 it. Bake the value at hardening time (via `sv2v -D NAME=VALUE` or SV
 parameter default) and use bare instantiations (no `#(.NAME(VAL))`)
-at the parent. Pattern bit #40 twice (B5 BCAST_PIPE, B6 CHAIN_WIDTH).
+at the parent. Pattern bit #40 twice (B5 BCAST_PIPE — since deleted in
+#45 — and B6 CHAIN_WIDTH).
 
 **Check:** parent synth fails with "Module `X' ... does not have a
 parameter named 'NAME'". When you hit this, remove the parameter

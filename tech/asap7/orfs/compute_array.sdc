@@ -2,21 +2,11 @@ current_design compute_array
 
 # 300 MHz (3333 ps) — see tech/asap7/DESIGN.md "Clock period vs RC budget".
 # PR #27 relaxed this from 400 MHz (2500 ps) to absorb the `push_a`/`push_b`
-# broadcast-wire setup at full 32×32 (single BCAST_PIPE register fanning out
-# ~1600 µm to the far-column skew_lanes).
-#
-# Issue #31 (this branch) restructures the broadcast in compute_array.sv as
-# a per-skew_lane relay chain (tap_index=0 + parent-level chain registers),
-# which by itself moves the worst broadcast setup from -451 ps to ~-190 ps
-# at 2500 ps — but does NOT yet close 400 MHz because the placer is
-# clustering the chain registers instead of distributing them along the
-# skew_lanes. Recovering the full 400 MHz requires explicit placement
-# constraints that bind each `pa_chain[i]` adjacent to `skew_lane_a[i]` and
-# `pb_chain[j]` adjacent to `skew_lane_b[j]` — tracked as a follow-up. Until
-# that lands, this SDC stays at 3333 ps (proven to close end-to-end). The
-# chain RTL still lands because it is the prerequisite for issue #32 (tile
-# abutment) and because it improves the broadcast setup substantially even
-# without the placement constraint. tiny_bcast0 stays at 2500 ps.
+# broadcast-wire setup at full 32×32 fanning out ~1600 µm to the far-column
+# skew_lanes. The broadcast pipeline now lives inside the skew_lane_a/b
+# abutment chain register (B6 #40), but the parent-level cmd_unit→skew_a[0]
+# arc still benefits from the relaxed period at full scale until the
+# placer-constraint follow-up lands. tiny_bcast0 stays at 2500 ps.
 # asap7 lib uses 1 ps time units.
 set clk_name    core_clock
 set clk_port    clk

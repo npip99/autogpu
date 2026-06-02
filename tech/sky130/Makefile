@@ -48,25 +48,11 @@ $(BUILD_DIR)/chip_top.v: $(SV_SOURCES)
 	# instead of the FF behavioral fallback (validated in smem cocotb).
 	sv2v -D SYNTHESIS -I $(REPO_ROOT)/common/fpnew -D USE_SKY130_MACRO --exclude=Always $(SV_SOURCES) --top=chip_top -w $@
 
-# Sweep target — generate chip_top.v variants with different broadcast
-# pipeline depths in compute_array. Each variant produces a separate
-# build/sv2v/chip_top_bcastN.v that ORFS configs (compute_array_bcastN)
-# can point at.
-.PHONY: sv2v-bcast-sweep
-sv2v-bcast-sweep: $(BUILD_DIR)/chip_top_bcast0.v $(BUILD_DIR)/chip_top_bcast1.v $(BUILD_DIR)/chip_top_bcast2.v $(BUILD_DIR)/chip_top_bcast3.v
-
-$(BUILD_DIR)/chip_top_bcast%.v: $(SV_SOURCES)
-	@mkdir -p $(BUILD_DIR)
-	sv2v -D SYNTHESIS -I $(REPO_ROOT)/common/fpnew -D USE_SKY130_MACRO -D BCAST_PIPE=$* --exclude=Always $(SV_SOURCES) --top=chip_top -w $@
-
 # Tiny compute_array (MMA_M=MMA_N=4 → 16 mac cells instead of 1024) for
 # fast iteration on hierarchical-PnR bugs. Same broadcast topology as the
 # full design, so the wire-delay + hold-buffer disease should reproduce
 # at the same shape but synthesizes in minutes not hours. Skip chip_top
 # (its M/N are fixed to 32); synth compute_array directly.
-.PHONY: sv2v-tiny-bcast-sweep
-sv2v-tiny-bcast-sweep: $(BUILD_DIR)/compute_array_tiny_bcast0.v $(BUILD_DIR)/compute_array_tiny_bcast1.v $(BUILD_DIR)/compute_array_tiny_bcast2.v
-
 TINY_SOURCES := \
     $(REPO_ROOT)/common/fpnew/cf_math_pkg.sv \
     $(REPO_ROOT)/common/fpnew/fpnew_pkg.sv \
@@ -83,9 +69,9 @@ TINY_SOURCES := \
     $(REPO_ROOT)/skew_lane/skew_lane_b.sv \
     $(REPO_ROOT)/compute_array/compute_array.sv
 
-$(BUILD_DIR)/compute_array_tiny_bcast%.v: $(TINY_SOURCES)
+$(BUILD_DIR)/compute_array_tiny.v: $(TINY_SOURCES)
 	@mkdir -p $(BUILD_DIR)
-	sv2v -D SYNTHESIS -I $(REPO_ROOT)/common/fpnew -D MMA_M=4 -D MMA_N=4 -D MMA_K=4 -D BCAST_PIPE=$* --exclude=Always $(TINY_SOURCES) --top=compute_array -w $@
+	sv2v -D SYNTHESIS -I $(REPO_ROOT)/common/fpnew -D MMA_M=4 -D MMA_N=4 -D MMA_K=4 --exclude=Always $(TINY_SOURCES) --top=compute_array -w $@
 
 # Standalone sv2v -D SYNTHESIS output for tile_buf_8row — the 8-row × 1024-bit banked
 # storage submodule. Hardens once as a leaf macro; store.sv will later

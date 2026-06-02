@@ -384,28 +384,27 @@ the macro flop count are both optimal.
   targets, different outputs.
 - Lesson: **before any 32×32 build, verify the sv2v output mtime is
   newer than every modified RTL file**. The build system doesn't
-  cross-check this. Specifically for compute_array_abut, the relevant
-  artifact is `build/sv2v/chip_top_bcast1.v`. Recipe to add to every
-  pre-launch checklist:
+  cross-check this. For compute_array_abut today, the relevant
+  artifact is `build/sv2v/chip_top.v` (post-#45 — the
+  chip_top_bcast{0,1,2,3}.v variants were deleted along with BCAST_PIPE).
+  Recipe to add to every pre-launch checklist:
 
 ```bash
-ls -la build/sv2v/chip_top_bcast1.v \
+ls -la build/sv2v/chip_top.v \
        compute_array/compute_array.sv \
        skew_lane/*.sv \
        cmd_unit/cmd_unit.sv \
        mac_tmem_cell/mac_tmem_cell.sv
-# verify chip_top_bcast1.v mtime is the most recent
+# verify chip_top.v mtime is the most recent
 ```
 
-  If chip_top_bcast1.v is older than ANY RTL source, run:
+  If chip_top.v is older than ANY RTL source, run:
 ```bash
-make -C tech/sky130 sv2v-bcast-sweep
+make -C tech/sky130 sv2v
 ```
-  BEFORE launching the build.
-
-  This should ideally be enforced by the Makefile chain
-  (run.sh should depend on sv2v output being newer than RTL).
-  Tracked separately.
+  BEFORE launching the build. `run.sh` enforces this check automatically
+  (B1 invariant), aborting with a "STALE" error rather than silently
+  compiling against stale RTL.
 
 ### Pattern: yosys cannot pass parameters into a hardened (black-box) macro
 
