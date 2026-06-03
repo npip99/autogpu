@@ -22,4 +22,9 @@ export CORE_ASPECT_RATIO = 1
 export CORE_MARGIN       = 2
 export PLACE_DENSITY     = 0.70
 
+# Custom PDN: welds parent stripes to each tile_buf_8row's M6 VDD/VSS
+# pins. Without this, ORFS default PDN fails with PDN-0233 (macros' power
+# pins floating). Same fix smem.pdn.tcl applies.
+export PDN_TCL = /work/tech/asap7/orfs/store.pdn.tcl
+
 export SKIP_LAST_GASP ?= 1
