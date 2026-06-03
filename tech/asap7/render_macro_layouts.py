@@ -47,27 +47,89 @@ BUS_PALETTE = ["red", "blue", "green", "purple", "orange", "darkgreen",
 
 # ---------- module-name → LEF path index ----------
 # Modules are placed in DEFs by their SV module name (e.g., "compute_array"
-# is the module inside compute_array_abut/base/compute_array.lef).
-# Build an index once so we can look up any module's geometry.
+# is the module inside compute_array_abut/base/compute_array.lef). But
+# multiple LEFs can claim the same MACRO name (tiny variants, etc.) —
+# the AUTHORITATIVE LEF per module is the one listed in the parent
+# macro's config.mk ADDITIONAL_LEFS. Build a per-parent index from that.
 
-def build_module_index() -> dict[str, Path]:
-    """Walk all `<macro>/base/*.lef`, extract MACRO names, map to file."""
+CONFIG_DIR = REPO / "tech/asap7/orfs"
+
+
+def parse_additional_lefs(config_path: Path) -> list[Path]:
+    """Parse a *.config.mk and resolve its ADDITIONAL_LEFS entries to
+    absolute paths in this repo. Substitutes $(ASAP7_RESULTS) etc."""
+    if not config_path.exists():
+        return []
+    text = config_path.read_text()
+    asap7_results = "/work/build/orfs/results/asap7"
+    # Find the ADDITIONAL_LEFS assignment (may span multiple lines with \)
+    m = re.search(r"^\s*export\s+ADDITIONAL_LEFS\s*=\s*((?:.*?\\\n)*.*)", text, re.MULTILINE)
+    if not m:
+        return []
+    blob = m.group(1)
+    blob = re.sub(r"\\\n", " ", blob)
+    blob = blob.replace("$(ASAP7_RESULTS)", asap7_results)
+    out = []
+    for token in blob.split():
+        if not token.endswith(".lef"):
+            continue
+        # /work/build/... → REPO/build/...
+        if token.startswith("/work/"):
+            p = REPO / token[len("/work/"):]
+        else:
+            p = Path(token)
+        out.append(p)
+    return out
+
+
+def build_parent_module_index(parent_macro: str) -> dict[str, Path]:
+    """Index of module-name → LEF path, populated from the parent's
+    config.mk ADDITIONAL_LEFS (the AUTHORITATIVE definitions).
+    Falls back to a global scan if config.mk has no ADDITIONAL_LEFS."""
+    cfg = CONFIG_DIR / f"{parent_macro}.config.mk"
     index: dict[str, Path] = {}
+    for lef in parse_additional_lefs(cfg):
+        if not lef.exists():
+            continue
+        try:
+            for m in re.finditer(r"^MACRO\s+(\S+)", lef.read_text(), re.MULTILINE):
+                name = m.group(1)
+                if name not in index:
+                    index[name] = lef
+        except Exception:
+            pass
+    return index
+
+
+def build_global_fallback_index() -> dict[str, Path]:
+    """Global fallback for modules not in any parent's ADDITIONAL_LEFS
+    (e.g., when rendering a leaf with no sub-macros). Picks the LARGEST
+    LEF when multiple variants exist — the assumption is the bigger
+    one is the "real" full-size variant."""
+    candidates: dict[str, list[tuple[float, Path]]] = collections.defaultdict(list)
     for macro_dir in RESULTS.iterdir():
         if not macro_dir.is_dir():
             continue
         for lef_path in (macro_dir / "base").glob("*.lef"):
             try:
-                for m in re.finditer(r"^MACRO\s+(\S+)", lef_path.read_text(), re.MULTILINE):
-                    name = m.group(1)
-                    if name not in index:
-                        index[name] = lef_path
+                text = lef_path.read_text()
+                size_m = re.search(r"SIZE\s+([\d.]+)\s+BY\s+([\d.]+)", text)
+                if not size_m:
+                    continue
+                area = float(size_m.group(1)) * float(size_m.group(2))
+                for m in re.finditer(r"^MACRO\s+(\S+)", text, re.MULTILINE):
+                    candidates[m.group(1)].append((area, lef_path))
             except Exception:
                 pass
+    index: dict[str, Path] = {}
+    for name, sized_paths in candidates.items():
+        # Pick the largest by area (the "canonical" full-size variant)
+        sized_paths.sort(reverse=True)
+        index[name] = sized_paths[0][1]
     return index
 
 
-MODULE_INDEX = build_module_index()
+GLOBAL_INDEX = build_global_fallback_index()
 
 
 def read_size(lef_path: Path | None) -> tuple[float, float] | None:
@@ -225,10 +287,18 @@ def render_macro(macro_dir: Path, out_path: Path) -> bool:
     def_path = macro_dir / "base" / "6_final.def"
     sub_macros = read_sub_macros(def_path)
 
-    # Look up each sub-macro's size + pin layout via the module index.
+    # Build the authoritative module-name → LEF index for THIS parent.
+    # Use the parent's config.mk's ADDITIONAL_LEFS where possible;
+    # fall back to the global largest-LEF-wins index for anything else.
+    parent_index = build_parent_module_index(macro_name)
+
+    def resolve_module_lef(module: str) -> Path | None:
+        return parent_index.get(module) or GLOBAL_INDEX.get(module)
+
+    # Look up each sub-macro's size + pin layout.
     sub_info: list[dict] = []
     for label, module, sx, sy in sub_macros:
-        sub_lef = MODULE_INDEX.get(module)
+        sub_lef = resolve_module_lef(module)
         sub_size = read_size(sub_lef)
         if not sub_size:
             sub_size = (10.0, 10.0)  # placeholder
