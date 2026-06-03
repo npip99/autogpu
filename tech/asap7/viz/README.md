@@ -21,6 +21,7 @@ to catch that entire class of bug.
 | `cross_check_odb.py`| compares the extractor against `odb_dump.py`'s output — the authoritative independent witness |
 | `klayout_render.py` | headless KLayout top-down render (run inside the ORFS image) |
 | `asap7/*.json`      | per-layer z-heights, colors |
+| `macros/`           | committed macro assets: detailed tile meshes (`<type>.glb`), `placements.json`, `footprints.json`. A type with a `.glb` renders as its real geometry; others render as a footprint box. `cmd_unit` is in (full detail); `skew_lane_a/b`, `mac_tmem_cell` to follow. |
 
 ## Run the verification
 

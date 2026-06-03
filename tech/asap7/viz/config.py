@@ -16,6 +16,8 @@ OUT_DIR  = os.environ.get("VIZ_OUT", os.path.join(HERE, "out"))
 WIRES_GLB= os.path.join(OUT_DIR, "wires.glb")
 # macro LOD tile meshes (mac/skew/cmd) built separately by the gds2stl step
 LOD_DIR  = os.environ.get("VIZ_LOD", "/tmp/lod")
+# committed macro assets: detailed meshes (<type>.glb), placements.json, footprints.json
+MACRO_DIR= os.environ.get("VIZ_MACROS", os.path.join(HERE, "macros"))
 
 # corner crop window in microns (x0,y0,x1,y1)
 WINDOW = tuple(float(v) for v in os.environ.get("VIZ_WINDOW", "0,0,235,235").split(","))

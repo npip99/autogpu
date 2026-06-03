@@ -1,6 +1,6 @@
 import json, numpy as np, trimesh, time, os, math, sys
 from def_wires import extract, extract_via_placements, extract_via_geom, extract_rects, WIDTH
-from config import DEF_FILE, WIRES_GLB, LOD_DIR, WINDOW
+from config import DEF_FILE, WIRES_GLB, LOD_DIR, WINDOW, MACRO_DIR
 t=time.time()
 HERE=os.path.dirname(os.path.abspath(__file__))
 DEF=DEF_FILE
@@ -78,24 +78,32 @@ for lay,ax0,ay0,ax1,ay1 in extract_rects(DEF,X0,Y0,X1,Y1):
     r.visual.face_colors=np.array(PAL[lay]+(255,),dtype=np.uint8); parts.append(r); nr+=1
 print(f"{nr} RECT patches ({time.time()-t:.0f}s)",flush=True)
 
-# macros as translucent blocks (optional — they obscure the stack in the fly view)
+# macros: render the DETAILED committed mesh (macros/<type>.glb) where present, else a
+# translucent footprint block (footprints.json). Placements + footprints live in MACRO_DIR.
 if MACROS_ON:
-    tiles={tn:trimesh.load(os.path.join(LOD_DIR,f"{tn}_LOD0.glb"),force='mesh') for tn in ("mac_tmem_cell","skew_lane_a","skew_lane_b","cmd_unit")}
-    fp={tn:(m.bounds[0][:2],m.bounds[1][:2]) for tn,m in tiles.items()}
+    placements=json.load(open(os.path.join(MACRO_DIR,"placements.json")))
+    footprints=json.load(open(os.path.join(MACRO_DIR,"footprints.json")))
     def xf(p):
         T=np.eye(4)
         if p["mir"]: T[1,1]=-1
         T=trimesh.transformations.rotation_matrix(p.get("rot",0),[0,0,1])@T
         return trimesh.transformations.translation_matrix([p["x"],p["y"],0])@T
-    BH=2.7*ZEXAG
-    for p in json.load(open(os.path.join(LOD_DIR,"placements.json"))):
+    BH=2.7*ZEXAG; mesh_cache={}; nmesh=nblk=0
+    for p in placements:
         if p["x"]>X1 or p["y"]>Y1: continue
-        (lx,ly),(hx,hy)=fp[p["t"]]
-        blk=trimesh.creation.box(extents=[hx-lx,hy-ly,BH])
-        blk.apply_translation([(lx+hx)/2,(ly+hy)/2,BH/2])
-        blk.apply_transform(xf(p))
-        blk.visual.face_colors=np.array([70,80,100,55],dtype=np.uint8)
-        parts.append(blk)
+        tn=p["t"]; mpath=os.path.join(MACRO_DIR,tn+".glb")
+        if os.path.exists(mpath):                              # detailed mesh -> place it
+            if tn not in mesh_cache: mesh_cache[tn]=trimesh.load(mpath,force='mesh')
+            mm=mesh_cache[tn].copy(); mm.apply_transform(xf(p))
+            if ZEXAG!=1.0: mm.vertices[:,2]*=ZEXAG
+            parts.append(mm); nmesh+=1
+        else:                                                  # footprint block
+            (lx,ly),(hx,hy)=footprints[tn]
+            blk=trimesh.creation.box(extents=[hx-lx,hy-ly,BH])
+            blk.apply_translation([(lx+hx)/2,(ly+hy)/2,BH/2]); blk.apply_transform(xf(p))
+            blk.visual.face_colors=np.array([70,80,100,55],dtype=np.uint8)
+            parts.append(blk); nblk+=1
+    print(f"macros: {nmesh} detailed meshes + {nblk} footprint blocks ({time.time()-t:.0f}s)",flush=True)
 
 slab=trimesh.creation.box(extents=[X1,Y1,0.6]); slab.apply_translation([X1/2,Y1/2,-0.5])
 slab.visual.face_colors=np.array([24,27,34,255],dtype=np.uint8); parts.append(slab)

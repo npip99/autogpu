@@ -233,16 +233,26 @@ for lo,hi,x,y,name in placements:
         encl_fb+=2
 n_pad=len(encl_real)+encl_fb
 
-# 7. GLB artifact ties out: faces == 12*(wire + via + enclosure + rect + macro + slab boxes)
+# 7. GLB artifact ties out: faces == 12×(routing boxes + slab) + macro faces
+#    (macros render as a detailed mesh where macros/<type>.glb exists, else a 12-face box)
 import trimesh
-plc=[p for p in json.load(open(os.path.join(LOD_DIR,"placements.json"))) if p["x"]<=X1 and p["y"]<=Y1]
-n_macro=len(plc)
-exp_boxes=clip_drawn + len(vias) + n_pad + rect_drawn + n_macro + 1   # +1 slab
+from config import MACRO_DIR
+placements_m=json.load(open(os.path.join(MACRO_DIR,"placements.json")))
+macro_faces=0; n_mesh=n_blk=0; _mfc={}
+for p in placements_m:
+    if p["x"]>X1 or p["y"]>Y1: continue
+    tn=p["t"]; mp=os.path.join(MACRO_DIR,tn+".glb")
+    if os.path.exists(mp):
+        if tn not in _mfc: _mfc[tn]=len(trimesh.load(mp,force='mesh').faces)
+        macro_faces+=_mfc[tn]; n_mesh+=1
+    else:
+        macro_faces+=12; n_blk+=1
+routing_boxes=clip_drawn + len(vias) + n_pad + rect_drawn + 1   # +slab
+exp_faces=12*routing_boxes + macro_faces
 m=trimesh.load(GLB, force='mesh')
-glb_boxes=len(m.faces)/12
-check("GLB faces == 12 × (wires+vias+enclosures+rects+macros+slab)", abs(glb_boxes-exp_boxes)<0.5,
-      f"GLB {len(m.faces)} faces = {glb_boxes:.0f} boxes; expected {exp_boxes} "
-      f"(wires {clip_drawn} + vias {len(vias)} + enclosures {n_pad} + rects {rect_drawn} + macros {n_macro} + slab 1)")
+check("GLB faces == 12×(wires+vias+enclosures+rects+slab) + macro faces", abs(len(m.faces)-exp_faces)<1,
+      f"GLB {len(m.faces)} = 12×{routing_boxes} routing-boxes + {macro_faces} macro faces "
+      f"({n_mesh} detailed mesh + {n_blk} block); expected {exp_faces}")
 
 # 8. wires+vias ⊂ window; macro blocks legitimately overhang by their footprint.
 import numpy as np
