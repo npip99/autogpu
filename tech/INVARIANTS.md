@@ -252,6 +252,60 @@ at the parent. Pattern bit #40 twice (B5 BCAST_PIPE, B6 CHAIN_WIDTH).
 parameter named 'NAME'". When you hit this, remove the parameter
 override at the instantiation site, not the parameter declaration.
 
+### R7. Each leaf SDC's clk_period = the macro's intrinsic max speed, not the chip clock
+
+Hierarchical hardening means each macro is characterized independently;
+the parent (chip_top) consumes its `.lib` arcs at the parent's clock
+period. So a macro hardened at 1000 ps and used at 4000 ps is fine —
+the .lib arcs hold regardless. **Tightening the leaf SDC produces a
+smaller, denser, faster-to-route netlist** because ABC optimizes more
+aggressively for area/timing when slack is scarce.
+
+Tempting trap: "match the leaf SDC to the chip clock for consistency."
+This is wrong. Relaxing a leaf SDC from 1 GHz to 300 MHz can
+*lengthen* its DRT wall by 100×+ (observed on tile_buf_8row: 19.66 sec
+at 1000 ps → 16+ min at 3333 ps for the same RTL).
+
+**Right rule:** each leaf SDC's clk_period is the FASTEST the macro
+can actually close at. Empirical — try 1000 ps first; if WNS is
+hopelessly negative (cmdproc was -474 ns at 1 GHz), relax just enough
+to close.
+
+**Check:** if a leaf macro hardens cleanly in seconds and you change
+its clk_period to "match chip_top," expect it to slow down. Don't.
+
+### R8. Hierarchical SDC must false-path the boundary IOs
+
+Any block-level or chip-level SDC must `set_false_path` the data IOs that
+cross a hierarchy boundary (chip pins, or block pins when the block is
+consumed by a larger parent). Their timing depends on external factors
+the SDC's internal model can't represent (package/board/connector delay,
+external chip launch timing) — `set_input_delay` / `set_output_delay`
+publish constraints to the next-tier integrator, but the *check* belongs
+at the integration tier, not the local SDC.
+
+Without false-paths, CTS-introduced clock insertion creates bogus hold
+violations on every chip-IO net. ORFS's resizer tries to fix them with
+delay buffers, hits the max-buffer cap, and bails with RSZ-0060. First
+chip_top attempt burned 50 min of CTS + resizer before failing this way.
+
+**Pattern:**
+```tcl
+set non_clock_inputs [all_inputs -no_clocks]
+set_input_delay  [expr $clk_period * 0.2] -clock $clk_name $non_clock_inputs
+set_output_delay [expr $clk_period * 0.2] -clock $clk_name [all_outputs]
+# Internal STA can't realistically check boundary IOs — defer to next tier
+set_false_path -setup -from $non_clock_inputs
+set_false_path -hold  -from $non_clock_inputs
+set_false_path -setup -to   [all_outputs]
+set_false_path -hold  -to   [all_outputs]
+```
+
+**Check:** every block-level + chip-level SDC has both `set_input_delay`
+AND a corresponding `set_false_path -from` for chip-IO nets. Same for
+outputs. Pattern matches `compute_array_abut.sdc` (block defers to
+chip_top) and `chip_top.sdc` (chip defers to PCB-level STA).
+
 ---
 
 ## Tests / verification

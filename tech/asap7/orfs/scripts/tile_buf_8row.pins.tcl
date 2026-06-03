@@ -1,23 +1,18 @@
-# tile_buf_8row pin placement — used inside store (4 banks placed by store's
-# floorplan).
+# tile_buf_8row pin placement — INTENTIONALLY EMPTY (auto-place).
 #
-# Pre-v6 (auto-placed): rd_data[1024] + wr_data[1024] each scattered ~equal
-# on all 4 edges. This forced store's internal muxing logic to be heavily
-# buffered (13K resizer-added cells on the parent harden).
+# tile_buf_8row is 115×115 µm with 1024-bit rd_data and 1024-bit wr_data
+# interfaces. Any pin TCL that forces those onto a small subset of edges
+# creates pin pitch < 0.5 µm (M5 minimum) and DRT stalls indefinitely.
 #
-# Edge assignment:
-#   W = wr_data (1024b in) + wr_en + wr_row
-#   E = rd_data (1024b out) + rd_en + rd_row
-#   N/S = nothing (clean abutment-style geometry; the bank's clk/reset
-#         live on W with the write side since they're simple control)
+# Attempted v3 (rd→E, wr→W) hit 38-min DRT spin before kill. ORFS's
+# auto-placement spreads the 1024 bits across all 4 edges, giving ~0.45 µm
+# pitch which is routable — and tile_buf_8row is consumed as a black box
+# *inside* store, so chip_top doesn't care where these pins are.
 #
-# With wr_* contiguous on W and rd_* contiguous on E, store's internal
-# mux fabric becomes a simple W→E flow per bank.
-
-set_io_pin_constraint -region left:* -pin_names {
-    wr_en  wr_row*  wr_data*  clk  reset
-}
-
-set_io_pin_constraint -region right:* -pin_names {
-    rd_en  rd_row*  rd_data*
-}
+# The scattered placement DOES make store's internal muxing larger
+# (the ~13K resizer-buffer tax we measured), but that's a separate problem
+# that can only be solved by re-floorplanning tile_buf_8row to a different
+# aspect ratio (e.g. 60×500 with the wide buses on the long edges).
+#
+# Leaving empty so ORFS auto-places. Re-add this file with a real plan
+# only if/when tile_buf_8row gets re-floorplanned.

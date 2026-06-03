@@ -27,6 +27,41 @@ Iteration history:
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import collections
+import re
+import os
+
+# ---------- Hierarchical sub-macro reader ----------
+# For each parent macro that contains hardened sub-macros, read its final DEF
+# and extract the sub-macro instance positions. DEF coordinates are in DBUs
+# (1000 DBUs / µm in asap7).
+SUB_MACRO_PARENTS = {
+    "store": "tile_buf_8row",
+    "smem":  "smem_bank",
+}
+DBU_PER_UM = 1000.0
+RESULTS = "/home/ubuntu/pipitone/gpu3/build/orfs/results/asap7"
+
+
+def read_sub_macros(parent, sub_name):
+    """Return list of (instance_label, x_um, y_um, w_um, h_um) for each
+    sub_name instance placed in parent's final DEF."""
+    def_path = f"{RESULTS}/{parent}/base/6_final.def"
+    lef_path = f"{RESULTS}/{sub_name}/base/{sub_name}.lef"
+    if not (os.path.exists(def_path) and os.path.exists(lef_path)):
+        return []
+    sub_text = open(lef_path).read()
+    m = re.search(r"SIZE\s+([\d.]+)\s+BY\s+([\d.]+)", sub_text)
+    if not m: return []
+    sub_w, sub_h = float(m.group(1)), float(m.group(2))
+    out = []
+    for line in open(def_path):
+        m = re.match(r"\s*-\s+(\S+)\s+" + sub_name + r"\s+\+\s+FIXED\s+\(\s*(\d+)\s+(\d+)\s*\)", line)
+        if m:
+            label = m.group(1).replace("\\", "")
+            x_um = int(m.group(2)) / DBU_PER_UM
+            y_um = int(m.group(3)) / DBU_PER_UM
+            out.append((label, x_um, y_um, sub_w, sub_h))
+    return out
 
 # --- chip_top floorplan v6 (µm) ---
 # v6: shifted NW cluster (cmdproc + load + barrier + reset_seq) ~150 µm
@@ -203,8 +238,22 @@ COLORS = {
 }
 for name, (x, y, w, h) in M.items():
     ax.add_patch(patches.Rectangle((x, y), w, h, linewidth=1.2,
-                                    edgecolor="black", facecolor=COLORS[name], alpha=0.5))
-    ax.text(x + w/2, y + h/2, name, ha="center", va="center", fontsize=10, weight="bold")
+                                    edgecolor="black", facecolor=COLORS[name], alpha=0.4))
+    # Draw nested sub-macros for hierarchical parents
+    if name in SUB_MACRO_PARENTS:
+        subs = read_sub_macros(name, SUB_MACRO_PARENTS[name])
+        for label, sx, sy, sw, sh in subs:
+            ax.add_patch(patches.Rectangle((x + sx, y + sy), sw, sh, linewidth=0.6,
+                                            edgecolor="#222", facecolor="#666", alpha=0.5))
+            # Small label for sub-macro
+            ax.text(x + sx + sw/2, y + sy + sh/2,
+                    f"{SUB_MACRO_PARENTS[name]}",
+                    ha="center", va="center", fontsize=4.5, color="white")
+        # Parent label moved to a corner so it doesn't collide with sub-macros
+        ax.text(x + 5, y + h - 5, f"{name}\n({len(subs)}×{SUB_MACRO_PARENTS[name]})",
+                ha="left", va="top", fontsize=8, weight="bold")
+    else:
+        ax.text(x + w/2, y + h/2, name, ha="center", va="center", fontsize=10, weight="bold")
 
 # Per-bus segment bars on each edge
 BUS_COLORS = {}
