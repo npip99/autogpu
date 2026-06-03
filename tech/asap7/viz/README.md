@@ -14,13 +14,14 @@ to catch that entire class of bug.
 |------|---------|
 | `config.py`         | paths/window, all overridable by env vars |
 | `def_wires.py`      | DEF routing extractor: `extract` (wires), `extract_via_placements`/`extract_vias`, `extract_rects`, `extract_via_geom` (VIAS-section enclosures) |
-| `def_wires_3d.py`   | builds the to-scale `wires.glb` (wires + vias + real enclosures + RECT patches + macro blocks) |
+| `def_wires_3d.py`   | builds the to-scale `wires.glb` (wires + vias + real enclosures + RECT + **logic-cell gate boxes** + macros). `VIZ_CELLS=0` to omit gates. |
 | `coverage_audit.py` | **exhaustive** char-level coverage: proves every non-whitespace char of NETS+SPECIALNETS routing is recognized |
 | `verify_wires.py`   | the formal verification (13 checks); calls the coverage audit |
 | `odb_dump.py`       | dumps routing tallies from OpenROAD's own database (run inside the ORFS image) |
 | `cross_check_odb.py`| compares the extractor against `odb_dump.py`'s output — the authoritative independent witness |
 | `klayout_render.py` | headless KLayout top-down render (run inside the ORFS image) |
 | `asap7/*.json`      | per-layer z-heights, colors |
+| `cell_sizes.json`   | std-cell master → (w,h) from the ASAP7 LEF (212 types) — drives the gate boxes |
 | `build_macros.py`   | regenerates **full-res** macro routing meshes from each macro's own DEF (no decimation) → `out/macros/<type>.glb` (gitignored) |
 | `macros/`           | committed macro **metadata**: `placements.json` (positions) + `footprints.json` (box fallback). The large meshes are *not* committed — they're regenerated. |
 

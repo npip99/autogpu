@@ -1,5 +1,5 @@
 import json, numpy as np, trimesh, time, os, math, sys
-from def_wires import extract, extract_via_placements, extract_via_geom, extract_rects, WIDTH
+from def_wires import extract, extract_via_placements, extract_via_geom, extract_rects, logic_cells, WIDTH
 from config import DEF_FILE, WIRES_GLB, LOD_DIR, WINDOW, MACRO_DIR, MACRO_MESH_DIR
 t=time.time()
 HERE=os.path.dirname(os.path.abspath(__file__))
@@ -10,6 +10,7 @@ OUT   = sys.argv[2] if len(sys.argv)>2 else WIRES_GLB
 MACROS_ON = (len(sys.argv)<4 or sys.argv[3]=="1")        # draw macros (mesh if available, else box)?
 PDN_ON    = (len(sys.argv)<5 or sys.argv[4]=="1")        # draw PDN power straps/rails?
 SLAB_ON   = os.environ.get("VIZ_SLAB","1")=="1"          # draw the base substrate slab? (off for macro tiles)
+CELLS_ON  = os.environ.get("VIZ_CELLS","1")=="1"         # draw logic standard cells as boxes (gates)?
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 layers=json.load(open(os.path.join(HERE,"asap7/layers.json"))); user=json.load(open(os.path.join(HERE,"asap7/user.json")))
 z=0.0; zinfo={}
@@ -78,6 +79,19 @@ for lay,ax0,ay0,ax1,ay1 in extract_rects(DEF,X0,Y0,X1,Y1):
     r=trimesh.creation.box(extents=[w,h2,h]); r.apply_translation([(cx0+cx1)/2,(cy0+cy1)/2,z0+h/2])
     r.visual.face_colors=np.array(PAL[lay]+(255,),dtype=np.uint8); parts.append(r); nr+=1
 print(f"{nr} RECT patches ({time.time()-t:.0f}s)",flush=True)
+
+# logic standard cells (gates) as boxes at the bottom (device->M1), so wires sit above them.
+if CELLS_ON:
+    csz=json.load(open(os.path.join(HERE,"cell_sizes.json")))
+    ztop=zinfo["m1"][0]+zinfo["m1"][1]
+    SEQ=np.array([175,120,70,255],dtype=np.uint8)    # sequential (flop/latch): tan
+    COMB=np.array([92,104,126,255],dtype=np.uint8)    # combinational gate: blue-gray
+    nc=0
+    for master,cx0,cy0,cx1,cy1 in logic_cells(DEF,X0,Y0,X1,Y1,csz):
+        b=trimesh.creation.box(extents=[cx1-cx0,cy1-cy0,ztop]); b.apply_translation([(cx0+cx1)/2,(cy0+cy1)/2,ztop/2])
+        b.visual.face_colors = SEQ if any(k in master for k in ("DFF","LATCH","SDF","DLL")) else COMB
+        parts.append(b); nc+=1
+    print(f"{nc} logic cells ({time.time()-t:.0f}s)",flush=True)
 
 # macros: render the DETAILED committed mesh (macros/<type>.glb) where present, else a
 # translucent footprint block (footprints.json). Placements + footprints live in MACRO_DIR.

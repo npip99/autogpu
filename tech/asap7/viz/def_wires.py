@@ -52,6 +52,27 @@ def _via_layers(name):
     m=re.match(r"VIA(\d)(\d)",name) or re.match(r"via(\d+)_(\d+)",name)
     return (int(m.group(1)),int(m.group(2))) if m else None
 
+_CELL_SKIP=("DECAP","FILL","TAP","TIE")           # non-logic fill cells, excluded
+_COMP=re.compile(r"^\s*-\s+\S+\s+(\S+)\s+.*?\b(?:PLACED|FIXED|COVER)\s*\(\s*(-?\d+)\s+(-?\d+)\s*\)")
+def logic_cells(def_path, x0,y0,x1,y1, cell_sizes, unit=1000.0):
+    """Logic standard cells (fill excluded) as clipped boxes: (master, cx0,cy0,cx1,cy1) in um."""
+    out=[]; insec=False
+    for line in open(def_path):
+        s=line.lstrip()
+        if not insec:
+            if s.startswith("COMPONENTS ") and s.rstrip().endswith(";"): insec=True
+            continue
+        if s.startswith("END COMPONENTS"): break
+        m=_COMP.match(line)
+        if not m: continue
+        master=m.group(1)
+        if any(k in master for k in _CELL_SKIP) or master not in cell_sizes: continue
+        x=int(m.group(2))/unit; y=int(m.group(3))/unit; w,h=cell_sizes[master]
+        if x>x1 or y>y1 or x+w<x0 or y+h<y0: continue
+        cx0=max(x,x0); cy0=max(y,y0); cx1=min(x+w,x1); cy1=min(y+h,y1)
+        if cx1-cx0>=1e-4 and cy1-cy0>=1e-4: out.append((master,cx0,cy0,cx1,cy1))
+    return out
+
 RECT_RE=re.compile(r"\(\s*(-?\d+)\s+(-?\d+)\s*\)\s+RECT\s+\(\s*(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s*\)")
 def extract_rects(def_path, x0,y0,x1,y1, unit=1000.0, sections=("NETS","SPECIALNETS")):
     # RECT fill/enclosure patches: returns (layer_lower, ax0,ay0,ax1,ay1) absolute corners (um).

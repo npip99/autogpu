@@ -247,11 +247,14 @@ for p in placements_m:
         macro_faces+=_mfc[tn]; n_mesh+=1
     else:
         macro_faces+=12; n_blk+=1
-routing_boxes=clip_drawn + len(vias) + n_pad + rect_drawn + 1   # +slab
+from def_wires import logic_cells
+_csz=json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)),"cell_sizes.json")))
+n_cells=len(logic_cells(DEF,X0,Y0,X1,Y1,_csz))
+routing_boxes=clip_drawn + len(vias) + n_pad + rect_drawn + n_cells + 1   # +slab
 exp_faces=12*routing_boxes + macro_faces
 m=trimesh.load(GLB, force='mesh')
-check("GLB faces == 12×(wires+vias+enclosures+rects+slab) + macro faces", abs(len(m.faces)-exp_faces)<1,
-      f"GLB {len(m.faces)} = 12×{routing_boxes} routing-boxes + {macro_faces} macro faces "
+check("GLB faces == 12×(wires+vias+enclosures+rects+cells+slab) + macro faces", abs(len(m.faces)-exp_faces)<1,
+      f"GLB {len(m.faces)} = 12×{routing_boxes} routing-boxes (incl {n_cells} cells) + {macro_faces} macro faces "
       f"({n_mesh} detailed mesh + {n_blk} block); expected {exp_faces}")
 
 # 8. wires+vias ⊂ window; macro blocks legitimately overhang by their footprint.
