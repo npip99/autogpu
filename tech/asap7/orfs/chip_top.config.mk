@@ -74,19 +74,27 @@ export SYNTH_MEMORY_MAX_BITS = 524288
 
 export SKIP_LAST_GASP ?= 1
 
-# HOLD_SLACK_MARGIN: same pattern as compute_array_abut.config.mk —
-# relaxes hold check by 2 ns to absorb the inevitable clock-tree skew
-# between chip_top's parent CTS and each hardened macro's internal CTS
-# (the macros' .lib clock-tree characterization doesn't match parent
-# CTS's choices). Without this, resizer tries to bridge the 1008 ps
-# skew with ~35K hold buffers and OpenROAD crashes at 68 GB memory.
-# See #50 for the proper architectural fix (traveling clock at chip scale).
+# HOLD_SLACK_MARGIN: MASKS final-slack hold violations on chip_top.
+# NOT the "same pattern" as compute_array_abut's -2000 — that one is a
+# CTS-stage convergence aid that drops out of final slack; THIS one is
+# final-slack masking. Hold violations on silicon are functional-failure
+# class (data captured before it's valid → wrong outputs), not just a
+# performance hit. The LEF as-hardened ships with real residual hold
+# issues a foundry sign-off STA would reject. Used here ONLY to get a
+# first integration LEF for methodology validation.
+#
+# Root cause: each macro's .lib clock-tree characterization doesn't match
+# chip_top's parent CTS choices, producing 1008 ps STA skew that the
+# resizer can't bridge (~35K hold-buffer pile → OpenROAD OOM at 68 GB).
+# The proper fixes are tracked in #52 (.lib characterization gap) and
+# #50 (chip-level traveling clock to eliminate parent CTS entirely).
+# DO NOT consider this LEF tape-out usable.
 export HOLD_SLACK_MARGIN = -2000
 
-# Skip the DRT incremental-repair loop — it's what got stuck at 64
-# violations across iter 3 in the first attempt. The post-DRT repair
-# pass doesn't converge when the underlying skew is unfixable by
-# buffer insertion; better to accept the post-iter-2 result.
+# Skip the DRT incremental-repair loop — it loops indefinitely when the
+# underlying skew is unfixable by buffer insertion (64 stuck violations
+# across iter 3 in the first attempt). Like HOLD_SLACK_MARGIN above,
+# this is a workaround that hides a real problem rather than fixing it.
 export SKIP_INCREMENTAL_REPAIR = 1
 
 # Skip kepler-formal LEC (exponential on chip_top).
