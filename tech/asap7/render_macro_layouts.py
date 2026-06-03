@@ -1,5 +1,26 @@
 """Generic per-macro layout visualizer.
 
+STATUS: NOT GOOD ENOUGH. Output is currently visually cluttered and falls
+short of the hand-crafted reference image produced by
+`tech/asap7/render_chip_top_buses.py`. Specifically:
+
+- Sub-macro labels and pin-region labels overlap badly when sub-macros
+  are small relative to the parent (e.g., chip_top's NW cluster of
+  cmdproc/load/barrier/reset_seq).
+- Inter-macro bus lines pile up in crowded regions, sometimes drawing
+  over the labels they're trying to identify.
+- Some labels overlap each other on edges with many pin segments
+  (compute_array's W edge with smem reads + mma_* + arrive_*).
+- No leader-line / off-side label placement; everything is drawn at
+  segment midpoint and collides when segments are short.
+
+Until this matches the readability of
+`tech/asap7/render_chip_top_buses.py`'s output, this script is a draft.
+Reference: build/render/chip_top_proposed_buses.png (from the hand-
+crafted script) should be the visual quality target.
+
+----
+
 For every hardened macro under `build/orfs/results/asap7/<macro>/base/`,
 produce a `build/render/macro_layouts/<macro>.png` showing:
 
