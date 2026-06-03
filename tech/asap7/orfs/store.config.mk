@@ -7,6 +7,7 @@ export DESIGN_NAME  = store
 # enforcement to keep this from regressing.
 export VERILOG_FILES = /work/build/sv2v/chip_top.v
 export SDC_FILE      = /work/tech/asap7/orfs/store.sdc
+export IO_CONSTRAINTS = /work/tech/asap7/orfs/scripts/store.pins.tcl
 
 ASAP7_RESULTS = /work/build/orfs/results/asap7
 export ADDITIONAL_LEFS = $(ASAP7_RESULTS)/tile_buf_8row/base/tile_buf_8row.lef

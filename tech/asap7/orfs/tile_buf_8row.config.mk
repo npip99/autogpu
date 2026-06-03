@@ -4,6 +4,7 @@ export DESIGN_NAME  = tile_buf_8row
 # Standalone sv2v target — built by tech/sky130/Makefile (shared with sky130).
 export VERILOG_FILES = /work/build/sv2v/tile_buf_8row.v
 export SDC_FILE      = /work/tech/asap7/orfs/tile_buf_8row.sdc
+export IO_CONSTRAINTS = /work/tech/asap7/orfs/scripts/tile_buf_8row.pins.tcl
 
 # 8 × 1024 bits of FFs plus 2 × 1024-bit perimeter buses. Modest util keeps
 # the perimeter pin density routable; sky130 uses 30% with FP_SIZING relative,
