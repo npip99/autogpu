@@ -1,0 +1,9 @@
+# Python deps for the routing viz + verification (use uv or pip in a venv)
+numpy
+gdstk
+shapely
+trimesh
+scipy
+# optional, for offscreen renders only:
+pyrender
+Pillow
