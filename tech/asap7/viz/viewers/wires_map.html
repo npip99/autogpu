@@ -43,7 +43,7 @@ function applyCam(){
 }
 applyCam();
 
-new GLTFLoader().load('wires.glb?v=12', g=>{
+new GLTFLoader().load('../out/wires.glb?v=19', g=>{
   g.scene.traverse(o=>{ if(o.isMesh){ o.material.vertexColors=true; o.material.metalness=0; o.material.roughness=0.85; o.material.side=THREE.DoubleSide; } });
   scene.add(g.scene);
 }, undefined, e=>{ document.getElementById('err').textContent='load error: '+e; });

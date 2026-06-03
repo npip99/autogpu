@@ -3,6 +3,7 @@ numpy
 gdstk
 shapely
 trimesh
+mapbox-earcut   # triangulation engine for trimesh.creation.extrude_polygon
 scipy
 # optional, for offscreen renders only:
 pyrender

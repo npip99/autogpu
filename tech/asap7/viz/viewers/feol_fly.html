@@ -18,7 +18,7 @@
 }}
 </script></head>
 <body>
-<div id="hud"><b>compute_array corner — routed wires, to scale (real nm)</b> · m2 orange m3 yellow m4 green m5 cyan m6 indigo m7 pink<br>
+<div id="hud"><b>cmd logic-cell FEOL (real transistors, fill excluded)</b> · m2 orange m3 yellow m4 green m5 cyan m6 indigo m7 pink<br>
 <span id="stat">loading…</span> · speed <span id="spd">—</span> ×altitude</div>
 <div id="prompt">click to fly
   <small>mouse = look · <b>WASD</b> = move · <b>Space/Shift</b> = up/down · <b>Ctrl</b> = sprint · scroll = speed · Esc = release</small></div>
@@ -51,7 +51,7 @@ let speedMul=1.0; const spd=document.getElementById('spd'); spd.textContent=spee
 addEventListener('wheel', e=>{ speedMul=Math.min(20,Math.max(0.05, speedMul*(e.deltaY<0?1.2:0.83))); spd.textContent=speedMul.toFixed(2); }, {passive:true});
 
 const stat=document.getElementById('stat');
-new GLTFLoader().load('../out/wires.glb?v=19', g=>{
+new GLTFLoader().load('../out/cmd_feol_logic.glb', g=>{
   g.scene.traverse(o=>{ if(o.isMesh){ o.material.vertexColors=true; o.material.metalness=0; o.material.roughness=0.8; o.material.side=THREE.DoubleSide; } });
   root.add(g.scene);
   const box=new THREE.Box3().setFromObject(g.scene);

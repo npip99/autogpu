@@ -23,6 +23,7 @@ to catch that entire class of bug.
 | `asap7/*.json`      | per-layer z-heights, colors |
 | `cell_sizes.json`   | std-cell master → (w,h) from the ASAP7 LEF (212 types) — drives the gate boxes |
 | `build_macros.py`   | regenerates **full-res** macro routing meshes from each macro's own DEF (no decimation) → `out/macros/<type>.glb` (gitignored) |
+| `feol.py`           | renders **logic-cell FEOL** (real device layers — well/fin/active/gate/LIG/LISD/V0 — of logic cells, fill excluded, macros pruned, below M1) from a design's GDS. `VIZ_DEF=<m.def> VIZ_GDS=<m.gds> VIZ_WINDOW=… python feol.py out/x.glb`. Heavy; fill's device "sea" (~800M faces) is intentionally skipped. |
 | `macros/`           | committed macro **metadata**: `placements.json` (positions) + `footprints.json` (box fallback). The large meshes are *not* committed — they're regenerated. |
 
 ## Run the verification
