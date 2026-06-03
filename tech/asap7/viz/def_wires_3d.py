@@ -1,14 +1,15 @@
 import json, numpy as np, trimesh, time, os, math, sys
 from def_wires import extract, extract_via_placements, extract_via_geom, extract_rects, WIDTH
-from config import DEF_FILE, WIRES_GLB, LOD_DIR, WINDOW, MACRO_DIR
+from config import DEF_FILE, WIRES_GLB, LOD_DIR, WINDOW, MACRO_DIR, MACRO_MESH_DIR
 t=time.time()
 HERE=os.path.dirname(os.path.abspath(__file__))
 DEF=DEF_FILE
 X0,Y0,X1,Y1=WINDOW
 ZEXAG = float(sys.argv[1]) if len(sys.argv)>1 else 1.0   # vertical exaggeration (1=real)
 OUT   = sys.argv[2] if len(sys.argv)>2 else WIRES_GLB
-MACROS_ON = (len(sys.argv)<4 or sys.argv[3]=="1")        # draw translucent macro blocks?
+MACROS_ON = (len(sys.argv)<4 or sys.argv[3]=="1")        # draw macros (mesh if available, else box)?
 PDN_ON    = (len(sys.argv)<5 or sys.argv[4]=="1")        # draw PDN power straps/rails?
+SLAB_ON   = os.environ.get("VIZ_SLAB","1")=="1"          # draw the base substrate slab? (off for macro tiles)
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 layers=json.load(open(os.path.join(HERE,"asap7/layers.json"))); user=json.load(open(os.path.join(HERE,"asap7/user.json")))
 z=0.0; zinfo={}
@@ -91,8 +92,8 @@ if MACROS_ON:
     BH=2.7*ZEXAG; mesh_cache={}; nmesh=nblk=0
     for p in placements:
         if p["x"]>X1 or p["y"]>Y1: continue
-        tn=p["t"]; mpath=os.path.join(MACRO_DIR,tn+".glb")
-        if os.path.exists(mpath):                              # detailed mesh -> place it
+        tn=p["t"]; mpath=os.path.join(MACRO_MESH_DIR,tn+".glb")
+        if os.path.exists(mpath):                              # regenerated full-res routing mesh -> place it
             if tn not in mesh_cache: mesh_cache[tn]=trimesh.load(mpath,force='mesh')
             mm=mesh_cache[tn].copy(); mm.apply_transform(xf(p))
             if ZEXAG!=1.0: mm.vertices[:,2]*=ZEXAG
@@ -105,8 +106,9 @@ if MACROS_ON:
             parts.append(blk); nblk+=1
     print(f"macros: {nmesh} detailed meshes + {nblk} footprint blocks ({time.time()-t:.0f}s)",flush=True)
 
-slab=trimesh.creation.box(extents=[X1,Y1,0.6]); slab.apply_translation([X1/2,Y1/2,-0.5])
-slab.visual.face_colors=np.array([24,27,34,255],dtype=np.uint8); parts.append(slab)
+if SLAB_ON:
+    slab=trimesh.creation.box(extents=[X1,Y1,0.6]); slab.apply_translation([X1/2,Y1/2,-0.5])
+    slab.visual.face_colors=np.array([24,27,34,255],dtype=np.uint8); parts.append(slab)
 
 chip=trimesh.util.concatenate(parts)
 chip.export(OUT)

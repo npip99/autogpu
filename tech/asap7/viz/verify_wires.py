@@ -236,12 +236,12 @@ n_pad=len(encl_real)+encl_fb
 # 7. GLB artifact ties out: faces == 12×(routing boxes + slab) + macro faces
 #    (macros render as a detailed mesh where macros/<type>.glb exists, else a 12-face box)
 import trimesh
-from config import MACRO_DIR
+from config import MACRO_DIR, MACRO_MESH_DIR
 placements_m=json.load(open(os.path.join(MACRO_DIR,"placements.json")))
 macro_faces=0; n_mesh=n_blk=0; _mfc={}
 for p in placements_m:
     if p["x"]>X1 or p["y"]>Y1: continue
-    tn=p["t"]; mp=os.path.join(MACRO_DIR,tn+".glb")
+    tn=p["t"]; mp=os.path.join(MACRO_MESH_DIR,tn+".glb")
     if os.path.exists(mp):
         if tn not in _mfc: _mfc[tn]=len(trimesh.load(mp,force='mesh').faces)
         macro_faces+=_mfc[tn]; n_mesh+=1

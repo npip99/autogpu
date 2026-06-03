@@ -21,7 +21,8 @@ to catch that entire class of bug.
 | `cross_check_odb.py`| compares the extractor against `odb_dump.py`'s output — the authoritative independent witness |
 | `klayout_render.py` | headless KLayout top-down render (run inside the ORFS image) |
 | `asap7/*.json`      | per-layer z-heights, colors |
-| `macros/`           | committed macro assets: detailed tile meshes (`<type>.glb`), `placements.json`, `footprints.json`. A type with a `.glb` renders as its real geometry; others render as a footprint box. `cmd_unit` is in (full detail); `skew_lane_a/b`, `mac_tmem_cell` to follow. |
+| `build_macros.py`   | regenerates **full-res** macro routing meshes from each macro's own DEF (no decimation) → `out/macros/<type>.glb` (gitignored) |
+| `macros/`           | committed macro **metadata**: `placements.json` (positions) + `footprints.json` (box fallback). The large meshes are *not* committed — they're regenerated. |
 
 ## Run the verification
 
@@ -38,10 +39,13 @@ Override inputs via env (defaults in `config.py`):
 ## Build the model
 
 ```bash
+python build_macros.py cmd_unit   # regen full-res macro routing from its DEF -> out/macros/cmd_unit.glb
 python def_wires_3d.py            # -> $VIZ_OUT/wires.glb  (to scale, real widths)
-# args: <z-exaggeration> <out.glb> <macros 0|1> <pdn 0|1>
+# def_wires_3d args: <z-exaggeration> <out.glb> <macros 0|1> <pdn 0|1>
 ```
-Macro bodies come from pre-rendered LOD tile meshes in `$VIZ_LOD` (built separately by gds2stl).
+A macro with a regenerated mesh in `out/macros/` renders as its real full-res routing; types without
+one render as a footprint box. (`cmd_unit` done; `skew_lane_a/b`, `mac_tmem_cell` are the same command.)
+Full-res meshes are large (cmd ≈ 92 MB) and gitignored — never decimated, never committed.
 
 ## What the verification proves
 
