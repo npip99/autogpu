@@ -359,11 +359,14 @@ def render_macro(macro_dir: Path, out_path: Path) -> bool:
         macro_bboxes.append((s["label"], s["x"], s["y"], s["w"], s["h"]))
 
     # ---------- Per-bus pin segments on EACH sub-macro's edges ----------
+    # Each segment is drawn as a colored line AND labeled with the bus
+    # name + bit count at the segment midpoint, positioned OUTSIDE the
+    # macro so the label sits in the channel.
     LW_SEG = 5  # constant points for edge segment lines
+    label_off = max(w, h) * 0.008
     for s in sub_info:
         for prefix, edges in s["bus_segs"].items():
             for edge, (a, b, bits) in edges.items():
-                # Translate (a,b) on the sub-macro edge to absolute coords
                 if edge == "N":
                     x0 = s["x"] + a; x1 = s["x"] + b; y0 = y1 = s["y"] + s["h"]
                 elif edge == "S":
@@ -374,6 +377,30 @@ def render_macro(macro_dir: Path, out_path: Path) -> bool:
                     x0 = x1 = s["x"]; y0 = s["y"] + a; y1 = s["y"] + b
                 ax.plot([x0, x1], [y0, y1], color=EDGE_COLOR[edge],
                         linewidth=LW_SEG, alpha=0.85, solid_capstyle="butt")
+                # Label segment with bus name + bit count. Only show if the
+                # segment is long enough that the label fits.
+                seg_len = (b - a)
+                edge_L = s["w"] if edge in ("N", "S") else s["h"]
+                if seg_len < edge_L * 0.05 and bits < 4:
+                    continue  # too small to bother
+                mid_local = (a + b) / 2
+                label = f"{prefix}×{bits}"
+                if edge == "N":
+                    ax.text(s["x"] + mid_local, s["y"] + s["h"] + label_off,
+                             label, ha="center", va="bottom", fontsize=5.5,
+                             color=EDGE_COLOR[edge], alpha=0.9)
+                elif edge == "S":
+                    ax.text(s["x"] + mid_local, s["y"] - label_off,
+                             label, ha="center", va="top", fontsize=5.5,
+                             color=EDGE_COLOR[edge], alpha=0.9)
+                elif edge == "E":
+                    ax.text(s["x"] + s["w"] + label_off, s["y"] + mid_local,
+                             label, ha="left", va="center", fontsize=5.5,
+                             color=EDGE_COLOR[edge], alpha=0.9)
+                else:  # W
+                    ax.text(s["x"] - label_off, s["y"] + mid_local,
+                             label, ha="right", va="center", fontsize=5.5,
+                             color=EDGE_COLOR[edge], alpha=0.9)
 
     # ---------- Inter-macro bus connections ----------
     # For every bus name, collect (sub-macro, edge, segment) on each macro.
@@ -415,17 +442,16 @@ def render_macro(macro_dir: Path, out_path: Path) -> bool:
             lw = max(0.5, bits / 250)
             ax.plot([p1[0], p2[0]], [p1[1], p2[1]], color=line_color,
                      linewidth=lw, linestyle=line_style, alpha=0.65)
-            # Only label substantial buses (>= 8 bits) to reduce clutter
-            if prefix not in drawn_buses and bits >= 8:
+            # Inter-macro line labels: only when crossing a macro
+            # (segment endpoints are already labeled per-edge above; only
+            # add a midline label if there's a geometric problem to flag).
+            if crossed and prefix not in drawn_buses:
                 mid = ((p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2)
-                lbl = f"{prefix}×{bits}"
-                if crossed:
-                    lbl += f"\nCROSSES {crossed}"
-                ax.text(mid[0], mid[1], lbl, ha="center", va="center",
-                         fontsize=6,
+                ax.text(mid[0], mid[1], f"CROSSES {crossed}",
+                         ha="center", va="center", fontsize=5,
+                         color="red",
                          bbox=dict(facecolor="white", alpha=0.85,
-                                   edgecolor="red" if crossed else "none",
-                                   pad=1))
+                                   edgecolor="red", pad=1))
                 drawn_buses.add(prefix)
 
     # ---------- Parent's OWN pin segments on its outer edges ----------
@@ -492,33 +518,18 @@ def render_macro(macro_dir: Path, out_path: Path) -> bool:
                                             linewidth=max(0.4, bits / 300),
                                             alpha=0.55))
 
-    # ---------- Legends ----------
+    # ---------- Legend: just the sub-macro types ----------
+    # No edge-color legend — every pin segment is already labeled with
+    # its bus name + bit count, so the color is just visual grouping.
     if sub_info:
         counts = collections.Counter(s["module"] for s in sub_info)
         sub_handles = [patches.Patch(facecolor=module_color[m],
                                       edgecolor="#222",
                                       label=f"{m} ×{counts[m]}")
                        for m in sorted(counts)]
-        first = ax.legend(handles=sub_handles, loc="upper left",
-                          bbox_to_anchor=(1.02, 1.0),
-                          fontsize=7, framealpha=0.9, title="Sub-macros")
-        ax.add_artist(first)
-        edge_legend = [patches.Patch(color=EDGE_COLOR["N"], label="N pins"),
-                       patches.Patch(color=EDGE_COLOR["S"], label="S pins"),
-                       patches.Patch(color=EDGE_COLOR["E"], label="E pins"),
-                       patches.Patch(color=EDGE_COLOR["W"], label="W pins"),
-                       patches.Patch(color="red", label="line crosses macro")]
-        ax.legend(handles=edge_legend, loc="center left",
-                  bbox_to_anchor=(1.02, 0.4),
-                  fontsize=7, framealpha=0.9, title="Pin edges / bus lines")
-    else:
-        edge_legend = [patches.Patch(color=EDGE_COLOR["N"], label="N pins"),
-                       patches.Patch(color=EDGE_COLOR["S"], label="S pins"),
-                       patches.Patch(color=EDGE_COLOR["E"], label="E pins"),
-                       patches.Patch(color=EDGE_COLOR["W"], label="W pins")]
-        ax.legend(handles=edge_legend, loc="upper left",
+        ax.legend(handles=sub_handles, loc="upper left",
                   bbox_to_anchor=(1.02, 1.0),
-                  fontsize=7, framealpha=0.9, title="Pin edges")
+                  fontsize=7, framealpha=0.9, title="Sub-macros")
 
     ax.set_xlabel("x (µm)")
     ax.set_ylabel("y (µm)")
