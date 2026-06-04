@@ -7,6 +7,30 @@ WIDTH={"m1":0.018,"m2":0.018,"m3":0.018,"m4":0.024,"m5":0.024,"m6":0.032,"m7":0.
 PT=re.compile(r"\(\s*(-?\d+|\*)\s+(-?\d+|\*)(?:\s+-?\d+)?\s*\)")
 LEADW=re.compile(r"^\s*(\d+)\b")
 
+# DEF placement orients: transform a point about the cell origin.
+_ORIENT={"N":lambda x,y:(x,y),   "S":lambda x,y:(-x,-y),
+         "W":lambda x,y:(-y,x),  "E":lambda x,y:(y,-x),
+         "FN":lambda x,y:(-x,y), "FS":lambda x,y:(x,-y),
+         "FW":lambda x,y:(y,x),  "FE":lambda x,y:(-y,-x)}
+
+def extract_pins(def_path, x0,y0,x1,y1, unit=1000.0):
+    # PINS section -> per-port LAYER rects, oriented + offset by PLACED/FIXED, window-cropped.
+    # Returns (layer_lower, X1,Y1,X2,Y2) µm. These are the macro abutment/IO connection ports.
+    txt=open(def_path).read()
+    m=re.search(r"^PINS\b.*?^END PINS", txt, re.M|re.S)
+    if not m: return []
+    out=[]
+    for blk in re.split(r"\n\s*-\s+", m.group(0))[1:]:
+        pl=re.search(r"(?:PLACED|FIXED)\s*\(\s*(-?\d+)\s+(-?\d+)\s*\)\s+(\w+)", blk)
+        if not pl: continue
+        px=int(pl.group(1))/unit; py=int(pl.group(2))/unit; tr=_ORIENT.get(pl.group(3),_ORIENT["N"])
+        for lm in re.finditer(r"LAYER\s+(\w+)\s*\(\s*(-?\d+)\s+(-?\d+)\s*\)\s*\(\s*(-?\d+)\s+(-?\d+)\s*\)", blk):
+            lay=lm.group(1).lower(); a,b,c,d=[int(v)/unit for v in lm.group(2,3,4,5)]
+            (ax,ay),(cx,cy)=tr(a,b),tr(c,d)
+            X1=px+min(ax,cx); Y1=py+min(ay,cy); X2=px+max(ax,cx); Y2=py+max(ay,cy)
+            if X2>=x0 and X1<=x1 and Y2>=y0 and Y1<=y1: out.append((lay,X1,Y1,X2,Y2))
+    return out
+
 def _flush(text, segs, x0,y0,x1,y1, unit, special):
     for m in re.finditer(r"(?:ROUTED|NEW)\s+(\w+)\s+(.*?)(?=\bNEW\b|;|$)", text, re.S):
         lay=m.group(1).lower(); body=m.group(2)

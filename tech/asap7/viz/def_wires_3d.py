@@ -1,5 +1,5 @@
 import json, numpy as np, trimesh, time, os, math, sys
-from def_wires import extract, extract_via_placements, extract_via_geom, extract_rects, logic_cells, WIDTH
+from def_wires import extract, extract_via_placements, extract_via_geom, extract_rects, logic_cells, extract_pins, WIDTH
 from config import DEF_FILE, WIRES_GLB, LOD_DIR, WINDOW, MACRO_DIR, MACRO_MESH_DIR
 t=time.time()
 HERE=os.path.dirname(os.path.abspath(__file__))
@@ -79,6 +79,19 @@ for lay,ax0,ay0,ax1,ay1 in extract_rects(DEF,X0,Y0,X1,Y1):
     r=trimesh.creation.box(extents=[w,h2,h]); r.apply_translation([(cx0+cx1)/2,(cy0+cy1)/2,z0+h/2])
     r.visual.face_colors=np.array(PAL[lay]+(255,),dtype=np.uint8); parts.append(r); nr+=1
 print(f"{nr} RECT patches ({time.time()-t:.0f}s)",flush=True)
+
+# PINS: macro/IO connection ports (M4/M5/M6 rects at tile edges). These are the abutment
+# connection interface between macros — real geometry, to scale, on their own layer.
+if os.environ.get("VIZ_PINS","1")=="1":
+    npn=0
+    for lay,ax0,ay0,ax1,ay1 in extract_pins(DEF,X0,Y0,X1,Y1):
+        if lay not in zinfo: continue
+        cx0=min(max(ax0,X0),X1); cy0=min(max(ay0,Y0),Y1); cx1=min(max(ax1,X0),X1); cy1=min(max(ay1,Y0),Y1)
+        w=cx1-cx0; h2=cy1-cy0
+        if w<1e-5 or h2<1e-5: continue
+        z0,h=zinfo[lay]; r=trimesh.creation.box(extents=[w,h2,h]); r.apply_translation([(cx0+cx1)/2,(cy0+cy1)/2,z0+h/2])
+        r.visual.face_colors=np.array(PAL[lay]+(255,),dtype=np.uint8); parts.append(r); npn+=1
+    print(f"{npn} pins ({time.time()-t:.0f}s)",flush=True)
 
 # logic standard cells (gates) as boxes at the bottom (device->M1), so wires sit above them.
 if CELLS_ON:
