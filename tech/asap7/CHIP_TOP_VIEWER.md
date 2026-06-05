@@ -23,11 +23,18 @@ a Leaflet front-end. Pan/zoom navigates the chip; zoom-in resolves wires and
 
 ## Build the pyramid
 
+**Canonical density is 208 px/µm** (4.8 nm/px — poly/M1 readable, stdcell-internal
+visible). This is the version the project ships and the URL serves:
+
 ```bash
 uv run --with pillow python3 tech/asap7/render_chip_top_pyramid.py \
-    --density 52 \
+    --density 208 \
     --workers 8
 ```
+
+Lower densities are available for faster previews — see the table below — but
+208 is the proper one. Higher than 208 only makes sense if you specifically
+need transistor-level zoom (see 463 row).
 
 Flags:
 - `--density <px/µm>` — pixels per µm at max zoom. Higher = finer detail, more
@@ -42,16 +49,13 @@ Kill + restart without losing work.
 
 ### Density / cost reference
 
-| Density (px/µm) | nm/px | What's visible | Render-tiles | Render time (8 workers) | Pyramid size |
-|---|---|---|---|---|---|
-| 13  | 77  | macros, big buses          | 4    | ~1.5 min  | ~250 MB   |
-| 27  | 37  | stdcells just resolvable   | 12   | ~5 min    | ~1.8 GB   |
-| 52  | 19  | M2 wires readable          | 48   | ~6 min    | ~5.5 GB   |
-| 208 | 4.8 | poly/M1, ~stdcell-internal | 713  | ~90 min   | ~65 GB    |
-| 463 | 2.2 | individual transistors     | ~3500 | ~6 hr     | ~250 GB   |
-
-Pick the lowest density that shows what you need. At 52 px/µm the chip is fully
-useful for navigating macros + inter-macro buses.
+| Density (px/µm) | nm/px | What's visible | Render-tiles | Render time (8 workers) | Pyramid size | Use |
+|---|---|---|---|---|---|---|
+| 13  | 77  | macros, big buses          | 4     | ~1.5 min | ~250 MB | preview |
+| 27  | 37  | stdcells just resolvable   | 12    | ~5 min   | ~1.8 GB | preview |
+| 52  | 19  | M2 wires readable          | 48    | ~6 min   | ~5.5 GB | preview |
+| **208** | **4.8** | **poly/M1, stdcell-internal** | **713** | **~90 min** | **~65 GB** | **canonical (this is what ships)** |
+| 463 | 2.2 | individual transistors     | ~3500 | ~6 hr    | ~250 GB | transistor-level deep-dive |
 
 ## Serve the pyramid
 
@@ -101,14 +105,20 @@ no-op on existing tiles.
 ## Common operations
 
 ```bash
-# Quick: low-density preview (~1.5 min total)
+# Canonical (~90 min if no render-tiles cached; ~1 min if all cached)
+uv run --with pillow python3 tech/asap7/render_chip_top_pyramid.py \
+    --density 208 --workers 8
+
+# Quick low-density preview (~1.5 min total) for iterating on the slicer
+# or viewer HTML before committing to the full 208 render.
 uv run --with pillow python3 tech/asap7/render_chip_top_pyramid.py \
     --density 13 --workers 8
 
-# Just re-slice (e.g. after editing viewer HTML or slicer logic) —
-# render step skips all existing render-tiles.
+# Just re-slice at the canonical density (render step is a no-op if all
+# 713 render-tiles already exist) — useful after editing the viewer HTML
+# or slicer logic.
 uv run --with pillow python3 tech/asap7/render_chip_top_pyramid.py \
-    --density 52 --workers 8
+    --density 208 --workers 8
 
 # Wipe everything and rebuild from scratch
 rm -rf build/render/chip_top_tiles build/render/chip_top_render_tiles
