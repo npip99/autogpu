@@ -24,6 +24,12 @@ to catch that entire class of bug.
 | `cell_sizes.json`   | std-cell master → (w,h) from the ASAP7 LEF (212 types) — drives the gate boxes |
 | `build_macros.py`   | regenerates **full-res** macro routing meshes from each macro's own DEF (no decimation) → `out/macros/<type>.glb` (gitignored) |
 | `feol.py`           | renders **logic-cell FEOL** (real device layers — well/fin/active/gate/LIG/LISD/V0 — of logic cells, fill excluded, macros pruned, below M1) from a design's GDS. `VIZ_DEF=<m.def> VIZ_GDS=<m.gds> VIZ_WINDOW=… python feol.py out/x.glb`. Heavy; fill's device "sea" (~800M faces) is intentionally skipped. |
+| `klayout_wires.py`  | extract metal + via cuts from the **GDS** (full hierarchy, no DEF) over a window — runs inside the ORFS image. `MINLONG=0` keeps all geometry (incl. via pads); see header for the docker call. |
+| `extrude_wires.py`  | extrude `klayout_wires.py` JSON → glb (metal boxes + via pillars on the real z-stack) |
+| `build_gds_instances.py` | hierarchical GDS → instanced scene: top-cell metal (`parent.glb`) + one master mesh per cell type + `instances.json` (transforms). Macros reuse `out/macros/<type>.glb`. → `out/gds_inst/` |
+| `render_wires_flat.py` | flat bright top-down PNG of extracted GDS wires (matplotlib, painter's order by layer) |
+| `klayout_extract.py` | GDS polygon inspector — per-layer shape sizes in a window (debugging) |
+| `viewers/`          | three.js fly-through pages (see **Web viewers** below): `macros_instanced.html` (working), `gds_instanced.html` / `gds_metal.html` (WIP) |
 | `macros/`           | committed macro **metadata**: `placements.json` (positions) + `footprints.json` (box fallback). The large meshes are *not* committed — they're regenerated. |
 
 ## Run the verification
@@ -48,6 +54,42 @@ python def_wires_3d.py            # -> $VIZ_OUT/wires.glb  (to scale, real width
 A macro with a regenerated mesh in `out/macros/` renders as its real full-res routing; types without
 one render as a footprint box. (`cmd_unit` done; `skew_lane_a/b`, `mac_tmem_cell` are the same command.)
 Full-res meshes are large (cmd ≈ 92 MB) and gitignored — never decimated, never committed.
+
+## Web viewers (3D fly-through)
+
+The `viewers/` pages are three.js fly-throughs served as static files. Serve the `viz/`
+directory, then open a viewer in a browser:
+
+```bash
+cd tech/asap7/viz
+python3 -m http.server 8017 --bind 0.0.0.0      # serves viz/ at http://<host>:8017/
+```
+
+| viewer | open | shows |
+|--------|------|-------|
+| `viewers/macros_instanced.html` | `/viewers/macros_instanced.html?win=1` | the working view: recursive macro instancer (chip-top → compute_array → macros, GPU-instanced). `?win=1` = bottom-left corner only; **drop the flag for the full chip**. Needs `out/base_routing.glb` + `out/parent_feol_logic.glb` + `out/macros/*.glb`. |
+| `viewers/gds_instanced.html` | `/viewers/gds_instanced.html` | **WIP** — whole compute-array corner instanced straight from the single `6_final.gds`: top-cell metal + 43 instanced cell masters. Needs `out/gds_inst/`. |
+| `viewers/gds_metal.html` | `/viewers/gds_metal.html` | **WIP** — one window of *all* GDS metal + via pillars, flattened. Needs `out/gds_metal.glb`. |
+
+Controls: click to fly · mouse=look · WASD · Space/Shift=up/down · Ctrl=sprint · scroll=speed ·
+`P`=copy pose · `H`=hide macros (where present).
+
+### Regenerate the meshes the viewers load (all gitignored)
+
+```bash
+# macros_instanced.html
+VIZ_CELLS=0 python def_wires_3d.py 1.0 out/base_routing.glb 0 1   # parent routing only (macros=0)
+python feol.py out/parent_feol_logic.glb                         # parent-channel FEOL
+python build_macros.py cmd_unit skew_lane_a skew_lane_b mac_tmem_cell
+
+# gds viewers — straight from the parent GDS, no DEF. klayout_wires.py runs inside the ORFS
+# image (see its header for the docker invocation); the others are plain python.
+python build_gds_instances.py        # -> out/gds_inst/  (parent.glb + per-cell masters + instances.json)
+python extrude_wires.py out/gds_metal.json out/gds_metal.glb     # after a klayout_wires.py extract
+```
+
+For the **full-die 2-D** Google-Maps-style viewer (the whole `chip_top`, tile pyramid + Leaflet),
+see [`../CHIP_TOP_VIEWER.md`](../CHIP_TOP_VIEWER.md).
 
 ## What the verification proves
 
