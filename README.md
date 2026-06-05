@@ -65,6 +65,7 @@ for d in gmem smem barrier mac_tmem_cell compute_array load store reset_seq cmdp
 | `tech/asap7/PDK_GAPS.md`       | asap7 PDK limitations that block sign-off (antenna, RC extraction, …). |
 | `tech/asap7/DESIGN.md`         | ORFS design constraints, layer-stack decisions, PDN strategy. |
 | `tech/asap7/TILE_SPEC.md`      | Boundary contract for abutment-ready tiles (issue #32). |
+| `tech/asap7/CHIP_TOP_VIEWER.md`| How to render the `chip_top` GDS into a Google-Maps-style web viewer (KLayout → Leaflet tile pyramid). |
 
 ## Layout
 
