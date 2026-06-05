@@ -19,6 +19,18 @@ Bottom-up, pymodel-first build:
 
 **Full pymodel + cocotb suites green. A 32×32×32 fp8 matmul runs end-to-end through real Verilog hardware simulation, bit-exact against numpy.**
 
+### Known issues (asap7 hardening / chip_top)
+
+The asap7 hardening flow currently produces a chip_top LEF (block-level methodology proven end-to-end across 7 hardened leaf macros), but **does NOT close timing or DRC at chip_top scale**. Specifically:
+
+- chip_top.config.mk uses `HOLD_SLACK_MARGIN = -2000` (2 ns on a 4 ns period — half the clock) to mask **final-slack hold violations** that would otherwise prevent DRT from converging. Hold violations on silicon are functional-failure class (data captured before valid). The masked LEF is not foundry-sign-off acceptable.
+- `SKIP_INCREMENTAL_REPAIR = 1` accepts a non-converged DRT result.
+- First chip_top close: −205 ps setup slack (237 MHz vs 250 MHz target), 1 DRC short on M3 at the cmdproc macro edge.
+
+**Root cause:** hardened macros' `.lib` clock-tree characterization (from `write_timing_model`) doesn't match parent CTS, producing ~1008 ps STA skew that the resizer can't bridge. Tracked in [#52](https://github.com/npip99/gpu/issues/52). The compute_array_abut.sdc multicycle workaround is the symptom of the same problem.
+
+Fix paths: [#52](https://github.com/npip99/gpu/issues/52) (proper .lib characterization), [#50](https://github.com/npip99/gpu/issues/50) (chip-level traveling clock — eliminates parent CTS), [#45](https://github.com/npip99/gpu/issues/45) (BCAST_PIPE absorption — reduces parent CTS endpoint count). Until at least one of these lands, the hardening flow's chip_top output is for *methodology validation only*, not silicon.
+
 ## Quickstart
 
 ```bash
@@ -53,6 +65,7 @@ for d in gmem smem barrier mac_tmem_cell compute_array load store reset_seq cmdp
 | `tech/asap7/PDK_GAPS.md`       | asap7 PDK limitations that block sign-off (antenna, RC extraction, …). |
 | `tech/asap7/DESIGN.md`         | ORFS design constraints, layer-stack decisions, PDN strategy. |
 | `tech/asap7/TILE_SPEC.md`      | Boundary contract for abutment-ready tiles (issue #32). |
+| `tech/asap7/CHIP_TOP_VIEWER.md`| How to render the `chip_top` GDS into a Google-Maps-style web viewer (KLayout → Leaflet tile pyramid). |
 
 ## Layout
 

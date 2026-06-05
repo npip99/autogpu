@@ -143,10 +143,11 @@ module store #(
     genvar gb;
     generate
         for (gb = 0; gb < BANKS; gb++) begin : gen_banks
-            tile_buf_8row #(
-                .N_ROWS (ROWS_PER_BANK),
-                .ROW_W  (ROW_W)
-            ) u_bank (
+            // No parameter overrides: tile_buf_8row is hardened as a
+            // black-box LEF and yosys can't pass parameters into LIB-only
+            // cells (R6). Defaults (N_ROWS=8, ROW_W=1024) already match
+            // ROWS_PER_BANK and ROW_W at MMA_M=32, MMA_N=32.
+            tile_buf_8row u_bank (
                 .clk     (clk),
                 .reset   (reset),
                 .wr_en   (bank_wr_en[gb]),

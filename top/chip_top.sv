@@ -430,11 +430,10 @@ module chip_top #(
     // compute_array's accumulator row-by-row over the drain-stream
     // interface (Phase 7h-3).
     // ------------------------------------------------------------------
-    store #(
-        .MMA_M     (MMA_M),
-        .MMA_N     (MMA_N),
-        .BEAT_BYTES(BEAT_BYTES)
-    ) u_store (
+    // No parameter overrides: store is hardened (R6 — yosys can't pass
+    // parameters into a LIB-only cell). Defaults (MMA=32, BEAT_BYTES=16)
+    // already match what chip_top wants at MMA=32.
+    store u_store (
         .clk             (clk),
         .reset           (chip_in_reset),
         .issue_en        (cp_store_en),
@@ -463,12 +462,9 @@ module chip_top #(
     // ------------------------------------------------------------------
     // SMEM (16 banks: 2 regions x 8, hardened smem_bank macros).
     // ------------------------------------------------------------------
-    smem #(
-        .MMA_M     (MMA_M),
-        .MMA_N     (MMA_N),
-        .SMEM_BYTES(SMEM_BYTES),
-        .BEAT_BYTES(BEAT_BYTES)
-    ) u_smem (
+    // No parameter overrides: smem is hardened (R6). Defaults
+    // (SMEM_BYTES=8192, BEAT_BYTES=16, MMA=32) already match chip_top.
+    smem u_smem (
         .clk        (clk),
         .reset      (chip_in_reset),
         .wr_en      (l_smem_wr_en),
