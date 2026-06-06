@@ -1,9 +1,17 @@
 """
-EXHAUSTIVE coverage audit: prove every non-whitespace character in the NETS and
-SPECIALNETS routing is consumed by a recognized pattern. Anything left over is an
-unhandled construct (the class of bug that kept slipping through extraction). The
-geometry-bearing patterns (points, rects, vias) are exactly the ones the extractor
-in def_wires.py uses, so 100% coverage means the extractor sees every construct.
+Exhaustive coverage audit: every non-whitespace character in the NETS and SPECIALNETS
+routing must be consumed by a recognized pattern. Anything left over is an UNRECOGNIZED
+token class — a DEF construct the parser has never seen (the bug class that kept slipping
+through extraction).
+
+SCOPE — what 100% coverage does and does NOT guarantee. It guarantees "no unrecognized
+token class." It does NOT guarantee the extractor in def_wires.py *handles* every construct:
+the audit's pattern set is a SUPERSET of the extractor's, so a token that is recognized here
+but unhandled there still reads as covered. Concretely, POLYGON is in the _KW keyword list
+(covered) but def_wires.py extracts zero polygons — a POLYGON-routed DEF would audit at 100%
+while the extractor silently dropped it. That's safe for compute_array (no polygon routing),
+but the guarantee is "recognized," not "extracted." EXTRACTION COMPLETENESS is established by
+cross_check_odb.py (aggregate tie-out against OpenROAD's odb), not by this audit.
 
 Validated sensitive: removing the ( x y ext ) extension support makes it flag exactly
 the 40,463 extension coordinates it should.

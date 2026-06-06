@@ -1,8 +1,10 @@
 # compute_array routing visualization + verification
 
 Tools to extract the routed metal of `compute_array_abut` from the ORFS `6_final.def`,
-build a to-scale 3D model (`wires.glb`), and **formally verify** that the model contains
-every piece of routing geometry the DEF has — nothing dropped, nothing fabricated.
+build a to-scale 3D model (`wires.glb`), and **exhaustively audit + cross-validate** that the
+model contains the routing geometry the DEF has — via a char-level coverage audit (no
+unrecognized DEF construct) plus an aggregate cross-check against OpenROAD's own database.
+This is rigorous differential testing, not a formal proof — see the caveats below.
 
 This exists because hand-rolled DEF parsing repeatedly missed constructs (wire-end
 coordinate *extensions*, RECT fill patches, PDN via enclosures). The verification is built
@@ -91,11 +93,16 @@ python extrude_wires.py out/gds_metal.json out/gds_metal.glb     # after a klayo
 For the **full-die 2-D** Google-Maps-style viewer (the whole `chip_top`, tile pyramid + Leaflet),
 see [`../CHIP_TOP_VIEWER.md`](../CHIP_TOP_VIEWER.md).
 
-## What the verification proves
+## What the verification establishes
 
-- **EXHAUSTIVE char coverage** — every non-whitespace character of the routing is consumed by a
+- **Exhaustive char coverage** — every non-whitespace character of the routing is consumed by a
   recognized pattern. Validated *sensitive*: dropping `( x y ext )` support flags exactly the
-  40,463 extension coords it should. This is the guard the earlier checks lacked.
+  40,463 extension coords it should. **What this guarantees:** no *unrecognized token class* — not
+  that the extractor processes every construct. The audit's pattern set is a superset of the
+  extractor's, so a construct that's a recognized token but unhandled by `def_wires.py` would still
+  read as 100% covered (e.g. `POLYGON` is in the keyword list but the extractor renders zero
+  polygons — safe here only because compute_array routing has none). **Extraction completeness is
+  established by `cross_check_odb`, not by coverage.**
 - **Conservation (Δ0)** — per-layer wire length, per-pair via counts, and RECT counts from the
   extractor exactly equal an independent re-derivation from the DEF.
 - **Coordinate arity** — only `(x y)`, `(x y ext)`, `(x y a b)` forms exist and all are handled.
@@ -118,6 +125,15 @@ docker run --rm -v "$BASE":/data:ro -v "$PWD":/viz:ro --entrypoint bash "$ORFS_I
 python cross_check_odb.py        # asserts exact agreement, exit 0 = pass
 ```
 
-Result: per-layer wire length, via counts, and RECT counts all match OpenROAD's database
-**exactly** (length to 0.01 µm). Combined with the char-coverage audit (nothing unrecognized),
-the routing extraction is verified complete and correct from two independent directions.
+Result: per-layer wire length, via counts, and RECT counts all match OpenROAD's database to the
+check's tolerance (length within **0.1 µm** per layer; see `cross_check_odb.py`). Combined with the
+char-coverage audit (nothing unrecognized), the routing extraction is cross-validated from two
+independent directions.
+
+**Caveats (what this is *not*):**
+- **Aggregate, not per-segment** — `cross_check_odb` compares per-layer *totals* (length, via/rect
+  counts). Two different geometries with equal per-layer totals both pass; it is not per-wire
+  placement proof. Sufficient for a to-scale viz, not a routing equivalence proof.
+- **One design, committed snapshot** — validates the `compute_array_abut` extraction against a
+  committed `odb` reference; it is not a general invariant, and a frozen reference can go stale if
+  both the extractor and the DEF change.

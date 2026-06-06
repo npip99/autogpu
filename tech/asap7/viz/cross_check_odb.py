@@ -1,6 +1,12 @@
 """Cross-check the DEF extractor against OpenROAD's own database (out/odb.json from odb_dump.py).
-This is the authoritative independent witness: OpenROAD wrote the routing. Exact agreement on
-every layer's wire length, via count, and RECT count = the extraction is complete and correct."""
+The authoritative independent witness: OpenROAD wrote the routing.
+
+SCOPE: this is an AGGREGATE tie-out — per-layer TOTAL wire length (within 0.1 µm/layer, see the
+abs()<0.1 below), per-pair via COUNT, per-layer RECT COUNT. It establishes extraction completeness
+at the aggregate level (nothing en-masse dropped or fabricated), NOT per-segment placement: two
+different geometries with equal per-layer totals would both pass. It also validates ONE design
+against a committed reference (odb_reference.json), so it is a snapshot check, not a general
+invariant — regenerate the reference if the extractor or the DEF changes."""
 import json, math, sys, os
 from collections import Counter, defaultdict
 from def_wires import extract, extract_vias, extract_rects
@@ -21,9 +27,9 @@ odb_rect={k.lower():v for k,v in odb["rect_ct"].items()}
 ok=True
 print(f"{'layer':6} {'mine_len':>12} {'odb_len':>12}  match")
 for i in range(1,8):
-    L=f"m{i}"; a=round(mine_len[L],2); b=odb_len[L]; m=abs(a-b)<0.1; ok&=m
+    L=f"m{i}"; a=round(mine_len[L],2); b=odb_len[L]; m=abs(a-b)<0.1; ok&=m   # 0.1µm/layer tolerance
     print(f"{L:6} {a:12.2f} {b:12.2f}  {'OK' if m else 'MISMATCH'}")
 print("via counts:", "OK" if mine_via==odb_via else f"MISMATCH mine={dict(mine_via)} odb={odb_via}"); ok&=(mine_via==odb_via)
 print("rect counts:", "OK" if mine_rect==odb_rect else f"MISMATCH mine={dict(mine_rect)} odb={odb_rect}"); ok&=(mine_rect==odb_rect)
-print("\n"+("CROSS-CHECK PASSED — extractor matches OpenROAD's database exactly" if ok else "CROSS-CHECK FAILED"))
+print("\n"+("CROSS-CHECK PASSED — extractor matches OpenROAD's database (aggregate totals)" if ok else "CROSS-CHECK FAILED"))
 sys.exit(0 if ok else 1)
