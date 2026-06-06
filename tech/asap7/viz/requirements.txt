@@ -1,0 +1,10 @@
+# Python deps for the routing viz + verification (use uv or pip in a venv)
+numpy
+gdstk
+shapely
+trimesh
+mapbox-earcut   # triangulation engine for trimesh.creation.extrude_polygon
+scipy
+# optional, for offscreen renders only:
+pyrender
+Pillow

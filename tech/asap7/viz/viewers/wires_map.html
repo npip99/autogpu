@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>routed wires — top-down map</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b0d10;color:#bcd;font-family:system-ui,sans-serif;overflow:hidden}
+  #hud{position:fixed;top:10px;left:12px;font-size:13px;line-height:1.5;opacity:.92;pointer-events:none;text-shadow:0 1px 2px #000}
+  #hud b{color:#fff}
+  canvas{display:block;cursor:grab} canvas.drag{cursor:grabbing}
+  #err{position:fixed;top:50%;left:0;right:0;text-align:center;color:#f88;font-size:14px}
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+}}
+</script></head>
+<body>
+<div id="hud"><b>compute_array corner — routed wires (real width, top-down)</b><br>
+drag = pan · scroll = zoom · view <span id="vw">—</span>µm · m2 orange m3 yellow m4 green m5 cyan m6 indigo m7 pink</div>
+<div id="err"></div>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth,innerHeight); renderer.setPixelRatio(devicePixelRatio);
+document.body.appendChild(renderer.domElement);
+const scene=new THREE.Scene(); scene.background=new THREE.Color(0x0b0d10);
+scene.add(new THREE.AmbientLight(0xffffff,1.0));
+const dl=new THREE.DirectionalLight(0xffffff,0.5); dl.position.set(0,0,1); scene.add(dl);
+
+// layout is in XY with z=height; look straight down the -Z axis (true top-down, ortho => no perspective mush)
+let cx=117, cy=117, viewH=250;                         // center + vertical span of view in µm
+const cam=new THREE.OrthographicCamera(-1,1,1,-1,-100,1000);
+cam.position.set(cx,cy,300); cam.up.set(0,1,0); cam.lookAt(cx,cy,0);
+const vw=document.getElementById('vw');
+function applyCam(){
+  const a=innerWidth/innerHeight, hw=viewH*a/2, hh=viewH/2;
+  cam.left=-hw; cam.right=hw; cam.top=hh; cam.bottom=-hh;
+  cam.position.set(cx,cy,300); cam.lookAt(cx,cy,0); cam.updateProjectionMatrix();
+  vw.textContent=viewH.toFixed(1);
+}
+applyCam();
+
+new GLTFLoader().load('../out/wires.glb?v=19', g=>{
+  g.scene.traverse(o=>{ if(o.isMesh){ o.material.vertexColors=true; o.material.metalness=0; o.material.roughness=0.85; o.material.side=THREE.DoubleSide; } });
+  scene.add(g.scene);
+}, undefined, e=>{ document.getElementById('err').textContent='load error: '+e; });
+
+// drag to pan (convert pixels -> world µm using current view scale)
+let dragging=false, px=0, py=0; const cv=renderer.domElement;
+cv.addEventListener('mousedown',e=>{ dragging=true; px=e.clientX; py=e.clientY; cv.classList.add('drag'); });
+addEventListener('mouseup',()=>{ dragging=false; cv.classList.remove('drag'); });
+addEventListener('mousemove',e=>{ if(!dragging)return;
+  const perPx=viewH/innerHeight;
+  cx-=(e.clientX-px)*perPx; cy+=(e.clientY-py)*perPx;   // +y world is up on screen
+  px=e.clientX; py=e.clientY; applyCam();
+});
+// scroll to zoom about the cursor
+addEventListener('wheel',e=>{ e.preventDefault();
+  const a=innerWidth/innerHeight;
+  const wx=cx+((e.clientX/innerWidth)-0.5)*viewH*a;       // world point under cursor
+  const wy=cy-((e.clientY/innerHeight)-0.5)*viewH;
+  const f=e.deltaY<0?0.85:1.18; const nv=Math.min(400,Math.max(2,viewH*f));
+  // keep the cursor's world point fixed while zooming
+  cx=wx-((e.clientX/innerWidth)-0.5)*nv*a;
+  cy=wy+((e.clientY/innerHeight)-0.5)*nv;
+  viewH=nv; applyCam();
+},{passive:false});
+
+addEventListener('resize',()=>{ renderer.setSize(innerWidth,innerHeight); applyCam(); });
+(function loop(){ requestAnimationFrame(loop); renderer.render(scene,cam); })();
+</script>
+</body></html>

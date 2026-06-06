@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>routed wires — 3D fly-through</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b0d10;color:#bcd;font-family:system-ui,sans-serif;overflow:hidden}
+  #hud{position:fixed;top:10px;left:12px;font-size:13px;line-height:1.5;opacity:.92;pointer-events:none;text-shadow:0 1px 2px #000}
+  #hud b{color:#fff}
+  #prompt{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+    background:rgba(8,10,14,.55);font-size:22px;cursor:pointer;letter-spacing:.3px}
+  #prompt small{display:block;font-size:14px;opacity:.85;margin-top:10px;text-align:center}
+  #err{position:fixed;top:50%;left:0;right:0;text-align:center;color:#f88;font-size:14px}
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+}}
+</script></head>
+<body>
+<div id="hud"><b>compute_array corner — routed wires, to scale (real nm)</b> · m2 orange m3 yellow m4 green m5 cyan m6 indigo m7 pink<br>
+<span id="stat">loading…</span> · speed <span id="spd">—</span> ×altitude</div>
+<div id="prompt">click to fly
+  <small>mouse = look · <b>WASD</b> = move · <b>Space/Shift</b> = up/down · <b>Ctrl</b> = sprint · scroll = speed · Esc = release</small></div>
+<div id="err"></div>
+<script type="module">
+import * as THREE from 'three';
+import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth,innerHeight); renderer.setPixelRatio(devicePixelRatio);
+document.body.appendChild(renderer.domElement);
+const scene=new THREE.Scene(); scene.background=new THREE.Color(0x0b0d10);
+const camera=new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.02, 40000);
+scene.add(camera);
+scene.add(new THREE.AmbientLight(0xffffff,0.85));
+const d1=new THREE.DirectionalLight(0xffffff,0.9); d1.position.set(0.5,1,0.7); scene.add(d1);
+
+const root=new THREE.Group(); root.rotation.x=-Math.PI/2; scene.add(root);
+const controls=new PointerLockControls(camera, document.body);
+const prompt=document.getElementById('prompt');
+prompt.addEventListener('click', ()=>controls.lock());
+controls.addEventListener('lock',  ()=>prompt.style.display='none');
+controls.addEventListener('unlock',()=>{ prompt.style.display='flex'; for(const k in keys) keys[k]=false; });
+
+const keys={};
+addEventListener('keydown',e=>{ keys[e.code]=true; if(['Space','ShiftLeft','ShiftRight'].includes(e.code))e.preventDefault(); });
+addEventListener('keyup',  e=>{ keys[e.code]=false; });
+let speedMul=1.0; const spd=document.getElementById('spd'); spd.textContent=speedMul.toFixed(2);
+addEventListener('wheel', e=>{ speedMul=Math.min(20,Math.max(0.05, speedMul*(e.deltaY<0?1.2:0.83))); spd.textContent=speedMul.toFixed(2); }, {passive:true});
+
+const stat=document.getElementById('stat');
+new GLTFLoader().load('../out/wires.glb?v=19', g=>{
+  g.scene.traverse(o=>{ if(o.isMesh){ o.material.vertexColors=true; o.material.metalness=0; o.material.roughness=0.8; o.material.side=THREE.DoubleSide; } });
+  root.add(g.scene);
+  const box=new THREE.Box3().setFromObject(g.scene);
+  const c=box.getCenter(new THREE.Vector3()), s=box.getSize(new THREE.Vector3()), span=Math.max(s.x,s.y,1);
+  // flat to-scale sheet -> start high, looking nearly straight down (the legible angle)
+  camera.position.set(c.x - span*0.12, span*0.72, -c.y + span*0.18);
+  camera.lookAt(c.x, 0, -c.y);
+  stat.textContent='click to fly · to scale: '+span.toFixed(0)+'µm wide, '+s.y.toFixed(1)+'µm tall';
+}, undefined, e=>{ document.getElementById('err').textContent='load error: '+e; });
+
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+const clock=new THREE.Clock(), up=new THREE.Vector3(0,1,0);
+function animate(){ requestAnimationFrame(animate);
+  const dt=Math.min(clock.getDelta(),0.1);
+  if(controls.isLocked){                         // only move while the mouse is captured
+    const alt=Math.max(1.5, Math.abs(camera.position.y));
+    let v=alt*speedMul*(keys['ControlLeft']||keys['ControlRight']?5:1)*dt;
+    const fwd=(keys['KeyW']?1:0)-(keys['KeyS']?1:0), rgt=(keys['KeyD']?1:0)-(keys['KeyA']?1:0),
+          vert=(keys['Space']?1:0)-(keys['ShiftLeft']||keys['ShiftRight']?1:0);
+    const fdir=new THREE.Vector3(); camera.getWorldDirection(fdir);
+    const rdir=new THREE.Vector3().crossVectors(fdir, up).normalize();
+    if(fwd)  camera.position.addScaledVector(fdir, fwd*v);
+    if(rgt)  camera.position.addScaledVector(rdir, rgt*v);
+    if(vert) camera.position.addScaledVector(up,   vert*v);
+  }
+  renderer.render(scene,camera);
+}
+animate();
+</script>
+</body></html>
