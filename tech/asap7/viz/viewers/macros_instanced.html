@@ -36,10 +36,10 @@ const HIER = {
   top:'compute_array', topPlacements:[{x:0,y:0}],
   masters:{
     compute_array:{ meshes:['../out/base_routing.glb','../out/parent_feol_logic.glb'], children:[] }, // filled from placements
-    cmd_unit:     { meshes:['../out/macros/cmd_unit.glb','../out/cmd_unit_feol.glb'] },   // routing + real transistor FEOL
-    skew_lane_a:  { meshes:['../out/macros/skew_lane_a.glb','../out/skew_lane_a_feol.glb'] },
-    skew_lane_b:  { meshes:['../out/macros/skew_lane_b.glb','../out/skew_lane_b_feol.glb'] },
-    mac_tmem_cell:{ meshes:['../out/macros/mac_tmem_cell.glb','../out/mac_tmem_cell_feol.glb'] },
+    cmd_unit:     { meshes:['../out/macros/cmd_unit.glb'] },   // routing only; FEOL is cell-instanced below (CELLFEOL)
+    skew_lane_a:  { meshes:['../out/macros/skew_lane_a.glb'] },
+    skew_lane_b:  { meshes:['../out/macros/skew_lane_b.glb'] },
+    mac_tmem_cell:{ meshes:['../out/macros/mac_tmem_cell.glb'] },
   },
 };
 
@@ -146,7 +146,38 @@ addEventListener('keydown',e=>{ if(e.code==='KeyP') copyPose(); if(e.code==='Key
     nInst+=mats.length;
     console.log(`${name}: ${mats.length} instances`);
   }
-  stat.textContent=`${Object.keys(byMaster).length} masters · ${nInst.toLocaleString()} instances · ${nIM} meshes · ${WIN?'window':'FULL CHIP'}`;
+
+  // CELL-LEVEL FEOL (option 2): instead of a baked per-macro FEOL mesh (~354MB), instance each
+  // unique std-cell's FEOL at (macro world transform ∘ cell-local transform). ~40x smaller
+  // download, identical render. Masters + per-cell placements come from build_cell_feol.py.
+  const CELLFEOL={cmd_unit:'../out/cellfeol/cmd_unit',mac_tmem_cell:'../out/cellfeol/mac_tmem_cell',
+                  skew_lane_a:'../out/cellfeol/skew_lane_a',skew_lane_b:'../out/cellfeol/skew_lane_b'};
+  const cellMat=(x,y,rot,mir)=>{ const m=new THREE.Matrix4(); if(mir)m.makeScale(1,-1,1);
+    m.premultiply(new THREE.Matrix4().makeRotationZ(rot*Math.PI/180));
+    m.premultiply(new THREE.Matrix4().makeTranslation(x,y,0)); return m; };
+  const feolMat=new THREE.MeshStandardMaterial({vertexColors:true,metalness:0,roughness:0.85,side:THREE.FrontSide,flatShading:true});
+  const ID=new THREE.Matrix4(); let nFeol=0;
+  if(!NOMAC) for(const mtype in CELLFEOL){
+    const macroMats=byMaster[mtype]; if(!macroMats) continue;
+    let D; try{ D=await fetch(CELLFEOL[mtype]+'/instances.json').then(r=>r.json()); }catch(e){ console.warn('no cell-FEOL for',mtype); continue; }
+    for(const cname in D.instances){
+      const gm=D.meta[cname]; if(!gm||!gm.glb) continue;
+      const cmats=D.instances[cname].map(p=>cellMat(p[0],p[1],p[2],p[3]));
+      const mats=[]; for(const M of macroMats) for(const cm of cmats) mats.push(new THREE.Matrix4().multiplyMatrices(M,cm));
+      let gl; try{ gl=await loadGLB(CELLFEOL[mtype]+'/'+gm.glb); }catch(e){ continue; }
+      gl.scene.updateMatrixWorld(true);
+      gl.scene.traverse(o=>{ if(o.isMesh){
+        if(!o.matrixWorld.equals(ID)) o.geometry.applyMatrix4(o.matrixWorld);   // bake glb node xform once
+        const im=new THREE.InstancedMesh(o.geometry,feolMat,mats.length);
+        for(let i=0;i<mats.length;i++) im.setMatrixAt(i,mats[i]);
+        im.instanceMatrix.needsUpdate=true; im.frustumCulled=true; root.add(im); nIM++; macroMeshes.push(im);
+      }});
+      nFeol+=mats.length;
+    }
+    console.log(`${mtype} cell-FEOL instanced`);
+  }
+
+  stat.textContent=`${Object.keys(byMaster).length} masters · ${nInst.toLocaleString()} tile + ${nFeol.toLocaleString()} cell-FEOL instances · ${nIM} meshes · ${WIN?'window':'FULL CHIP'}`;
   // H = hide/show the tile meshes, revealing the parent connecting fabric (PDN + channel routing) beneath
   addEventListener('keydown',e=>{ if(e.code==='KeyH'){ const v=!macroMeshes[0]?.visible; for(const m of macroMeshes) m.visible=v; } });
 }catch(e){ document.getElementById('err').textContent='load error: '+e; console.error(e); } })();
