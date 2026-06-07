@@ -93,6 +93,24 @@ python extrude_wires.py out/gds_metal.json out/gds_metal.glb     # after a klayo
 For the **full-die 2-D** Google-Maps-style viewer (the whole `chip_top`, tile pyramid + Leaflet),
 see [`../CHIP_TOP_VIEWER.md`](../CHIP_TOP_VIEWER.md).
 
+### Deploy to Cloudflare R2
+
+The live demo at `https://gpu-pipitone-xyz.pages.dev/3d` is the `macros_instanced.html`
+viewer served from Cloudflare Pages, with all .glb / .json assets proxied from an R2
+bucket. To push fresh assets after a rebuild:
+
+```bash
+# Reads credentials from .env at repo root (CLOUDFLARE_R2_*).
+# Re-runnable: skips .glb / cellfeol files whose remote size matches local.
+uv run --with boto3 python3 tech/asap7/viz/upload_to_r2.py
+```
+
+The script uploads: `viewers/macros_instanced.html`, `macros/placements.json`, the
+four `out/macros/*.glb`, `out/base_routing.glb`, `out/parent_feol_logic.glb`, and the
+whole `out/cellfeol/` tree (cell-level FEOL masters + per-macro instances.json).
+Defaults to bucket `chip-tiles` and prefix `chip_top/v1/3d` — overridable via
+`R2_BUCKET` / `R2_PREFIX` in `.env`.
+
 ## What the verification establishes
 
 - **Exhaustive char coverage** — every non-whitespace character of the routing is consumed by a
