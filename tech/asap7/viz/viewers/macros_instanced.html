@@ -36,10 +36,10 @@ const HIER = {
   top:'compute_array', topPlacements:[{x:0,y:0}],
   masters:{
     compute_array:{ meshes:['../out/base_routing.glb','../out/parent_feol_logic.glb'], children:[] }, // filled from placements
-    cmd_unit:     { meshes:['../out/macros/cmd_unit.glb'] },
-    skew_lane_a:  { meshes:['../out/macros/skew_lane_a.glb'] },
-    skew_lane_b:  { meshes:['../out/macros/skew_lane_b.glb'] },
-    mac_tmem_cell:{ meshes:['../out/macros/mac_tmem_cell.glb'] },
+    cmd_unit:     { meshes:['../out/macros/cmd_unit.glb','../out/cmd_unit_feol.glb'] },   // routing + real transistor FEOL
+    skew_lane_a:  { meshes:['../out/macros/skew_lane_a.glb','../out/skew_lane_a_feol.glb'] },
+    skew_lane_b:  { meshes:['../out/macros/skew_lane_b.glb','../out/skew_lane_b_feol.glb'] },
+    mac_tmem_cell:{ meshes:['../out/macros/mac_tmem_cell.glb','../out/mac_tmem_cell_feol.glb'] },
   },
 };
 

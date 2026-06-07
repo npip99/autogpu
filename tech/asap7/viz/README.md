@@ -82,7 +82,7 @@ Controls: click to fly · mouse=look · WASD · Space/Shift=up/down · Ctrl=spri
 # macros_instanced.html
 VIZ_CELLS=0 python def_wires_3d.py 1.0 out/base_routing.glb 0 1   # parent routing only (macros=0)
 python feol.py out/parent_feol_logic.glb                         # parent-channel FEOL
-python build_macros.py cmd_unit skew_lane_a skew_lane_b mac_tmem_cell
+VIZ_CELLS=0 python build_macros.py cmd_unit skew_lane_a skew_lane_b mac_tmem_cell  # routing-only, matches base_routing; drop VIZ_CELLS=0 to bake the std-cell gate boxes back in
 
 # gds viewers — straight from the parent GDS, no DEF. klayout_wires.py runs inside the ORFS
 # image (see its header for the docker invocation); the others are plain python.
