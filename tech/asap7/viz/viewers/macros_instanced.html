@@ -60,14 +60,18 @@ const root=new THREE.Group(); root.rotation.x=-Math.PI/2; scene.add(root);
 
 const controls=new PointerLockControls(camera,document.body), prompt=document.getElementById('prompt');
 prompt.addEventListener('click',()=>controls.lock());
-controls.addEventListener('lock',()=>prompt.style.display='none');
-controls.addEventListener('unlock',()=>{prompt.style.display='flex'; for(const k in keys)keys[k]=false;});
 const keys={}; const clearKeys=()=>{ for(const k in keys) keys[k]=false; };
-addEventListener('keydown',e=>{keys[e.code]=true; if(['Space','ShiftLeft','ShiftRight'].includes(e.code))e.preventDefault();});
-addEventListener('keyup',e=>{keys[e.code]=false;});
+controls.addEventListener('lock',()=>{ prompt.style.display='none'; clearKeys(); });   // every flight starts clean
+controls.addEventListener('unlock',()=>{ prompt.style.display='flex'; clearKeys(); });
+// Reconcile modifiers from each event's true modifier state: if Shift/Ctrl's keyup was eaten
+// (e.g. by the OS Cmd+Shift+4 chord), the very next key event un-sticks it.
+const syncMods=e=>{ if(!e.shiftKey){keys.ShiftLeft=keys.ShiftRight=false;} if(!e.ctrlKey){keys.ControlLeft=keys.ControlRight=false;} if(!e.altKey){keys.AltLeft=keys.AltRight=false;} };
+addEventListener('keydown',e=>{keys[e.code]=true; syncMods(e); if(['Space','ShiftLeft','ShiftRight'].includes(e.code))e.preventDefault();});
+addEventListener('keyup',e=>{keys[e.code]=false; syncMods(e);});
 // a popup / alt-tab / OS dialog steals focus and the matching keyup never arrives -> keys stick.
-// Clear everything whenever we lose focus or the tab is hidden, so movement never latches on.
+// Clear on focus loss, on tab-hide, AND on focus return (coming back from a screenshot).
 addEventListener('blur',clearKeys);
+addEventListener('focus',clearKeys);
 document.addEventListener('visibilitychange',()=>{ if(document.hidden) clearKeys(); });
 // speed via the HUD slider (scroll-to-speed removed). Log scale 0.05x..20x, slider midpoint = 1x.
 let speedMul=1.0; const speedEl=document.getElementById('speed'), speedValEl=document.getElementById('speedval');
