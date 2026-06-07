@@ -29,6 +29,7 @@ import { PointerLockControls } from 'three/addons/controls/PointerLockControls.j
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 const WIN = new URLSearchParams(location.search).get('win')==='1';   // ?win=1 = only window placements
 const NOMAC = new URLSearchParams(location.search).get('nomacros')==='1'; // ?nomacros=1 = skip macro meshes (light render)
+const FEOL  = new URLSearchParams(location.search).get('feol')==='1';     // FEOL (parent + cell) off by default; ?feol=1 to enable
 
 // --- master tree: each master has its own geometry (meshes) + child instances. compute_array's
 // children come from placements.json; macros are baked leaves. The chip-top instances compute_array.
@@ -134,6 +135,7 @@ addEventListener('keydown',e=>{ if(e.code==='KeyP') copyPose(); if(e.code==='Key
     const isMacro = name!=='compute_array';
     if(NOMAC && isMacro) continue;
     for(const url of HIER.masters[name].meshes){
+      if(!FEOL && url.includes('feol')) continue;   // parent_feol_logic.glb off unless ?feol=1
       let g; try{ g=await loadGLB(url); }catch(e){ console.warn('mesh missing',url); continue; }
       g.scene.traverse(o=>{ if(o.isMesh){
         const mat=new THREE.MeshStandardMaterial({vertexColors:true,metalness:0,roughness:0.85,side:THREE.FrontSide,flatShading:true});
@@ -157,7 +159,7 @@ addEventListener('keydown',e=>{ if(e.code==='KeyP') copyPose(); if(e.code==='Key
     m.premultiply(new THREE.Matrix4().makeTranslation(x,y,0)); return m; };
   const feolMat=new THREE.MeshStandardMaterial({vertexColors:true,metalness:0,roughness:0.85,side:THREE.FrontSide,flatShading:true});
   const ID=new THREE.Matrix4(); let nFeol=0;
-  if(!NOMAC) for(const mtype in CELLFEOL){
+  if(!NOMAC && FEOL) for(const mtype in CELLFEOL){
     const macroMats=byMaster[mtype]; if(!macroMats) continue;
     let D; try{ D=await fetch(CELLFEOL[mtype]+'/instances.json').then(r=>r.json()); }catch(e){ console.warn('no cell-FEOL for',mtype); continue; }
     for(const cname in D.instances){
