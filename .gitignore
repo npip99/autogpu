@@ -27,6 +27,12 @@ build/
 tech/**/orfs/*.macro_placement.tcl
 tech/**/orfs/*.floorplan_preview.png
 
+# --- Local secrets / credentials ---
+# Cloudflare API token, R2 access keys, etc. Never committed.
+.env
+.env.*
+!.env.example
+
 # --- Editor / OS junk ---
 .DS_Store
 .vscode/

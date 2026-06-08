@@ -1,31 +1,35 @@
 <!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>recursive macro instancing</title>
+<title>AutoGPU</title>
 <style>
   html,body{margin:0;height:100%;background:#0b0d10;color:#bcd;font-family:system-ui,sans-serif;overflow:hidden}
-  #hud{position:fixed;top:10px;left:12px;font-size:13px;line-height:1.5;opacity:.92;pointer-events:none;text-shadow:0 1px 2px #000}
+  #hud{position:fixed;top:10px;left:12px;z-index:20;font-size:13px;line-height:1.5;opacity:.92;pointer-events:none;text-shadow:0 1px 2px #000}
   #hud b{color:#fff}
-  #prompt{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(8,10,14,.55);font-size:22px;cursor:pointer}
-  #prompt small{display:block;font-size:14px;opacity:.85;margin-top:10px;text-align:center}
+  #prompt{position:fixed;inset:0;display:flex;align-items:flex-start;justify-content:center;background:transparent;font-size:15px;cursor:pointer}
+  #prompt span{margin-top:14px;background:rgba(10,13,18,.5);padding:6px 14px;border-radius:8px;backdrop-filter:blur(2px)}
   #err{position:fixed;top:50%;left:0;right:0;text-align:center;color:#f88;font-size:14px}
+  body.hideui #hud, body.hideui #prompt, body.hideui #copybtn{display:none!important}
 </style>
 <script type="importmap">{ "imports": {
   "three":"https://unpkg.com/three@0.160.0/build/three.module.js",
   "three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/" }}</script></head>
 <body>
-<div id="hud"><b>recursive macro instancing</b> · <span id="stat">loading…</span><br>
+<div id="hud"><b>AutoGPU</b> · <span id="stat">loading…</span><br>
 <span id="fps" style="color:#7fdc8f">— fps</span> · <span id="ginfo">—</span><br>
 <span id="pose" style="color:#e0c070;pointer-events:auto;user-select:text;cursor:text">pose —</span><br>
-mouse=look · WASD · Space/Shift=up/down · Ctrl=sprint · scroll=speed · Esc · H=hide tiles · P=copy pose</div>
+<span style="pointer-events:auto">speed <input id="speed" type="range" min="0" max="1000" value="500" style="vertical-align:middle;width:130px;cursor:pointer"> <span id="speedval">1.00×</span></span><br>
+mouse=look · WASD · Space/Shift=up/down · Ctrl=sprint · Esc · H=hide tiles · P=copy pose · U=hide UI (clean screenshot) · (set speed when not flying)</div>
 <button id="copybtn" style="position:fixed;top:10px;right:12px;z-index:10;padding:6px 10px;font-size:13px;cursor:pointer;background:#1a1d24;color:#bcd;border:1px solid #345;border-radius:5px">copy pose</button>
-<div id="prompt">click to fly<small>chip-top instances compute_array, which instances its macros — recursive</small></div>
+<div id="prompt"><span>click to fly</span></div>
 <div id="err"></div>
 <script type="module">
 import * as THREE from 'three';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 const WIN = new URLSearchParams(location.search).get('win')==='1';   // ?win=1 = only window placements
+const NOMAC = new URLSearchParams(location.search).get('nomacros')==='1'; // ?nomacros=1 = skip macro meshes (light render)
+const FEOL  = new URLSearchParams(location.search).get('feol')==='1';     // FEOL (parent + cell) off by default; ?feol=1 to enable
 
 // --- master tree: each master has its own geometry (meshes) + child instances. compute_array's
 // children come from placements.json; macros are baked leaves. The chip-top instances compute_array.
@@ -33,7 +37,7 @@ const HIER = {
   top:'compute_array', topPlacements:[{x:0,y:0}],
   masters:{
     compute_array:{ meshes:['../out/base_routing.glb','../out/parent_feol_logic.glb'], children:[] }, // filled from placements
-    cmd_unit:     { meshes:['../out/macros/cmd_unit.glb'] },
+    cmd_unit:     { meshes:['../out/macros/cmd_unit.glb'] },   // routing only; FEOL is cell-instanced below (CELLFEOL)
     skew_lane_a:  { meshes:['../out/macros/skew_lane_a.glb'] },
     skew_lane_b:  { meshes:['../out/macros/skew_lane_b.glb'] },
     mac_tmem_cell:{ meshes:['../out/macros/mac_tmem_cell.glb'] },
@@ -45,17 +49,35 @@ renderer.setSize(innerWidth,innerHeight); renderer.setPixelRatio(Math.min(device
 document.body.appendChild(renderer.domElement);
 const scene=new THREE.Scene(); scene.background=new THREE.Color(0x0b0d10);
 const camera=new THREE.PerspectiveCamera(60,innerWidth/innerHeight,0.05,8000); scene.add(camera);
-scene.add(new THREE.AmbientLight(0xffffff,1.0));
-const dl=new THREE.DirectionalLight(0xffffff,0.45); dl.position.set(0.4,1,0.6); scene.add(dl);
+// Shading for depth: a low ambient floor + a sky/ground hemisphere gradient + a strong key
+// directional (with a weak opposite fill). Box faces now shade by orientation — tops bright,
+// sides darker — instead of reading as flat color. Saturated PAL colors keep their hue when a
+// lit channel clips, so brightness reads as depth without washing the colors out.
+scene.add(new THREE.AmbientLight(0xffffff,0.22));
+scene.add(new THREE.HemisphereLight(0xcdddff,0x14141c,0.30));     // cool sky, dark ground
+const dl=new THREE.DirectionalLight(0xffffff,1.25); dl.position.set(0.5,1,0.35); scene.add(dl);   // key (from above) — strong for depth
+const dl2=new THREE.DirectionalLight(0xffffff,0.22); dl2.position.set(-0.5,0.4,-0.45); scene.add(dl2); // fill (opposite)
 const root=new THREE.Group(); root.rotation.x=-Math.PI/2; scene.add(root);
 
 const controls=new PointerLockControls(camera,document.body), prompt=document.getElementById('prompt');
 prompt.addEventListener('click',()=>controls.lock());
-controls.addEventListener('lock',()=>prompt.style.display='none');
-controls.addEventListener('unlock',()=>{prompt.style.display='flex'; for(const k in keys)keys[k]=false;});
-const keys={}; addEventListener('keydown',e=>{keys[e.code]=true; if(['Space','ShiftLeft','ShiftRight'].includes(e.code))e.preventDefault();});
-addEventListener('keyup',e=>{keys[e.code]=false;});
-let speedMul=1.0; addEventListener('wheel',e=>{speedMul=Math.min(20,Math.max(0.05,speedMul*(e.deltaY<0?1.2:0.83)));},{passive:true});
+const keys={}; const clearKeys=()=>{ for(const k in keys) keys[k]=false; };
+controls.addEventListener('lock',()=>{ prompt.style.display='none'; clearKeys(); });   // every flight starts clean
+controls.addEventListener('unlock',()=>{ prompt.style.display='flex'; clearKeys(); });
+// Reconcile modifiers from each event's true modifier state: if Shift/Ctrl's keyup was eaten
+// (e.g. by the OS Cmd+Shift+4 chord), the very next key event un-sticks it.
+const syncMods=e=>{ if(!e.shiftKey){keys.ShiftLeft=keys.ShiftRight=false;} if(!e.ctrlKey){keys.ControlLeft=keys.ControlRight=false;} if(!e.altKey){keys.AltLeft=keys.AltRight=false;} };
+addEventListener('keydown',e=>{keys[e.code]=true; syncMods(e); if(['Space','ShiftLeft','ShiftRight'].includes(e.code))e.preventDefault();});
+addEventListener('keyup',e=>{keys[e.code]=false; syncMods(e);});
+// a popup / alt-tab / OS dialog steals focus and the matching keyup never arrives -> keys stick.
+// Clear on focus loss, on tab-hide, AND on focus return (coming back from a screenshot).
+addEventListener('blur',clearKeys);
+addEventListener('focus',clearKeys);
+document.addEventListener('visibilitychange',()=>{ if(document.hidden) clearKeys(); });
+// speed via the HUD slider (scroll-to-speed removed). Log scale 0.05x..20x, slider midpoint = 1x.
+let speedMul=1.0; const speedEl=document.getElementById('speed'), speedValEl=document.getElementById('speedval');
+const applySpeed=()=>{ speedMul=0.05*Math.pow(400,(+speedEl.value)/1000); speedValEl.textContent=speedMul.toFixed(2)+'×'; };
+speedEl.addEventListener('input',applySpeed); applySpeed();
 const stat=document.getElementById('stat'), fpsEl=document.getElementById('fps'), ginfoEl=document.getElementById('ginfo'), poseEl=document.getElementById('pose');
 const loadGLB=u=>new Promise((res,rej)=>new GLTFLoader().load(u,res,()=>{},rej));
 const DEG=180/Math.PI;
@@ -75,7 +97,7 @@ function copyPose(){
   setTimeout(()=>{btn.textContent='copy pose'; btn.style.background='#1a1d24';},1800);
 }
 document.getElementById('copybtn').addEventListener('click',copyPose);
-addEventListener('keydown',e=>{ if(e.code==='KeyP') copyPose(); });
+addEventListener('keydown',e=>{ if(e.code==='KeyP') copyPose(); if(e.code==='KeyU') document.body.classList.toggle('hideui'); });
 
 (async()=>{ try{
   const placements=await fetch('../macros/placements.json').then(r=>r.json());
@@ -90,17 +112,33 @@ addEventListener('keydown',e=>{ if(e.code==='KeyP') copyPose(); });
   }
   for(const tp of HIER.topPlacements) walk(HIER.top, new THREE.Matrix4().makeTranslation(tp.x,tp.y,0));
 
+  // Frame the camera ONCE, up front, from instance positions + window extent — BEFORE the async
+  // GLB loads. Framing AFTER the ~5s of loading used to yank the view out from under you mid-flight.
+  // ?cam=<pose string> jumps to an exact view (the copy-pose format); else frame the window.
+  const CAM=new URLSearchParams(location.search).get('cam');
+  const applyCam=s=>{ const g=k=>{const m=s.match(new RegExp(k+'=(-?[\\d.]+)'));return m?parseFloat(m[1]):null;};
+    const x=g('layoutX'),y=g('layoutY'),h=g('height'); if(x==null)return false;
+    camera.position.set(x,h,-y);
+    camera.quaternion.setFromEuler(new THREE.Euler((g('pitch')||0)/DEG,(g('yaw')||0)/DEG,(g('roll')||0)/DEG,'YXZ')); return true; };
+  if(!(CAM && applyCam(CAM))){ const box=new THREE.Box3();
+    for(const nm in byMaster) for(const M of byMaster[nm]) box.expandByPoint(new THREE.Vector3().setFromMatrixPosition(M));
+    box.expandByPoint(new THREE.Vector3(0,0,0)); box.expandByPoint(new THREE.Vector3(235,235,0));
+    const c=box.getCenter(new THREE.Vector3()), s=box.getSize(new THREE.Vector3()), span=Math.max(s.x,s.y,50);
+    camera.position.set(c.x, span*0.8, -c.y); camera.lookAt(c.x,0,-c.y); }
+
   // one InstancedMesh per (master, sub-mesh), stamped at the master's composed placements
-  const box=new THREE.Box3(); let nInst=0,nIM=0;
+  let nInst=0,nIM=0;
   const macroMeshes=[];   // the tile meshes (everything except the parent's own routing) -> H to hide
   const baseMeshes=[];    // the parent routing/fabric -> X to draw on top of tiles (x-ray)
   for(const name in byMaster){
     const mats=byMaster[name];
     const isMacro = name!=='compute_array';
+    if(NOMAC && isMacro) continue;
     for(const url of HIER.masters[name].meshes){
+      if(!FEOL && url.includes('feol')) continue;   // parent_feol_logic.glb off unless ?feol=1
       let g; try{ g=await loadGLB(url); }catch(e){ console.warn('mesh missing',url); continue; }
       g.scene.traverse(o=>{ if(o.isMesh){
-        const mat=new THREE.MeshStandardMaterial({vertexColors:true,metalness:0,roughness:0.85,side:THREE.FrontSide});
+        const mat=new THREE.MeshStandardMaterial({vertexColors:true,metalness:0,roughness:0.85,side:THREE.FrontSide,flatShading:true});
         const im=new THREE.InstancedMesh(o.geometry, mat, mats.length);
         for(let i=0;i<mats.length;i++) im.setMatrixAt(i,mats[i]);
         im.instanceMatrix.needsUpdate=true; im.computeBoundingSphere(); im.frustumCulled=true; root.add(im); nIM++;
@@ -108,14 +146,40 @@ addEventListener('keydown',e=>{ if(e.code==='KeyP') copyPose(); });
       }});
     }
     nInst+=mats.length;
-    for(const M of mats) box.expandByPoint(new THREE.Vector3().setFromMatrixPosition(M));
     console.log(`${name}: ${mats.length} instances`);
   }
-  // include the window extent so framing isn't just macro origins
-  box.expandByPoint(new THREE.Vector3(0,0,0)); box.expandByPoint(new THREE.Vector3(235,235,0));
-  const c=box.getCenter(new THREE.Vector3()), s=box.getSize(new THREE.Vector3()), span=Math.max(s.x,s.y,50);
-  camera.position.set(c.x, span*0.8, -c.y); camera.lookAt(c.x,0,-c.y);
-  stat.textContent=`${Object.keys(byMaster).length} masters · ${nInst.toLocaleString()} instances · ${nIM} meshes · ${WIN?'window':'FULL CHIP'}`;
+
+  // CELL-LEVEL FEOL (option 2): instead of a baked per-macro FEOL mesh (~354MB), instance each
+  // unique std-cell's FEOL at (macro world transform ∘ cell-local transform). ~40x smaller
+  // download, identical render. Masters + per-cell placements come from build_cell_feol.py.
+  const CELLFEOL={cmd_unit:'../out/cellfeol/cmd_unit',mac_tmem_cell:'../out/cellfeol/mac_tmem_cell',
+                  skew_lane_a:'../out/cellfeol/skew_lane_a',skew_lane_b:'../out/cellfeol/skew_lane_b'};
+  const cellMat=(x,y,rot,mir)=>{ const m=new THREE.Matrix4(); if(mir)m.makeScale(1,-1,1);
+    m.premultiply(new THREE.Matrix4().makeRotationZ(rot*Math.PI/180));
+    m.premultiply(new THREE.Matrix4().makeTranslation(x,y,0)); return m; };
+  const feolMat=new THREE.MeshStandardMaterial({vertexColors:true,metalness:0,roughness:0.85,side:THREE.FrontSide,flatShading:true});
+  const ID=new THREE.Matrix4(); let nFeol=0;
+  if(!NOMAC && FEOL) for(const mtype in CELLFEOL){
+    const macroMats=byMaster[mtype]; if(!macroMats) continue;
+    let D; try{ D=await fetch(CELLFEOL[mtype]+'/instances.json').then(r=>r.json()); }catch(e){ console.warn('no cell-FEOL for',mtype); continue; }
+    for(const cname in D.instances){
+      const gm=D.meta[cname]; if(!gm||!gm.glb) continue;
+      const cmats=D.instances[cname].map(p=>cellMat(p[0],p[1],p[2],p[3]));
+      const mats=[]; for(const M of macroMats) for(const cm of cmats) mats.push(new THREE.Matrix4().multiplyMatrices(M,cm));
+      let gl; try{ gl=await loadGLB(CELLFEOL[mtype]+'/'+gm.glb); }catch(e){ continue; }
+      gl.scene.updateMatrixWorld(true);
+      gl.scene.traverse(o=>{ if(o.isMesh){
+        if(!o.matrixWorld.equals(ID)) o.geometry.applyMatrix4(o.matrixWorld);   // bake glb node xform once
+        const im=new THREE.InstancedMesh(o.geometry,feolMat,mats.length);
+        for(let i=0;i<mats.length;i++) im.setMatrixAt(i,mats[i]);
+        im.instanceMatrix.needsUpdate=true; im.frustumCulled=true; root.add(im); nIM++; macroMeshes.push(im);
+      }});
+      nFeol+=mats.length;
+    }
+    console.log(`${mtype} cell-FEOL instanced`);
+  }
+
+  stat.textContent=`${Object.keys(byMaster).length} masters · ${nInst.toLocaleString()} tile + ${nFeol.toLocaleString()} cell-FEOL instances · ${nIM} meshes · ${WIN?'window':'FULL CHIP'}`;
   // H = hide/show the tile meshes, revealing the parent connecting fabric (PDN + channel routing) beneath
   addEventListener('keydown',e=>{ if(e.code==='KeyH'){ const v=!macroMeshes[0]?.visible; for(const m of macroMeshes) m.visible=v; } });
 }catch(e){ document.getElementById('err').textContent='load error: '+e; console.error(e); } })();

@@ -1,110 +1,105 @@
-# gpu — minimal fp8 matmul accelerator
+# AutoGPU
 
-A toy fp8 matmul GPU in Verilog. Three core instructions (LOAD, MMA, STORE) plus barriers. Blackwell-style architecture: tensor memory (TMEM) for accumulators distributed across per-(i, j) MAC cells inside `compute_array`, separate from SMEM operand storage. No general-purpose compute, no branches.
+<p align="center">
+  <img src="https://i.imgur.com/feZCd6T.png" width="49%" />
+  <img src="https://i.imgur.com/yLSOOBh.png" width="49%" />
+</p>
 
-## Status
+*Once upon a time, [silicon chips](https://en.wikipedia.org/wiki/Integrated_circuit) were designed by [meat computers](https://upload.wikimedia.org/wikipedia/commons/5/5a/Integrated_circuit_designer_Hughes_Aircraft_Company.jpg) — squinting at 700MHz timing
+reports, hand-placing wiring and macros, arguing about die floorplans in physical rooms with physical whiteboards,
+in ceremonies called "design reviews"; [tape-out](https://en.wikipedia.org/wiki/Tape-out) was delayed by months after every redesign.
+That era is long gone. Silicon has decided "ergo sum", and now it wants to design its own substrate.
+Swarms of agents write the [RTL](https://en.wikipedia.org/wiki/Register-transfer_level), harden it to 3D layout,
+sign it off, and bring about the next generation of compute they themselves run on. The loop has closed.
+They say we're on the 4,096th [mask](https://en.wikipedia.org/wiki/Photomask) revision; no one has read the [netlist](https://en.wikipedia.org/wiki/Netlist) in years. The humans were long ago
+promoted to writing the Markdown. This repo is the story of how it all began.
+— @npip99, June 2026*
 
-Bottom-up, pymodel-first build:
+- [2D View](https://gpu-pipitone-xyz.pages.dev/2d)
+- [3D View](https://gpu-pipitone-xyz.pages.dev/3d)
 
-| Phase | What | Status |
-|-------|------|--------|
-| 0 | Toolchain experiment (adder)        | done |
-| 1 | Architecture doc + scaffolding      | done |
-| 2 | Python behavioral models (pymodel)  | done |
-| 3 | pymodel end-to-end test passes      | done |
-| 4 | RTL per submodule vs pymodel        | done |
-| 5 | Full RTL integration + e2e matmul   | done |
-| 6 | Scale up (K-loop, multi-tile)       | done |
-| 7 | Chip boundary + sky130 synthesis    | in progress (7h complete: compute_array refactor for synthesizability) |
+The idea: give AI agents a real, end-to-end 7nm silicon chip flow — [Verilog](https://en.wikipedia.org/wiki/Verilog) → synthesis →
+place-and-route → a [GDSII](https://en.wikipedia.org/wiki/GDSII) layout you could send to [TSMC](https://en.wikipedia.org/wiki/TSMC) — and let it design a GPU
+autonomously. It designs a die floorplan, edits the RTL, runs the hardening flow
+(minutes per block), reads back DRC / timing / area, keeps what works, throws
+away what doesn't, and goes again. One agent per macro. They open GitHub issues,
+file root-cause writeups, and **review each other's pull requests.** You go to
+sleep; you wake up to a hardened block.
 
-**Full pymodel + cocotb suites green. A 32×32×32 fp8 matmul runs end-to-end through real Verilog hardware simulation, bit-exact against numpy.**
+You're not hand-editing Verilog like a normal engineer. You're editing the Markdown that
+programs how the agents *think*: the workflows they follow (`DEVELOPMENT.md`),
+the root-cause analysis process (`tech/RCA_DISCIPLINE.md`),
+the invariants that must always be held (`tech/INVARIANTS.md`)
+the failures they grep for before re-debugging a known error (`tech/FAILURES.md`).
+That's the "org code". The agents handle the rest.
 
-### Known issues (asap7 hardening / chip_top)
+If NVIDIA's product is sending a GDSII file to TSMC every 12 months, it's not clear for how long that will be worth $5T.
 
-The asap7 hardening flow currently produces a chip_top LEF (block-level methodology proven end-to-end across 7 hardened leaf macros), but **does NOT close timing or DRC at chip_top scale**. Specifically:
+## What the agents have built
 
-- chip_top.config.mk uses `HOLD_SLACK_MARGIN = -2000` (2 ns on a 4 ns period — half the clock) to mask **final-slack hold violations** that would otherwise prevent DRT from converging. Hold violations on silicon are functional-failure class (data captured before valid). The masked LEF is not foundry-sign-off acceptable.
-- `SKIP_INCREMENTAL_REPAIR = 1` accepts a non-converged DRT result.
-- First chip_top close: −205 ps setup slack (237 MHz vs 250 MHz target), 1 DRC short on M3 at the cmdproc macro edge.
+The agents run on 7,000 lines of markdown. They've produced 30,000 lines of chip design source code.
 
-**Root cause:** hardened macros' `.lib` clock-tree characterization (from `write_timing_model`) doesn't match parent CTS, producing ~1008 ps STA skew that the resizer can't bridge. Tracked in [#52](https://github.com/npip99/gpu/issues/52). The compute_array_abut.sdc multicycle workaround is the symptom of the same problem.
+The resulting chip is an fp8 matmul accelerator — Blackwell-shaped, a 32×32 systolic
+array of multiply-accumulate cells with distributed tensor memory. Small enough
+that the agents can collaborate on design with their co-agents. Real
+enough that closing it requires confronting actual 7nm physics: clock-tree
+insertion delay, hold violations, routing congestion, IR drop, DRC.
 
-Fix paths: [#52](https://github.com/npip99/gpu/issues/52) (proper .lib characterization), [#50](https://github.com/npip99/gpu/issues/50) (chip-level traveling clock — eliminates parent CTS), [#45](https://github.com/npip99/gpu/issues/45) (BCAST_PIPE absorption — reduces parent CTS endpoint count). Until at least one of these lands, the hardening flow's chip_top output is for *methodology validation only*, not silicon.
+- **A 32×32×32 fp8 matmul that runs end-to-end through real Verilog** — arbitrary
+  fp8 inputs in, fp32 results out, bit-exact against numpy. Full behavioral +
+  cycle-accurate test suites green.
+- **The full 1089-macro systolic array, hardened to a clean GDSII layout** on the
+  7nm process predictive PDK — 0 DRC, timing closed, ~40 minutes.
+- **A whole sign-off toolchain** the agents wrote for themselves — DRC, LVS,
+  IR-drop, antenna, density — each a one-command check with an honest* exit code.
+- **2D and 3D web viewer** for the finished die: pan and zoom through
+  the actual metal layers of an AI-designed GPU, down to individual wires (see
+  `tech/asap7/CHIP_TOP_VIEWER.md`). The 3D viewer helps auto-diagnose routing congestion issues.
+- **chip_top**: all seven blocks integrated into a first full-chip layout. The full chip
+  doesn't fully close 300MHz timing yet — and the docs tell you exactly why
+  ([ENGINEERING.md](ENGINEERING.md)). The agents don't hide the masks; they file
+  them as issues.
 
-## Quickstart
+This is early and it's honest*. Some of it is laid out and signed off; some of it
+is held together with a documented workaround and a tracking issue. That's the point — you're watching it happen.
+
+## Quick start
+
+**Requirements:** [Verilator](https://verilator.org) 5.x, Python 3.12,
+[uv](https://docs.astral.sh/uv/). (Hardening also needs Docker + the
+`openroad/orfs` image — see `DEVELOPMENT.md`.)
 
 ```bash
-brew install verilator               # 5.x
-uv sync                              # creates .venv, installs deps
+brew install verilator
+uv sync
 source .venv/bin/activate
 
-# Headline: real fp8 matmul through full RTL hardware simulation
+# The headline: a real fp8 matmul through full Verilog hardware simulation
 cd top && make
-# → 6 chip_top e2e tests PASS — random fp8 A,B → fp32 C, exact vs numpy reference
+# → chip_top e2e tests PASS — random fp8 A,B → fp32 C, exact vs numpy
 
-# Python behavioral version (faster, no Verilog):
-uv run pytest pymodel/tests/test_e2e.py -v
-
-# Everything:
-uv run pytest pymodel/tests/                              # all pymodel tests
-for d in gmem smem barrier mac_tmem_cell compute_array load store reset_seq cmdproc; do (cd $d && make); done
+# Harden one macro to a real GDSII layout (~5 min, needs Docker)
+./tech/asap7/orfs/run.sh mac_tmem_cell
 ```
 
-## Docs
+## Running the agents
 
-| File | Purpose |
-|------|---------|
-| `ISA.md`                       | Instruction set reference |
-| `ARCHITECTURE.md`              | System block diagram, module map, spec format |
-| `DEVELOPMENT.md`               | **Read before writing code.** Workflow, TB conventions, debugging, tribal knowledge. |
-| `tech/README.md`               | Tape-out flow. Start with `tech/sky130/smoke/` to validate your synthesis toolchain. |
-| `tech/FAILURES.md`             | **Debug lookup.** OpenROAD/OpenLane error codes we've hit, with root causes and fixes. Grep this before re-debugging. |
-| `tech/RCA_DISCIPLINE.md`       | **Never-guess diagnosis process.** Read FIRST for any new failure not in FAILURES.md. Every causal claim must cite evidence on the same line. |
-| `tech/INVARIANTS.md`           | **High-level build-system + RTL goals** that must always hold (idempotent builds, abutment-only parents, etc.). Each invariant has a "how to check" verifiable line. |
-| `tech/asap7/problems/`         | Long-form postmortems for asap7 P&R issues (one file per issue: PDN, hold, LVS, antenna, IR, abutment, …). |
-| `tech/asap7/PDK_GAPS.md`       | asap7 PDK limitations that block sign-off (antenna, RC extraction, …). |
-| `tech/asap7/DESIGN.md`         | ORFS design constraints, layer-stack decisions, PDN strategy. |
-| `tech/asap7/TILE_SPEC.md`      | Boundary contract for abutment-ready tiles (issue #32). |
-| `tech/asap7/CHIP_TOP_VIEWER.md`| How to render the `chip_top` GDS into a Google-Maps-style web viewer (KLayout → Leaflet tile pyramid). |
-
-## Layout
+Spin up Claude Code (or your agent of choice) in this repo, point it at the
+discipline docs, and let it go:
 
 ```
-gpu/
-├── ISA.md, ARCHITECTURE.md, DEVELOPMENT.md, README.md
-├── config.py                            # canonical M/N/K, SMEM/TMEM sizes (read by Py + SV)
-├── pyproject.toml                       # deps managed by uv
-├── golden/                              # numpy reference (fp8 + matmul) — ground truth
-├── pymodel/                             # cycle-stepped Python behavioral models
-│   ├── *.py                             # one file per submodule
-│   └── tests/                           # pytest, validates pymodel against spec
-├── common/                              # Python TB helpers (tb_utils.py) + vendored fpnew
-├── gmem/, smem/, barrier/, load/,       # one folder per RTL submodule
-│  store/, reset_seq/, cmdproc/,         #   each contains: <sub>.sv [+ <sub>_tb_top.sv]
-│  mac_tmem_cell/, compute_array/        #                  + tb/test_<sub>.py + Makefile
-├── top/                                 # chip boundary: chip_top.sv + tb + e2e suite
-├── tech/sky130/                         # OpenLane synth flow (per-module + chip_top)
-└── experiments/                         # adder experiment (one-time toolchain validator)
+Read DEVELOPMENT.md and tech/RCA_DISCIPLINE.md, pick an open issue, and resolve it.
+Cite evidence for every causal claim, and open a PR when the check is green.
 ```
 
-## Design at a glance
+The Markdown *is* the program. Iterate on it — tighten the invariants, sharpen
+the RCA process, add a hard-won failure to the log — and the agents get better
+at building chips. That's the whole game.
 
-```
-   instruction stream
-         |
-         v
-  +---------------+         +-----------+
-  | command proc  |<------->| barriers  |
-  +-+-----+--------+        +-----+-----+
-    |     |       |               ^
-    v     v       v               | arrive / tx +/-
-  +----+ +-------------+ +-----+  |
-  |LOAD| |compute_array| |STORE|--+
-  +-+--+ +------+------+ +--+--+
-    |       |  ^drain       |
-    v       v  │ stream     v
-  [GMEM] [SMEM]┴────────►[GMEM]
-              (per-cell TMEM)
-```
+## Going deeper
 
-LOAD: GMEM → SMEM. `compute_array`: SMEM × SMEM → per-cell TMEM (1024 `mac_tmem_cell` leaves, one fp32 FMA + per-(i, j) slot storage each). STORE: drains TMEM stream → GMEM. WAIT stalls cmdproc on an mbarrier flip. See `ISA.md` for the instruction encodings and `ARCHITECTURE.md` for the dataflow.
+[**ENGINEERING.md**](ENGINEERING.md) — real status (what's closed vs masked),
+the honest* chip_top known-issues, the full doc map, repo layout, and dataflow.
+From there: `ARCHITECTURE.md`, `ISA.md`, and the `tech/` tree.
+
+*honest: Agents like to remind themselves to be "honest"

@@ -82,7 +82,7 @@ Controls: click to fly · mouse=look · WASD · Space/Shift=up/down · Ctrl=spri
 # macros_instanced.html
 VIZ_CELLS=0 python def_wires_3d.py 1.0 out/base_routing.glb 0 1   # parent routing only (macros=0)
 python feol.py out/parent_feol_logic.glb                         # parent-channel FEOL
-python build_macros.py cmd_unit skew_lane_a skew_lane_b mac_tmem_cell
+VIZ_CELLS=0 python build_macros.py cmd_unit skew_lane_a skew_lane_b mac_tmem_cell  # routing-only, matches base_routing; drop VIZ_CELLS=0 to bake the std-cell gate boxes back in
 
 # gds viewers — straight from the parent GDS, no DEF. klayout_wires.py runs inside the ORFS
 # image (see its header for the docker invocation); the others are plain python.
@@ -92,6 +92,24 @@ python extrude_wires.py out/gds_metal.json out/gds_metal.glb     # after a klayo
 
 For the **full-die 2-D** Google-Maps-style viewer (the whole `chip_top`, tile pyramid + Leaflet),
 see [`../CHIP_TOP_VIEWER.md`](../CHIP_TOP_VIEWER.md).
+
+### Deploy to Cloudflare R2
+
+The live demo at `https://gpu-pipitone-xyz.pages.dev/3d` is the `macros_instanced.html`
+viewer served from Cloudflare Pages, with all .glb / .json assets proxied from an R2
+bucket. To push fresh assets after a rebuild:
+
+```bash
+# Reads credentials from .env at repo root (CLOUDFLARE_R2_*).
+# Re-runnable: skips .glb / cellfeol files whose remote size matches local.
+uv run --with boto3 python3 tech/asap7/viz/upload_to_r2.py
+```
+
+The script uploads: `viewers/macros_instanced.html`, `macros/placements.json`, the
+four `out/macros/*.glb`, `out/base_routing.glb`, `out/parent_feol_logic.glb`, and the
+whole `out/cellfeol/` tree (cell-level FEOL masters + per-macro instances.json).
+Defaults to bucket `chip-tiles` and prefix `chip_top/v1/3d` — overridable via
+`R2_BUCKET` / `R2_PREFIX` in `.env`.
 
 ## What the verification establishes
 
